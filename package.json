@@ -1,0 +1,32 @@
+{
+  "name": "k-pdf3",
+  "version": "2.0.0",
+  "description": "法律実務向け PDF Workspace（K-PDF2 の全面再設計版）",
+  "private": true,
+  "main": "src/main/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "electron . --no-sandbox",
+    "spike": "node spike/mupdf-layout.mjs",
+    "build": "electron-builder",
+    "build:linux": "electron-builder --linux",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac"
+  },
+  "author": {
+    "name": "windom21-cpu",
+    "email": "279377893+windom21-cpu@users.noreply.github.com"
+  },
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "devDependencies": {
+    "electron": "42.0.0",
+    "electron-builder": "26.8.1"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.0.0",
+    "mupdf": "^1.27.0"
+  }
+}

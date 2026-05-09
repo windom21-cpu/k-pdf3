@@ -1,0 +1,34 @@
+node_modules/
+dist/
+release/
+out/
+build/
+
+*.log
+.DS_Store
+Thumbs.db
+
+# Personal-licensed fonts
+fonts/msgothic.ttc
+fonts/MSUIGothic.ttf
+
+# Environment
+.env
+.env.local
+
+# SQLite WAL/SHM (per-workspace transient files)
+*.kpdf3-wal
+*.kpdf3-shm
+
+# Spike artifacts
+spike/output/
+spike/*.pdf
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.Trash-*
