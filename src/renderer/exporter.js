@@ -125,7 +125,13 @@ function drawOverlay(ctx, ov, zoom) {
     ctx.fillStyle = props.color ?? "#000000";
     ctx.font = `${fontSize}px "MS UI Gothic", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif`;
     ctx.textBaseline = "top";
-    ctx.fillText(props.text ?? "", x, y);
+    // Match the viewer's white-space: pre-wrap behaviour so a long line
+    // doesn't escape the overlay's bbox in the export.
+    const lineHeight = fontSize * (props.lineHeight ?? 1);
+    const lines = wrapCanvasText(ctx, props.text ?? "", w);
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], x, y + i * lineHeight);
+    }
     return;
   }
 
@@ -162,6 +168,41 @@ function drawOverlay(ctx, ov, zoom) {
   // Other types render as a stroked rect placeholder.
   ctx.strokeStyle = "#888";
   ctx.strokeRect(x, y, w, h);
+}
+
+/**
+ * Character-by-character word wrap that matches the viewer's
+ * `white-space: pre-wrap` behaviour for CJK text. Hard-breaks at \n,
+ * otherwise greedily fits as many code points as possible per line up
+ * to maxWidth (in CSS px). Caller is responsible for setting ctx.font
+ * before invoking.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {string} text
+ * @param {number} maxWidth   px
+ * @returns {string[]}
+ */
+function wrapCanvasText(ctx, text, maxWidth) {
+  const out = [];
+  for (const para of text.split("\n")) {
+    if (para.length === 0) {
+      out.push("");
+      continue;
+    }
+    let line = "";
+    for (const ch of para) {
+      const candidate = line + ch;
+      const width = ctx.measureText(candidate).width;
+      if (line.length > 0 && width > maxWidth) {
+        out.push(line);
+        line = ch;
+      } else {
+        line = candidate;
+      }
+    }
+    if (line.length > 0) out.push(line);
+  }
+  return out;
 }
 
 /**

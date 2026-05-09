@@ -74,6 +74,9 @@ function placeText(pageNo, x, y) {
     },
   });
   history.execute(cmd);
+  // One-shot placement: release mode now so the next click can drag /
+  // edit existing overlays without accidentally placing another one.
+  setPlacementMode("none");
   if (cmd._snapshot) {
     setTimeout(() => viewer.enterTextEdit(cmd._snapshot.id), 0);
   }
@@ -100,6 +103,7 @@ function placeStamp(pageNo, x, y) {
     },
   });
   history.execute(cmd);
+  setPlacementMode("none");
   if (cmd._snapshot) {
     setTimeout(() => viewer.enterTextEdit(cmd._snapshot.id), 0);
   }
@@ -137,7 +141,6 @@ const ctxOverlay = $("ctx-overlay");
 
 function showOverlayContextMenu(overlayId, x, y) {
   ctxOverlay.dataset.targetId = overlayId;
-  // Ensure we don't run off the right / bottom edge.
   ctxOverlay.style.left = `${x}px`;
   ctxOverlay.style.top = `${y}px`;
   ctxOverlay.hidden = false;
@@ -148,20 +151,47 @@ function hideOverlayContextMenu() {
   delete ctxOverlay.dataset.targetId;
 }
 
-ctxOverlay.addEventListener("click", (e) => {
-  e.stopPropagation();
-  const target = e.target;
-  if (!(target instanceof HTMLElement)) return;
-  const action = target.dataset.ctx;
+/**
+ * Run the context-menu action for the menu item the pointer is over.
+ * Wired to BOTH pointerdown and click — pointerdown gives instant
+ * feedback (the perceived「very delayed」reported during M3-9 testing),
+ * click acts as a backup for keyboard / accessibility flows.
+ */
+function dispatchOverlayCtx(target) {
   const id = ctxOverlay.dataset.targetId;
   hideOverlayContextMenu();
-  if (!action || !id) return;
+  if (!(target instanceof HTMLElement) || !id) return;
+  const action = target.dataset.ctx;
+  if (!action) return;
   if (action === "delete") {
     history.execute(new RemoveOverlayCommand(projectStore, id));
   }
+}
+
+ctxOverlay.addEventListener("pointerdown", (e) => {
+  // Stop the pointerdown so the document-level listener below doesn't
+  // immediately re-hide the menu before the click bubbles in.
+  e.stopPropagation();
+  let el = e.target;
+  while (el && el !== ctxOverlay && !(el.dataset && el.dataset.ctx)) {
+    el = el.parentElement;
+  }
+  if (el && el !== ctxOverlay) {
+    dispatchOverlayCtx(el);
+  }
 });
 
-document.addEventListener("click", () => hideOverlayContextMenu());
+// Keep the click as a no-op fallback (after pointerdown already fired)
+// — prevents bubbling to document if the user mouses up on the menu.
+ctxOverlay.addEventListener("click", (e) => {
+  e.stopPropagation();
+});
+
+document.addEventListener("pointerdown", (ev) => {
+  // Anywhere outside ctxOverlay or its children → close.
+  if (ev.target instanceof Node && ctxOverlay.contains(ev.target)) return;
+  hideOverlayContextMenu();
+});
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideOverlayContextMenu();
 });
