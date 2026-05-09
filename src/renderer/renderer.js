@@ -386,6 +386,7 @@ function refreshMenuState() {
       viewer.currentPage < viewer.registry.count(),
     "page-goto": isOpen,
     export: isOpen,
+    print: isOpen,
     // Still M5+ stubs (clipboard)
     cut: false,
     copy: false,
@@ -462,6 +463,37 @@ async function actionClose() {
   history.clear();
   setOpen(false);
   await refreshViewer();
+}
+
+async function actionPrint() {
+  if (!isOpen) return;
+  const pages = await kpdf3.getPages();
+  if (pages.length === 0) return;
+  const overlayCount = projectStore.count();
+  const isCopy = overlayCount === 0;
+  try {
+    if (isCopy) {
+      wsStatus.textContent = "印刷準備中...";
+      await kpdf3.printSourcePdf();
+    } else {
+      wsStatus.textContent = "印刷準備中...";
+      const composed = await composePagesForExport({
+        pages,
+        projectStore,
+        renderPage: kpdf3.renderPage,
+        onProgress: ({ done, total }) => {
+          wsStatus.textContent = `印刷準備中 ${done} / ${total}`;
+        },
+      });
+      wsStatus.textContent = "PDF を組み立て中...";
+      await kpdf3.printPdfRasterized({ pages: composed });
+    }
+    wsStatus.textContent =
+      "印刷用 PDF を別ビューアで開きました。そちらで Ctrl+P を押してください。";
+  } catch (err) {
+    console.error("[renderer] print failed:", err);
+    wsStatus.textContent = `印刷準備失敗: ${err.message ?? err}`;
+  }
 }
 
 async function actionExport() {
@@ -628,6 +660,7 @@ const menuBar = new MenuBar({
     close: actionClose,
     save: actionSave,
     export: actionExport,
+    print: actionPrint,
     exit: actionExit,
     about: actionAbout,
     undo: actionUndo,
@@ -668,6 +701,11 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     if (inText && target instanceof HTMLElement) target.blur();
     setTimeout(() => actionExport(), 0);
+    return;
+  } else if (key === "p") {
+    e.preventDefault();
+    if (inText && target instanceof HTMLElement) target.blur();
+    setTimeout(() => actionPrint(), 0);
     return;
   }
 

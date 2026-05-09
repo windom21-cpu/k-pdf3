@@ -8,10 +8,11 @@
 //
 // This is the M1 skeleton. Real workspace UI lands in M2.
 
-import { app, BrowserWindow, ipcMain, dialog, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
@@ -329,6 +330,55 @@ ipcMain.handle("kpdf3:pick-export-pdf", async () => {
 });
 
 /**
+ * Build a flatten PDF from per-page composited PNG bytes. Shared between
+ * the export and print pipelines (they only differ in where the bytes
+ * end up). Caller is responsible for destroying nothing — this manages
+ * mupdf handles internally and returns plain Buffer bytes.
+ *
+ * @param {Array<{ pageNo:number, png:Uint8Array, widthPt:number, heightPt:number }>} pages
+ * @returns {Buffer}
+ */
+function assembleRasterizedPdf(pages) {
+  const newDoc = new mupdf.PDFDocument();
+  try {
+    for (const p of pages) {
+      const png = p.png instanceof Uint8Array ? p.png : new Uint8Array(p.png);
+      const image = new mupdf.Image(png);
+      try {
+        const imageRef = newDoc.addImage(image);
+        const xobjects = newDoc.newDictionary();
+        xobjects.put("Im0", imageRef);
+        const resources = newDoc.newDictionary();
+        resources.put("XObject", xobjects);
+        const cs = `q\n${p.widthPt} 0 0 ${p.heightPt} 0 0 cm\n/Im0 Do\nQ\n`;
+        const contents = new TextEncoder().encode(cs);
+        const pageObj = newDoc.addPage(
+          [0, 0, p.widthPt, p.heightPt],
+          0,
+          resources,
+          contents,
+        );
+        newDoc.insertPage(newDoc.countPages(), pageObj);
+      } finally {
+        image.destroy?.();
+      }
+    }
+    const buf = newDoc.saveToBuffer();
+    try {
+      return Buffer.from(buf.asUint8Array());
+    } finally {
+      buf.destroy?.();
+    }
+  } finally {
+    newDoc.destroy();
+  }
+}
+
+function tempPrintPath() {
+  return join(app.getPath("temp"), `kpdf3-print-${randomUUID()}.pdf`);
+}
+
+/**
  * Assemble a flatten PDF from per-page composited PNG bytes (from the
  * renderer) and write it to disk.
  *
@@ -348,61 +398,62 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
   if (!savePath || !Array.isArray(pages) || pages.length === 0) {
     throw new Error("export-pdf-rasterized: invalid payload");
   }
+  const pdfBytes = assembleRasterizedPdf(pages);
+  writeFileSync(savePath, pdfBytes);
+  const rev = activeWorkspace.recordExport(pdfBytes, {
+    note: payload.note ?? null,
+    isSecure: false,
+  });
+  return {
+    savedAt: rev.timestamp,
+    savePath,
+    pageCount: pages.length,
+    revisionId: rev.revisionId,
+    outputHash: rev.outputHash,
+    outputSize: rev.outputSize,
+  };
+});
 
-  const newDoc = new mupdf.PDFDocument();
-  try {
-    for (const p of pages) {
-      const png = p.png instanceof Uint8Array ? p.png : new Uint8Array(p.png);
-      const image = new mupdf.Image(png);
-      try {
-        const imageRef = newDoc.addImage(image);
-        const xobjects = newDoc.newDictionary();
-        xobjects.put("Im0", imageRef);
-        const resources = newDoc.newDictionary();
-        resources.put("XObject", xobjects);
-
-        // Content stream: full-bleed image draw.
-        // `cm` sets the current transformation matrix; the image's natural
-        // 1×1 unit square is scaled to (widthPt, heightPt).
-        const cs = `q\n${p.widthPt} 0 0 ${p.heightPt} 0 0 cm\n/Im0 Do\nQ\n`;
-        const contents = new TextEncoder().encode(cs);
-
-        const pageObj = newDoc.addPage(
-          [0, 0, p.widthPt, p.heightPt],
-          0,
-          resources,
-          contents,
-        );
-        newDoc.insertPage(newDoc.countPages(), pageObj);
-      } finally {
-        image.destroy?.();
-      }
-    }
-
-    const buf = newDoc.saveToBuffer();
-    let pdfBytes;
-    try {
-      pdfBytes = Buffer.from(buf.asUint8Array());
-    } finally {
-      buf.destroy?.();
-    }
-    writeFileSync(savePath, pdfBytes);
-    // Bit-identical history copy in the workspace (HANDOVER §17.3).
-    const rev = activeWorkspace.recordExport(pdfBytes, {
-      note: payload.note ?? null,
-      isSecure: false, // qpdf sanitize lands M4-3
-    });
-    return {
-      savedAt: rev.timestamp,
-      savePath,
-      pageCount: pages.length,
-      revisionId: rev.revisionId,
-      outputHash: rev.outputHash,
-      outputSize: rev.outputSize,
-    };
-  } finally {
-    newDoc.destroy();
+/**
+ * Print pipeline (M5-4):
+ *   - flatten path: same composer as export → mupdf assembly → temp PDF
+ *   - byte-copy path: when the workspace has no overlays the user is
+ *     printing the source PDF as-is, so just write the source bytes
+ *     to the same temp slot (preserves text layer for crisp printing)
+ *   - shell.openPath opens the temp PDF in the OS-default PDF viewer
+ *     where the user presses Ctrl+P
+ *
+ * The temp file lingers under app.getPath('temp') until the OS purges
+ * its tmp directory; we don't try to delete it because the spawned PDF
+ * viewer typically still has it open.
+ */
+ipcMain.handle("kpdf3:print-pdf-rasterized", async (_, payload) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const { pages } = payload;
+  if (!Array.isArray(pages) || pages.length === 0) {
+    throw new Error("print-pdf-rasterized: invalid payload");
   }
+  const pdfBytes = assembleRasterizedPdf(pages);
+  const tempPath = tempPrintPath();
+  writeFileSync(tempPath, pdfBytes);
+  const errMsg = await shell.openPath(tempPath);
+  if (errMsg) throw new Error(`shell.openPath: ${errMsg}`);
+  return { tempPath, pageCount: pages.length };
+});
+
+ipcMain.handle("kpdf3:print-source-pdf", async () => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const bytes = activeWorkspace.getSourceBytes();
+  if (!bytes) throw new Error("print-source-pdf: workspace has no source PDF");
+  const tempPath = tempPrintPath();
+  writeFileSync(tempPath, bytes);
+  const errMsg = await shell.openPath(tempPath);
+  if (errMsg) throw new Error(`shell.openPath: ${errMsg}`);
+  return {
+    tempPath,
+    pageCount: activeWorkspace.getSourceMeta()?.pageCount ?? 0,
+    byteCopy: true,
+  };
 });
 
 /**

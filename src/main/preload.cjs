@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("kpdf3", {
   pickExportPdf:      ()        => ipcRenderer.invoke("kpdf3:pick-export-pdf"),
   exportPdfRasterized: (payload) => ipcRenderer.invoke("kpdf3:export-pdf-rasterized", payload),
   copySourcePdf:      (savePath) => ipcRenderer.invoke("kpdf3:copy-source-pdf", savePath),
+  printPdfRasterized: (payload)  => ipcRenderer.invoke("kpdf3:print-pdf-rasterized", payload),
+  printSourcePdf:     ()         => ipcRenderer.invoke("kpdf3:print-source-pdf"),
   // queries
   getSourceMeta:      ()        => ipcRenderer.invoke("kpdf3:get-source-meta"),
   getPages:           ()        => ipcRenderer.invoke("kpdf3:get-pages"),
