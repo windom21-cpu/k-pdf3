@@ -168,6 +168,24 @@ button.toggled {
   align-items: flex-start;
 }
 
+/* Overlay accepts pointer events (it sits inside an .overlay-layer with
+ * pointer-events: none, so this is what makes the overlay clickable). */
+.overlay {
+  pointer-events: auto;
+  cursor: text;
+}
+
+/* Visual state for the overlay currently in inline edit mode. */
+.overlay.editing {
+  outline: 1px solid #000080;
+  background: rgba(255, 255, 255, 0.7);
+  cursor: text;
+  user-select: text;
+}
+.overlay.editing:focus {
+  outline: 2px solid #000080;
+}
+
 .page-placeholder {
   font-family: "Pixelated MS Sans Serif", "MS Sans Serif", monospace;
   font-size: 24px;

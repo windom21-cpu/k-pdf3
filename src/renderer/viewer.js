@@ -28,11 +28,17 @@ export class Viewer {
    * @param {object} [opts]
    * @param {import("../domain/project-store.js").ProjectStore} [opts.projectStore]
    * @param {(pageNo: number, x: number, y: number, evt: PointerEvent) => void} [opts.onPagePointerDown]
+   * @param {(overlayId: string) => void} [opts.onOverlayClick]
+   * @param {(overlayId: string, newText: string) => void} [opts.onTextEditCommit]
    */
   constructor(container, opts = {}) {
     this.container = container;
     this.projectStore = opts.projectStore ?? null;
     this.onPagePointerDown = opts.onPagePointerDown ?? null;
+    this.onOverlayClick = opts.onOverlayClick ?? null;
+    this.onTextEditCommit = opts.onTextEditCommit ?? null;
+    /** @type {string | null} id of overlay currently being inline-edited */
+    this._editingId = null;
     /** @type {PageRegistry | null} */
     this.registry = null;
     /** @type {ReturnType<PageRegistry['layout']> | null} */
@@ -178,23 +184,46 @@ export class Viewer {
    * Build (or rebuild) the overlay DOM layer for `pageNo` from the
    * ProjectStore's current state. Called by the store-subscriber on add /
    * update / remove / reset events.
+   *
+   * If an overlay on this page is currently being inline-edited, its DOM
+   * element is preserved so the user's caret / IME composition isn't torn
+   * down by a stray store event.
    */
   _renderPageOverlays(pageNo) {
     if (!this.projectStore) return;
     const div = this.pageEls.get(pageNo);
     if (!div) return;
     const existing = div.querySelector(":scope > .overlay-layer");
-    if (existing) existing.remove();
+    /** @type {HTMLElement | null} */
+    let preservedEditing = null;
+    if (existing) {
+      if (this._editingId) {
+        const editEl = existing.querySelector(
+          `.overlay[data-overlay-id="${cssEscape(this._editingId)}"]`,
+        );
+        if (editEl?.classList.contains("editing")) {
+          preservedEditing = editEl;
+          preservedEditing.remove(); // detach so existing.remove() doesn't kill it
+        }
+      }
+      existing.remove();
+    }
     const overlays = this.projectStore.getPageOverlays(pageNo);
-    if (overlays.length === 0) return;
+    if (overlays.length === 0 && !preservedEditing) return;
 
     const layer = document.createElement("div");
     layer.className = "overlay-layer";
 
     for (const ov of overlays) {
+      if (preservedEditing && ov.id === this._editingId) {
+        layer.appendChild(preservedEditing);
+        preservedEditing = null;
+        continue;
+      }
       const el = this._createOverlayElement(ov);
       if (el) layer.appendChild(el);
     }
+    if (preservedEditing) layer.appendChild(preservedEditing);
     div.appendChild(layer);
   }
 
@@ -218,6 +247,12 @@ export class Viewer {
       const fontSize = (props.fontSize ?? 12) * z;
       el.style.fontSize = `${fontSize}px`;
       el.style.color = props.color ?? "#000000";
+      el.addEventListener("click", (e) => {
+        // Don't fall through to .viewer-page (which would create a new
+        // overlay in placement mode).
+        e.stopPropagation();
+        if (this.onOverlayClick) this.onOverlayClick(ov.id);
+      });
       return el;
     }
 
@@ -226,6 +261,112 @@ export class Viewer {
     el.textContent = ov.type;
     el.style.color = "#444";
     return el;
+  }
+
+  /**
+   * Switch a text overlay into inline-edit mode. Behaviour:
+   *
+   *   - The overlay div becomes contentEditable, takes focus, and selects
+   *     all of the existing text.
+   *   - IME composition is honoured: the host doesn't see a commit while
+   *     `compositionstart…compositionend` is in flight.
+   *   - Enter (without Shift) commits, Escape reverts, blur commits — but
+   *     a blur that arrives mid-composition is ignored (some IMEs blur the
+   *     host briefly when a candidate window opens).
+   *   - On commit with a changed value, the `onTextEditCommit(id, text)`
+   *     callback fires; the renderer pushes an UpdateOverlayCommand.
+   *
+   * Idempotent — calling twice on the same id is a no-op.
+   *
+   * @param {string} id
+   */
+  enterTextEdit(id) {
+    if (this._editingId === id) return;
+    if (!this.projectStore) return;
+    const ov = this.projectStore.get(id);
+    if (!ov || ov.type !== "text") return;
+    const el = this.container.querySelector(
+      `.overlay[data-overlay-id="${cssEscape(id)}"]`,
+    );
+    if (!el) return;
+
+    const before = ov.properties?.text ?? "";
+
+    el.classList.add("editing");
+    el.contentEditable = "true";
+    el.spellcheck = false;
+    el.textContent = before;
+    this._editingId = id;
+
+    let isComposing = false;
+    let finished = false;
+
+    const finish = (commit) => {
+      if (finished) return;
+      finished = true;
+      el.removeEventListener("compositionstart", onCs);
+      el.removeEventListener("compositionend", onCe);
+      el.removeEventListener("blur", onBlur);
+      el.removeEventListener("keydown", onKey);
+      el.contentEditable = "false";
+      el.classList.remove("editing");
+      this._editingId = null;
+      const after = el.textContent ?? "";
+      if (!commit) {
+        el.textContent = before;
+      } else if (after !== before && this.onTextEditCommit) {
+        this.onTextEditCommit(id, after);
+      } else {
+        // Re-render this page so the DOM reflects whatever the store has
+        // (in case onTextEditCommit was not provided).
+        const pageNo = ov.pageNo;
+        if (pageNo) this._renderPageOverlays(pageNo);
+      }
+    };
+
+    const onCs = () => {
+      isComposing = true;
+    };
+    const onCe = () => {
+      isComposing = false;
+    };
+    const onBlur = () => {
+      // Some IMEs blur the host while a candidate window is open; ignore.
+      if (isComposing) {
+        setTimeout(() => {
+          if (!finished) el.focus();
+        }, 0);
+        return;
+      }
+      finish(true);
+    };
+    const onKey = (e) => {
+      if (isComposing) return;
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    };
+
+    el.addEventListener("compositionstart", onCs);
+    el.addEventListener("compositionend", onCe);
+    el.addEventListener("blur", onBlur);
+    el.addEventListener("keydown", onKey);
+
+    // Defer focus + selectAll so the click that brought us here finishes
+    // first.
+    setTimeout(() => {
+      if (finished) return;
+      el.focus();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    }, 0);
   }
 
   _setupObserver() {
@@ -287,4 +428,15 @@ export class Viewer {
       this.pendingRenders.delete(pageNo);
     }
   }
+}
+
+/**
+ * Minimal CSS.escape wrapper for the data-attribute selector.  CSS.escape
+ * is available natively in modern browsers including Electron 38; the
+ * fallback is just defensive.
+ */
+function cssEscape(s) {
+  return globalThis.CSS?.escape
+    ? globalThis.CSS.escape(s)
+    : String(s).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }

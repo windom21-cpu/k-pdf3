@@ -8,7 +8,7 @@ import { Viewer } from "./viewer.js";
 import { MenuBar } from "./menu-bar.js";
 import { ProjectStore } from "../domain/project-store.js";
 import { HistoryStack } from "../domain/history.js";
-import { AddOverlayCommand } from "../domain/commands.js";
+import { AddOverlayCommand, UpdateOverlayCommand } from "../domain/commands.js";
 
 const { kpdf3 } = window;
 
@@ -31,6 +31,8 @@ const viewerContainer = $("viewer-container");
 const viewer = new Viewer(viewerContainer, {
   projectStore,
   onPagePointerDown: handlePagePointerDown,
+  onOverlayClick: handleOverlayClick,
+  onTextEditCommit: handleTextEditCommit,
 });
 
 let isOpen = false;
@@ -56,6 +58,27 @@ function handlePagePointerDown(pageNo, x, y) {
     },
   });
   history.execute(cmd);
+  // After placing, immediately enter inline edit on the new overlay so the
+  // user can start typing.
+  if (cmd._snapshot) {
+    setTimeout(() => viewer.enterTextEdit(cmd._snapshot.id), 0);
+  }
+}
+
+function handleOverlayClick(id) {
+  if (!isOpen) return;
+  viewer.enterTextEdit(id);
+}
+
+function handleTextEditCommit(id, newText) {
+  if (!isOpen) return;
+  const ov = projectStore.get(id);
+  if (!ov) return;
+  history.execute(
+    new UpdateOverlayCommand(projectStore, id, {
+      properties: { ...ov.properties, text: newText },
+    }),
+  );
 }
 
 function setEditMode(on) {
@@ -240,16 +263,33 @@ window.addEventListener("keydown", (e) => {
   if (!isOpen) return;
   const ctrlOrCmd = e.ctrlKey || e.metaKey;
   if (!ctrlOrCmd) return;
+  const target = e.target;
+  const inText =
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA");
   const key = e.key.toLowerCase();
+
+  if (key === "s") {
+    // Ctrl+S works even inside text edit — commit the edit first via blur,
+    // then save.
+    e.preventDefault();
+    if (inText && target instanceof HTMLElement) target.blur();
+    setTimeout(() => actionSave(), 0);
+    return;
+  }
+
+  // Other shortcuts (undo/redo) defer to the host text input's native
+  // handling while editing.
+  if (inText) return;
+
   if (key === "z" && !e.shiftKey) {
     e.preventDefault();
     actionUndo();
   } else if ((key === "z" && e.shiftKey) || key === "y") {
     e.preventDefault();
     actionRedo();
-  } else if (key === "s") {
-    e.preventDefault();
-    actionSave();
   }
 });
 
