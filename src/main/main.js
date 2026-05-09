@@ -216,7 +216,14 @@ ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath) => {
     pdfPath,
     pageCount: activeWorkspace.getSourceMeta()?.pageCount ?? 0,
     isNew,
+    overlays: activeWorkspace.loadOverlays(),
   };
+});
+
+ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.saveOverlays(overlays);
+  return { savedAt: new Date().toISOString(), count: overlays.length };
 });
 
 ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {

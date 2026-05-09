@@ -4,15 +4,16 @@
 // pageNo, with a Pub/Sub channel so the renderer can react to mutations.
 //
 //   - Overlay positions are canonical (PDF point, top-left, post-rotation).
-//   - Mutations flip a `dirty` flag; persistence (M3 will add save()) is the
-//     caller's job.
+//   - Mutations flip a `dirty` flag; persistence is the caller's job
+//     (M3-1: Workspace.saveOverlays + load via openPdfFile response).
 //   - Spatial queries use linear scan per page (typical pages have <100
 //     overlays). Switching to rbush will be revisited via ADR if profiling
 //     shows the need.
 //
-// No SQLite, mupdf, or DOM imports.
+// No SQLite, mupdf, or DOM imports. Uses `globalThis.crypto.randomUUID`
+// so the same module works in both Node (≥19) and the Electron renderer.
 
-import { randomUUID } from "node:crypto";
+const randomUUID = () => globalThis.crypto.randomUUID();
 
 /**
  * @typedef {'text' | 'stamp' | 'image' | 'redaction' | 'line' | 'rect' | 'signature' | 'page_number'} OverlayType

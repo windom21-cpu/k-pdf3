@@ -6,8 +6,16 @@
 
 import { Viewer } from "./viewer.js";
 import { MenuBar } from "./menu-bar.js";
+import { ProjectStore } from "../domain/project-store.js";
 
 const { kpdf3 } = window;
+
+/**
+ * Renderer-side overlay store (M3 architecture: ProjectStore lives in the
+ * renderer; main process only handles SQLite I/O on save / load). Reset
+ * to the saved snapshot whenever a PDF is opened. Editing UI lands M3-3.
+ */
+const projectStore = new ProjectStore();
 
 const $ = (id) => document.getElementById(id);
 const btnOpen = $("btn-open");
@@ -66,7 +74,8 @@ async function actionOpen() {
   const pdfPath = await kpdf3.pickPdf();
   if (!pdfPath) return;
   try {
-    await kpdf3.openPdfFile(pdfPath);
+    const result = await kpdf3.openPdfFile(pdfPath);
+    projectStore.reset(result.overlays ?? []);
     setOpen(true);
     await refreshViewer();
   } catch (err) {
@@ -77,6 +86,7 @@ async function actionOpen() {
 
 async function actionClose() {
   await kpdf3.closeWorkspace();
+  projectStore.reset([]);
   setOpen(false);
   await refreshViewer();
 }

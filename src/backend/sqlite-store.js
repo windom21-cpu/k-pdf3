@@ -190,6 +190,89 @@ export function getAllPages(db) {
   `).all();
 }
 
+// ---- Overlays ------------------------------------------------------------
+
+/**
+ * Replace the entire `overlays` (and the parallel R*Tree `overlays_spatial`)
+ * contents atomically. Used by Workspace.saveOverlays — the M3 "Ctrl+S" path
+ * dumps the whole ProjectStore in one go (overlay counts are small enough
+ * that incremental writes aren't yet worth the complexity).
+ *
+ * The R*Tree's `rowid` is paired with the overlays row by reading
+ * `lastInsertRowid` after each insert and reusing it for the spatial entry.
+ *
+ * @param {import("better-sqlite3").Database} db
+ * @param {import("../domain/project-store.js").Overlay[]} overlays
+ */
+export function setOverlays(db, overlays) {
+  const insertOverlay = db.prepare(`
+    INSERT INTO overlays (
+      id, page_no, type,
+      x, y, w, h, z_order,
+      properties, asset_id,
+      created_at, updated_at
+    ) VALUES (
+      @id, @pageNo, @type,
+      @x, @y, @w, @h, @zOrder,
+      @properties, @assetId,
+      @createdAt, @updatedAt
+    )
+  `);
+  const insertSpatial = db.prepare(`
+    INSERT INTO overlays_spatial (rowid, min_x, max_x, min_y, max_y)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  const tx = db.transaction((rows) => {
+    db.prepare("DELETE FROM overlays_spatial").run();
+    db.prepare("DELETE FROM overlays").run();
+    for (const ov of rows) {
+      const result = insertOverlay.run({
+        id: ov.id,
+        pageNo: ov.pageNo,
+        type: ov.type,
+        x: ov.x, y: ov.y, w: ov.w, h: ov.h,
+        zOrder: ov.zOrder,
+        properties: JSON.stringify(ov.properties ?? {}),
+        assetId: ov.assetId ?? null,
+        createdAt: ov.createdAt,
+        updatedAt: ov.updatedAt,
+      });
+      insertSpatial.run(
+        result.lastInsertRowid,
+        ov.x,
+        ov.x + ov.w,
+        ov.y,
+        ov.y + ov.h,
+      );
+    }
+  });
+  tx(overlays);
+}
+
+/**
+ * Read all overlays, ordered by page_no then z_order. JSON `properties` is
+ * parsed back into an object before returning.
+ *
+ * @param {import("better-sqlite3").Database} db
+ * @returns {import("../domain/project-store.js").Overlay[]}
+ */
+export function getAllOverlays(db) {
+  const rows = db.prepare(`
+    SELECT
+      id, page_no AS pageNo, type,
+      x, y, w, h, z_order AS zOrder,
+      properties, asset_id AS assetId,
+      created_at AS createdAt, updated_at AS updatedAt
+    FROM overlays
+    ORDER BY page_no, z_order, id
+  `).all();
+  return rows.map((r) => ({
+    ...r,
+    properties: r.properties ? JSON.parse(r.properties) : {},
+    assetId: r.assetId ?? null,
+  }));
+}
+
 // ---- Metadata ------------------------------------------------------------
 
 export function getMetadata(db, key) {

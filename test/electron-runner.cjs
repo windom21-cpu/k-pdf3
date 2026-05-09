@@ -22,6 +22,7 @@ const { pathToFileURL } = require("node:url");
 // Coord and render tests do not need Electron — they run via `node` directly.
 const ELECTRON_TESTS = [
   "./m1-exit-criteria.mjs",
+  "./m3-overlay-persistence.mjs",
 ];
 
 app.whenReady()

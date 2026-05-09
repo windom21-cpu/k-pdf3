@@ -15,6 +15,8 @@ import {
   getSourcePdfBlob,
   setMetadata,
   getMetadata,
+  setOverlays,
+  getAllOverlays,
 } from "../backend/sqlite-store.js";
 import { extractPdfInfo, computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
 
@@ -118,5 +120,29 @@ export class Workspace {
   /** Read a single metadata key. */
   getMetadata(key) {
     return getMetadata(this.db, key);
+  }
+
+  // ---- Overlay persistence (M3-1) ------------------------------------
+
+  /**
+   * Replace the workspace's entire overlay set with the given snapshot.
+   * Atomic: a transaction wraps the DELETE + bulk INSERT so a crash mid-save
+   * leaves the previous state intact.
+   *
+   * @param {import("./project-store.js").Overlay[]} overlays
+   */
+  saveOverlays(overlays) {
+    setOverlays(this.db, overlays);
+    setMetadata(this.db, "overlays_saved_at", new Date().toISOString());
+  }
+
+  /**
+   * Load all overlays as a flat array. ProjectStore.reset(...) consumes this
+   * directly.
+   *
+   * @returns {import("./project-store.js").Overlay[]}
+   */
+  loadOverlays() {
+    return getAllOverlays(this.db);
   }
 }
