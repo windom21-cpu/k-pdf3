@@ -31,6 +31,7 @@ export class Viewer {
    * @param {(overlayId: string) => void} [opts.onOverlayClick]
    * @param {(overlayId: string, newText: string) => void} [opts.onTextEditCommit]
    * @param {(overlayId: string, newX: number, newY: number) => void} [opts.onOverlayDragEnd]
+   * @param {(overlayId: string, clientX: number, clientY: number) => void} [opts.onOverlayContextMenu]
    */
   constructor(container, opts = {}) {
     this.container = container;
@@ -39,6 +40,7 @@ export class Viewer {
     this.onOverlayClick = opts.onOverlayClick ?? null;
     this.onTextEditCommit = opts.onTextEditCommit ?? null;
     this.onOverlayDragEnd = opts.onOverlayDragEnd ?? null;
+    this.onOverlayContextMenu = opts.onOverlayContextMenu ?? null;
     /** @type {string | null} id of overlay currently being inline-edited */
     this._editingId = null;
     /** @type {PageRegistry | null} */
@@ -385,6 +387,16 @@ export class Viewer {
       el.style.top = `${drag.startTop}px`;
       el.classList.remove("dragging");
       drag = null;
+    });
+
+    el.addEventListener("contextmenu", (e) => {
+      // Don't intercept right-click while inline-editing — let the host
+      // browser show its native spell / paste menu inside the contentEditable.
+      if (el.classList.contains("editing")) return;
+      if (!this.onOverlayContextMenu) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.onOverlayContextMenu(ov.id, e.clientX, e.clientY);
     });
   }
 

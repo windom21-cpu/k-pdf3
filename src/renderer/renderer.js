@@ -8,7 +8,11 @@ import { Viewer } from "./viewer.js";
 import { MenuBar } from "./menu-bar.js";
 import { ProjectStore } from "../domain/project-store.js";
 import { HistoryStack } from "../domain/history.js";
-import { AddOverlayCommand, UpdateOverlayCommand } from "../domain/commands.js";
+import {
+  AddOverlayCommand,
+  UpdateOverlayCommand,
+  RemoveOverlayCommand,
+} from "../domain/commands.js";
 
 const { kpdf3 } = window;
 
@@ -35,6 +39,7 @@ const viewer = new Viewer(viewerContainer, {
   onOverlayClick: handleOverlayClick,
   onTextEditCommit: handleTextEditCommit,
   onOverlayDragEnd: handleOverlayDragEnd,
+  onOverlayContextMenu: showOverlayContextMenu,
 });
 
 let isOpen = false;
@@ -125,6 +130,40 @@ function handleOverlayDragEnd(id, newX, newY) {
     new UpdateOverlayCommand(projectStore, id, { x: newX, y: newY }),
   );
 }
+
+// ---- Overlay context menu (right-click) ------------------------------
+const ctxOverlay = $("ctx-overlay");
+
+function showOverlayContextMenu(overlayId, x, y) {
+  ctxOverlay.dataset.targetId = overlayId;
+  // Ensure we don't run off the right / bottom edge.
+  ctxOverlay.style.left = `${x}px`;
+  ctxOverlay.style.top = `${y}px`;
+  ctxOverlay.hidden = false;
+}
+
+function hideOverlayContextMenu() {
+  ctxOverlay.hidden = true;
+  delete ctxOverlay.dataset.targetId;
+}
+
+ctxOverlay.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+  const action = target.dataset.ctx;
+  const id = ctxOverlay.dataset.targetId;
+  hideOverlayContextMenu();
+  if (!action || !id) return;
+  if (action === "delete") {
+    history.execute(new RemoveOverlayCommand(projectStore, id));
+  }
+});
+
+document.addEventListener("click", () => hideOverlayContextMenu());
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideOverlayContextMenu();
+});
 
 /**
  * @param {'none' | 'text' | 'stamp'} mode
