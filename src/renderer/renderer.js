@@ -415,6 +415,7 @@ function refreshMenuState() {
     "toggle-bookmarks": isOpen,
     export: isOpen,
     "export-range": isOpen,
+    "split-save": isOpen,
     print: isOpen,
     // Still M5+ stubs (clipboard)
     cut: false,
@@ -728,6 +729,239 @@ function parsePageRange(input, total) {
  * doesn't apply to a sub-set of the source). Run multiple times for a
  * "split" workflow (出口 1 = pages 1-5, 出口 2 = pages 6-12, etc.).
  */
+// ---- Split-save dialog (M5-6 V2) ------------------------------------
+const splitDialog = $("split-dialog");
+const splitFlow = $("split-flow");
+const splitConfirmBtn = $("split-confirm");
+const splitCancelBtn = $("split-cancel");
+
+/** @type {Set<number>} 0-based page indices: split AFTER index i */
+const splitState = {
+  splitAfter: new Set(),
+  /** @type {Map<number, string>} part index → user-supplied name */
+  partNames: new Map(),
+  /** @type {Map<number, HTMLCanvasElement>} pageNo → cached thumbnail canvas */
+  thumbCache: new Map(),
+};
+
+function computeParts(totalPages, splitAfter) {
+  const sortedPoints = [...splitAfter].sort((a, b) => a - b);
+  const parts = [];
+  let start = 0;
+  for (const sp of sortedPoints) {
+    parts.push({ start, end: sp });
+    start = sp + 1;
+  }
+  parts.push({ start, end: totalPages - 1 });
+  return parts;
+}
+
+function defaultPartName(idx) {
+  return `part${idx + 1}`;
+}
+
+async function generateAllThumbnails(pages, onProgress) {
+  // Render each page at zoom 0.25 to a tiny canvas, cache by pageNo.
+  for (let i = 0; i < pages.length; i++) {
+    const pageNo = pages[i].pageNo;
+    if (splitState.thumbCache.has(pageNo)) continue;
+    try {
+      const result = await kpdf3.renderPage(pageNo, { zoom: 0.25 });
+      const canvas = document.createElement("canvas");
+      canvas.width = result.width;
+      canvas.height = result.height;
+      const ctx = canvas.getContext("2d");
+      const pixels =
+        result.pixels instanceof Uint8ClampedArray
+          ? result.pixels
+          : new Uint8ClampedArray(result.pixels.buffer ?? result.pixels);
+      ctx.putImageData(new ImageData(pixels, result.width, result.height), 0, 0);
+      splitState.thumbCache.set(pageNo, canvas);
+    } catch (err) {
+      console.error(`[split] thumb ${pageNo} failed:`, err);
+    }
+    if (onProgress) onProgress({ done: i + 1, total: pages.length });
+  }
+}
+
+function rebuildSplitUI(pages) {
+  splitFlow.innerHTML = "";
+  const parts = computeParts(pages.length, splitState.splitAfter);
+
+  parts.forEach((part, partIdx) => {
+    const section = document.createElement("div");
+    section.className = "split-section";
+
+    const header = document.createElement("div");
+    header.className = "split-section-header";
+    const label = document.createElement("label");
+    label.textContent = `パート ${partIdx + 1}:`;
+    header.appendChild(label);
+    const nameInput = document.createElement("input");
+    nameInput.className = "split-section-name";
+    nameInput.value =
+      splitState.partNames.get(partIdx) ?? defaultPartName(partIdx);
+    nameInput.addEventListener("input", () => {
+      splitState.partNames.set(partIdx, nameInput.value);
+    });
+    header.appendChild(nameInput);
+    const meta = document.createElement("span");
+    meta.className = "split-section-meta";
+    meta.textContent = `(p.${part.start + 1}–${part.end + 1}, ${
+      part.end - part.start + 1
+    } ページ)`;
+    header.appendChild(meta);
+    section.appendChild(header);
+
+    const row = document.createElement("div");
+    row.className = "split-thumbs-row";
+    for (let i = part.start; i <= part.end; i++) {
+      const thumb = createThumbElement(pages[i]);
+      row.appendChild(thumb);
+      if (i < part.end) {
+        // Inner separator — click to split here.
+        const sep = document.createElement("div");
+        sep.className = "split-inner-sep";
+        sep.title = `ここで分割（${i + 1} と ${i + 2} の間）`;
+        sep.addEventListener("click", () => {
+          splitState.splitAfter.add(i);
+          // Reset partNames to defaults when topology changes (simpler than
+          // shifting indices).
+          splitState.partNames.clear();
+          rebuildSplitUI(pages);
+        });
+        row.appendChild(sep);
+      }
+    }
+    section.appendChild(row);
+
+    if (partIdx < parts.length - 1) {
+      // Active split mark between this part and the next — click to merge.
+      const mark = document.createElement("div");
+      mark.className = "split-active-mark";
+      mark.textContent = `— ▼ 分割中（クリックで結合） ▼ —`;
+      mark.addEventListener("click", () => {
+        splitState.splitAfter.delete(part.end);
+        splitState.partNames.clear();
+        rebuildSplitUI(pages);
+      });
+      section.appendChild(mark);
+    }
+
+    splitFlow.appendChild(section);
+  });
+}
+
+function createThumbElement(pageRow) {
+  const wrap = document.createElement("div");
+  wrap.className = "split-thumb";
+  const cached = splitState.thumbCache.get(pageRow.pageNo);
+  if (cached) {
+    // Clone: cached canvas may be reused elsewhere (rebuild) — DOM only
+    // allows one parent, so we draw into a fresh canvas.
+    const c = document.createElement("canvas");
+    c.width = cached.width;
+    c.height = cached.height;
+    c.getContext("2d").drawImage(cached, 0, 0);
+    wrap.appendChild(c);
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.style.width = "80px";
+    placeholder.style.height = "100px";
+    placeholder.style.background = "#eee";
+    placeholder.style.display = "flex";
+    placeholder.style.alignItems = "center";
+    placeholder.style.justifyContent = "center";
+    placeholder.textContent = String(pageRow.pageNo);
+    wrap.appendChild(placeholder);
+  }
+  const lbl = document.createElement("span");
+  lbl.className = "split-thumb-label";
+  lbl.textContent = `p.${pageRow.pageNo}`;
+  wrap.appendChild(lbl);
+  return wrap;
+}
+
+async function actionSplitSave() {
+  if (!isOpen) return;
+  const pages = await kpdf3.getPages();
+  if (pages.length === 0) return;
+
+  // Reset state for a fresh split session
+  splitState.splitAfter = new Set();
+  splitState.partNames = new Map();
+  // thumbCache is preserved across sessions (per workspace open)
+
+  splitFlow.innerHTML = "";
+  const progressNode = document.createElement("div");
+  progressNode.className = "split-progress";
+  progressNode.textContent = "サムネイルを準備中... 0 / " + pages.length;
+  splitFlow.appendChild(progressNode);
+  splitDialog.hidden = false;
+
+  await generateAllThumbnails(pages, ({ done, total }) => {
+    progressNode.textContent = `サムネイルを準備中... ${done} / ${total}`;
+  });
+
+  rebuildSplitUI(pages);
+}
+
+splitCancelBtn.addEventListener("click", () => {
+  splitDialog.hidden = true;
+});
+splitDialog.addEventListener("click", (e) => {
+  if (e.target === splitDialog) splitDialog.hidden = true;
+});
+
+splitConfirmBtn.addEventListener("click", async () => {
+  const pages = await kpdf3.getPages();
+  const parts = computeParts(pages.length, splitState.splitAfter);
+  const folder = await kpdf3.pickExportFolder();
+  if (!folder) return;
+
+  // Determine source basename for default filenames.
+  const meta = await kpdf3.getSourceMeta();
+  const sourceBase =
+    (meta?.fileName ?? "split").replace(/\.[^.]+$/, "");
+
+  splitDialog.hidden = true;
+  showBusy("分割保存", `0 / ${parts.length} パート`, 0);
+  try {
+    for (let p = 0; p < parts.length; p++) {
+      const part = parts[p];
+      const partName =
+        splitState.partNames.get(p) ?? defaultPartName(p);
+      const safeName = partName.replace(/[/\\:*?"<>|]/g, "_") || `part${p + 1}`;
+      const savePath = `${folder}/${sourceBase}_${safeName}.pdf`;
+
+      updateBusy(
+        `${p + 1} / ${parts.length} パート — ページを描画中...`,
+        (p / parts.length) * 100,
+      );
+      const filteredPages = pages.slice(part.start, part.end + 1);
+      const composed = await composePagesForExport({
+        pages: filteredPages,
+        projectStore,
+        renderPage: kpdf3.renderPage,
+        onProgress: ({ done, total }) => {
+          const partProgress = done / total;
+          updateBusy(
+            `${p + 1} / ${parts.length} パート — ${done} / ${total} ページ`,
+            ((p + partProgress) / parts.length) * 100,
+          );
+        },
+      });
+      await kpdf3.exportPdfRasterized({ savePath, pages: composed });
+    }
+    hideBusy();
+    wsStatus.textContent = `分割保存完了: ${parts.length} パート → ${folder}`;
+  } catch (err) {
+    hideBusy();
+    console.error("[renderer] split-save failed:", err);
+    wsStatus.textContent = `分割保存失敗: ${err.message ?? err}`;
+  }
+});
+
 async function actionExportRange() {
   if (!isOpen) return;
   const pages = await kpdf3.getPages();
@@ -1037,6 +1271,7 @@ const menuBar = new MenuBar({
     save: actionSave,
     export: actionExport,
     "export-range": actionExportRange,
+    "split-save": actionSplitSave,
     print: actionPrint,
     exit: actionExit,
     about: actionAbout,

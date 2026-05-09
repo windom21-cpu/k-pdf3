@@ -30,6 +30,7 @@
     <div class="menu-item disabled" data-action="save">上書き保存 (Ctrl+S)</div>
     <div class="menu-item disabled" data-action="export">PDF として書き出し (Ctrl+E)</div>
     <div class="menu-item disabled" data-action="export-range">範囲指定で書き出し...</div>
+    <div class="menu-item disabled" data-action="split-save">分割保存...</div>
     <div class="menu-item disabled" data-action="print">印刷... (Ctrl+P)</div>
     <div class="menu-separator"></div>
     <div class="menu-item" data-action="exit">終了</div>
@@ -76,6 +77,25 @@
         <p id="busy-message" class="busy-message">準備中...</p>
         <div class="progress-indicator">
           <span class="progress-indicator-bar" id="busy-progress-bar"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Split dialog (M5-6 V2 — visual page splitter with thumbnails) -->
+  <div class="busy-modal" id="split-dialog" hidden>
+    <div class="window split-window">
+      <div class="title-bar">
+        <div class="title-bar-text">分割保存</div>
+      </div>
+      <div class="window-body">
+        <p class="split-help">
+          区切り線（｜）をクリックするとそこで分割。点線（— ▼ —）をクリックすると結合。各パートに名前を付けて保存できます。
+        </p>
+        <div id="split-flow" class="split-flow"></div>
+        <div class="split-buttons">
+          <button id="split-confirm" class="default">フォルダを選んで保存</button>
+          <button id="split-cancel">キャンセル</button>
         </div>
       </div>
     </div>

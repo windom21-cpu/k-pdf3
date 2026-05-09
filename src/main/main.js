@@ -324,6 +324,16 @@ ipcMain.handle("kpdf3:copy-source-pdf", async (_, savePath) => {
   };
 });
 
+ipcMain.handle("kpdf3:pick-export-folder", async () => {
+  const dir = activeSourcePdfPath ? dirname(activeSourcePdfPath) : null;
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: "分割した PDF を保存するフォルダ",
+    defaultPath: dir ?? undefined,
+    properties: ["openDirectory", "createDirectory"],
+  });
+  return r.canceled ? null : r.filePaths[0];
+});
+
 ipcMain.handle("kpdf3:pick-export-pdf", async () => {
   // Default dir = the directory of the source PDF the user opened (so the
   // export sits next to its source); default name = the source PDF's
