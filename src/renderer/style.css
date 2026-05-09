@@ -358,7 +358,13 @@ button.toggled {
   text-align: center;
 }
 
-/* ---- Busy modal (export / print progress) ---- */
+/* ---- Busy modal (export / print progress) ----
+ *
+ * `display: flex` would override the default UA `[hidden] { display: none }`
+ * (CSS specificity wins over HTML attribute), so the modal stayed visible
+ * permanently. Explicit `[hidden]` rule below restores the expected
+ * "hidden by default" behaviour.
+ */
 .busy-modal {
   position: fixed;
   inset: 0;
@@ -367,6 +373,9 @@ button.toggled {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.busy-modal[hidden] {
+  display: none;
 }
 .busy-window {
   width: 360px;
