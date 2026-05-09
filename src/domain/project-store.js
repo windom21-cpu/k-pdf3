@@ -93,6 +93,15 @@ export class ProjectStore {
     return this._byId.size;
   }
 
+  /**
+   * Flat snapshot of all overlays in insertion order (Map iteration order).
+   * Used by the renderer to hand a save payload to main on Ctrl+S.
+   * @returns {Overlay[]}
+   */
+  snapshot() {
+    return Array.from(this._byId.values());
+  }
+
   /** True when any mutation has occurred since construction / reset / markClean. */
   isDirty() {
     return this._dirty;

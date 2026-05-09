@@ -35,6 +35,7 @@ const viewer = new Viewer(viewerContainer, {
 
 let isOpen = false;
 let isEditMode = false;
+let activeSourceName = "";
 
 function handlePagePointerDown(pageNo, x, y) {
   if (!isOpen || !isEditMode) return;
@@ -71,6 +72,20 @@ function setOpen(open) {
   btnEditMode.disabled = !open;
   if (!open) setEditMode(false);
   refreshMenuState();
+  refreshDirtyIndicator();
+}
+
+/** Refresh the title bar / file label / status bar to reflect the dirty flag. */
+function refreshDirtyIndicator() {
+  const dirty = isOpen && projectStore.isDirty();
+  const prefix = dirty ? "● " : "";
+  if (isOpen) {
+    wsLabel.textContent = `${prefix}${activeSourceName}`;
+    document.title = `${prefix}${activeSourceName || "K-PDF3"} — K-PDF3`;
+  } else {
+    wsLabel.textContent = "";
+    document.title = "K-PDF3";
+  }
 }
 
 /**
@@ -81,11 +96,10 @@ function refreshMenuState() {
   menuBar.setEnabled({
     open: !isOpen,
     close: isOpen,
-    // M3-2: undo/redo wired
+    save: isOpen && projectStore.isDirty(),
     undo: isOpen && history.canUndo(),
     redo: isOpen && history.canRedo(),
     // Still M3+ stubs
-    save: false,
     export: false,
     cut: false,
     copy: false,
@@ -98,28 +112,43 @@ function refreshMenuState() {
 }
 
 history.subscribe(() => refreshMenuState());
+projectStore.subscribe(() => {
+  refreshDirtyIndicator();
+  refreshMenuState();
+});
 
 async function refreshViewer() {
   if (!isOpen) {
-    wsLabel.textContent = "";
+    activeSourceName = "";
     wsStatus.textContent = "PDF を「開く」で読み込みます";
     viewer.unload();
+    refreshDirtyIndicator();
     return;
   }
   const meta = await kpdf3.getSourceMeta();
   const pages = await kpdf3.getPages();
   if (!meta || pages.length === 0) {
-    wsLabel.textContent = "";
+    activeSourceName = "";
     wsStatus.textContent = "(PDF が読み込めませんでした)";
     viewer.unload();
+    refreshDirtyIndicator();
     return;
   }
-  wsLabel.textContent = meta.fileName ?? "";
+  activeSourceName = meta.fileName ?? "";
   wsStatus.textContent = `${pages.length} ページ`;
   viewer.load(pages);
+  refreshDirtyIndicator();
+}
+
+function confirmDiscardIfDirty() {
+  if (!projectStore.isDirty()) return true;
+  return window.confirm(
+    "未保存の変更があります。\n変更を破棄して続行しますか？",
+  );
 }
 
 async function actionOpen() {
+  if (!confirmDiscardIfDirty()) return;
   const pdfPath = await kpdf3.pickPdf();
   if (!pdfPath) return;
   try {
@@ -135,11 +164,29 @@ async function actionOpen() {
 }
 
 async function actionClose() {
+  if (!confirmDiscardIfDirty()) return;
   await kpdf3.closeWorkspace();
   projectStore.reset([]);
   history.clear();
   setOpen(false);
   await refreshViewer();
+}
+
+async function actionSave() {
+  if (!isOpen) return;
+  // No-op when nothing has changed since the last save.
+  if (!projectStore.isDirty()) return;
+  try {
+    const snapshot = projectStore.snapshot();
+    await kpdf3.saveOverlays(snapshot);
+    projectStore.markClean();
+    refreshDirtyIndicator();
+    refreshMenuState();
+    wsStatus.textContent = `保存しました (${snapshot.length} overlays)`;
+  } catch (err) {
+    console.error("[renderer] saveOverlays failed:", err);
+    wsStatus.textContent = `保存失敗: ${err.message ?? err}`;
+  }
 }
 
 function actionUndo() {
@@ -178,6 +225,7 @@ const menuBar = new MenuBar({
   actions: {
     open: actionOpen,
     close: actionClose,
+    save: actionSave,
     exit: actionExit,
     about: actionAbout,
     undo: actionUndo,
@@ -199,6 +247,17 @@ window.addEventListener("keydown", (e) => {
   } else if ((key === "z" && e.shiftKey) || key === "y") {
     e.preventDefault();
     actionRedo();
+  } else if (key === "s") {
+    e.preventDefault();
+    actionSave();
+  }
+});
+
+// Warn before reloading / closing the window if there are unsaved changes.
+window.addEventListener("beforeunload", (e) => {
+  if (projectStore.isDirty()) {
+    e.preventDefault();
+    e.returnValue = "";
   }
 });
 
