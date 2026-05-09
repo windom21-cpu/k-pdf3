@@ -413,16 +413,25 @@ export class Viewer {
       canvas.style.display = "block";
       canvas.getContext("2d").putImageData(imageData, 0, 0);
 
-      div.replaceChildren(canvas);
+      // Replace ONLY the placeholder; keep the overlay layer if it's
+      // already there. Insert the canvas before .overlay-layer so the
+      // overlay paints on top.
+      const placeholder = div.querySelector(":scope > .page-placeholder");
+      if (placeholder) placeholder.remove();
+      const overlayLayer = div.querySelector(":scope > .overlay-layer");
+      if (overlayLayer) div.insertBefore(canvas, overlayLayer);
+      else div.appendChild(canvas);
       this.canvasEls.set(pageNo, canvas);
     } catch (err) {
       console.error(`[viewer] render page ${pageNo} failed:`, err);
       const div = this.pageEls.get(pageNo);
       if (div) {
+        const placeholder = div.querySelector(":scope > .page-placeholder");
         const failNote = document.createElement("span");
         failNote.className = "page-placeholder page-error";
         failNote.textContent = `page ${pageNo}: render failed`;
-        div.replaceChildren(failNote);
+        if (placeholder) placeholder.replaceWith(failNote);
+        else div.insertBefore(failNote, div.firstChild);
       }
     } finally {
       this.pendingRenders.delete(pageNo);
