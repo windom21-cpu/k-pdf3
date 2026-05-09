@@ -1,103 +1,138 @@
-/* K-PDF3 M2 viewer styles. 98.css integration lands in M6. */
+/* K-PDF3 viewer — sits on top of 98.css for a Win95 look (ADR-0006).
+ * 98.css supplies button / title-bar / status-bar styling; this file only
+ * adds the viewer layout and page placeholder bits.
+ */
 
 * { box-sizing: border-box; }
 
 html, body {
   margin: 0;
   height: 100%;
-  font-family: "Kosugi", "MS UI Gothic", "Hiragino Kaku Gothic ProN", sans-serif;
   background: #c0c0c0;
-  color: #111;
 }
 
 body {
   display: flex;
   flex-direction: column;
+  /* Fall through to 98.css's font for the rest of the chrome. */
 }
 
-/* ----- Title bar ----- */
+/* ---- Title bar ---- */
 .title-bar {
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: #000080;
-  color: #fff;
-  padding: 4px 8px;
-  font-weight: bold;
-  font-size: 12px;
-}
-.appinfo {
-  font-size: 11px;
-  opacity: 0.85;
-  font-weight: normal;
+  /* 98.css supplies the actual look */
 }
 
-/* ----- Toolbar ----- */
+/* ---- Menu bar ---- */
+.menu-bar {
+  flex: 0 0 auto;
+  display: flex;
+  background: #c0c0c0;
+  border-bottom: 1px solid #808080;
+  font-family: "Pixelated MS Sans Serif", Arial;
+  font-size: 11px;
+  user-select: none;
+}
+.menu-bar-item {
+  padding: 3px 10px;
+  cursor: default;
+}
+.menu-bar-item:hover,
+.menu-bar-item.active {
+  background: #000080;
+  color: #ffffff;
+}
+.menu-bar-item.active u {
+  border-bottom-color: #ffffff;
+}
+
+.menu-dropdown {
+  position: absolute;
+  background: #c0c0c0;
+  border: 1px solid;
+  border-color: #ffffff #808080 #808080 #ffffff;
+  box-shadow: 1px 1px 0 #000000;
+  font-family: "Pixelated MS Sans Serif", Arial;
+  font-size: 11px;
+  min-width: 180px;
+  padding: 2px;
+  z-index: 1000;
+  user-select: none;
+}
+.menu-item {
+  padding: 3px 18px;
+  cursor: default;
+  white-space: nowrap;
+}
+.menu-item:hover:not(.disabled) {
+  background: #000080;
+  color: #ffffff;
+}
+.menu-item.disabled {
+  color: #808080;
+  text-shadow: 1px 1px 0 #ffffff;
+  cursor: default;
+}
+.menu-separator {
+  height: 0;
+  border-top: 1px solid #808080;
+  border-bottom: 1px solid #ffffff;
+  margin: 3px 2px;
+}
+
+/* ---- Toolbar (custom row of 98.css buttons) ---- */
 .toolbar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: 6px;
+  padding: 4px 6px;
   background: #c0c0c0;
   border-bottom: 1px solid #808080;
-  font-size: 12px;
+  font-size: 11px;
+}
+.toolbar button {
+  min-width: 75px;
 }
 .ws-label {
-  font-weight: bold;
   margin-left: 8px;
-}
-.ws-status {
-  margin-left: auto;
-  color: #444;
+  font-weight: bold;
+  /* 98.css's bitmap font handles the rest */
 }
 
-/* ----- 98-style buttons ----- */
-button {
-  font-family: inherit;
-  font-size: 12px;
-  padding: 4px 12px;
-  background: #c0c0c0;
-  border: 1px solid;
-  border-color: #fff #808080 #808080 #fff;
-  cursor: pointer;
-}
-button:active:not(:disabled) {
-  border-color: #808080 #fff #fff #808080;
-}
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* ----- Viewer ----- */
+/* ---- Viewer area ---- */
 .viewer-container {
   flex: 1 1 auto;
   overflow-y: auto;
-  background: #6e6e6e;
+  background: #5b5b5b;
   padding: 16px 0;
-  /* 98-inset border feel */
-  border-top: 1px solid #404040;
-  border-bottom: 1px solid #404040;
+  /* Inset border for "client area" feel */
+  border-top: 2px solid;
+  border-top-color: #808080 #ffffff #ffffff #808080;
+  box-shadow: inset 1px 1px 0 #404040, inset -1px -1px 0 #c0c0c0;
 }
 
 .viewer-page {
-  background: #fff;
-  box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.4);
+  background: #ffffff;
+  /* Subtle 98-ish drop shadow */
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .page-placeholder {
-  font-family: "MS UI Gothic", monospace;
+  font-family: "Pixelated MS Sans Serif", "MS Sans Serif", monospace;
   font-size: 24px;
   color: #b0b0b0;
   user-select: none;
 }
-
 .page-error {
-  color: #c00;
-  font-size: 12px;
+  color: #b00;
+  font-size: 11px;
+}
+
+/* ---- Status bar ---- */
+.status-bar {
+  flex: 0 0 auto;
 }

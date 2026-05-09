@@ -10,12 +10,26 @@
 
 import { app, BrowserWindow, ipcMain, dialog, Menu } from "electron";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
+import { existsSync } from "node:fs";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
 import { renderPageCanonical } from "./render-service.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Compute the sidecar `.kpdf3` path for a given PDF path.
+ * Same directory, same basename, extension swapped to `.kpdf3`.
+ *
+ *   /path/to/foo.pdf  →  /path/to/foo.kpdf3
+ *   /path/to/FOO.PDF  →  /path/to/FOO.kpdf3
+ */
+function sidecarKpdf3Path(pdfPath) {
+  const ext = extname(pdfPath);
+  const stem = basename(pdfPath, ext);
+  return join(dirname(pdfPath), `${stem}.kpdf3`);
+}
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
@@ -166,6 +180,43 @@ ipcMain.handle("kpdf3:import-pdf", async (_, pdfPath) => {
   const info = await activeWorkspace.importPdfFromFile(pdfPath);
   reopenActiveDoc();
   return info;
+});
+
+/**
+ * Combined "open" entry point for the PDF-first UX (ADR-0006).
+ *
+ *   1. Resolve the sidecar `.kpdf3` next to the PDF.
+ *   2. If it exists, open it (with verifyWorkspace).
+ *   3. If it doesn't, create a fresh workspace and import the PDF.
+ *   4. Either way, open the mupdf doc and cache page rows.
+ *
+ * Returns `{ sidecarPath, pdfPath, pageCount, isNew }`.
+ */
+ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath) => {
+  const sidecarPath = sidecarKpdf3Path(pdfPath);
+
+  disposeActiveDoc();
+  if (activeWorkspace) {
+    activeWorkspace.close();
+    activeWorkspace = null;
+  }
+
+  let isNew;
+  if (existsSync(sidecarPath)) {
+    activeWorkspace = Workspace.open(sidecarPath);
+    isNew = false;
+  } else {
+    activeWorkspace = Workspace.create(sidecarPath);
+    await activeWorkspace.importPdfFromFile(pdfPath);
+    isNew = true;
+  }
+  reopenActiveDoc();
+  return {
+    sidecarPath,
+    pdfPath,
+    pageCount: activeWorkspace.getSourceMeta()?.pageCount ?? 0,
+    isNew,
+  };
 });
 
 ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {

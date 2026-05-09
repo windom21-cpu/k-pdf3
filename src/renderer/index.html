@@ -3,24 +3,70 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>K-PDF3 v2.0.0 (M2)</title>
+  <title>K-PDF3</title>
+  <link rel="stylesheet" href="./vendor/98.css" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <header class="title-bar">
-    <span class="title-bar-text">K-PDF3 — 法律実務向け PDF Workspace</span>
-    <span id="appinfo" class="appinfo"></span>
-  </header>
-  <nav class="toolbar">
-    <button id="btn-new">新規 + PDF 取込</button>
-    <button id="btn-open">既存を開く</button>
+  <div class="title-bar">
+    <div class="title-bar-text">K-PDF3 — 法律実務向け PDF Workspace</div>
+    <div class="title-bar-controls">
+      <!-- Window controls reserved for future use (M3 menu / multi-window) -->
+    </div>
+  </div>
+
+  <div class="menu-bar" id="menu-bar">
+    <div class="menu-bar-item" data-menu="file">ファイル(<u>F</u>)</div>
+    <div class="menu-bar-item" data-menu="edit">編集(<u>E</u>)</div>
+    <div class="menu-bar-item" data-menu="view">表示(<u>V</u>)</div>
+    <div class="menu-bar-item" data-menu="help">ヘルプ(<u>H</u>)</div>
+  </div>
+
+  <div class="menu-dropdown" id="menu-file" hidden>
+    <div class="menu-item" data-action="open">開く...</div>
+    <div class="menu-item disabled" data-action="close">閉じる</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="save">上書き保存</div>
+    <div class="menu-item disabled" data-action="export">PDF として書き出し</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item" data-action="exit">終了</div>
+  </div>
+
+  <div class="menu-dropdown" id="menu-edit" hidden>
+    <div class="menu-item disabled" data-action="undo">元に戻す</div>
+    <div class="menu-item disabled" data-action="redo">やり直し</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="cut">切り取り</div>
+    <div class="menu-item disabled" data-action="copy">コピー</div>
+    <div class="menu-item disabled" data-action="paste">貼り付け</div>
+  </div>
+
+  <div class="menu-dropdown" id="menu-view" hidden>
+    <div class="menu-item disabled" data-action="zoom-in">拡大</div>
+    <div class="menu-item disabled" data-action="zoom-out">縮小</div>
+    <div class="menu-item disabled" data-action="zoom-fit">ウィンドウに合わせる</div>
+    <div class="menu-item disabled" data-action="zoom-100">100%</div>
+  </div>
+
+  <div class="menu-dropdown" id="menu-help" hidden>
+    <div class="menu-item" data-action="about">バージョン情報</div>
+  </div>
+
+  <div class="toolbar">
+    <button id="btn-open">開く</button>
     <button id="btn-close" disabled>閉じる</button>
-    <span class="ws-label" id="ws-label"></span>
-    <span class="ws-status" id="ws-status">(no workspace)</span>
-  </nav>
+    <span id="ws-label" class="ws-label"></span>
+  </div>
+
   <main id="viewer-container" class="viewer-container">
     <!-- Page DOM is built dynamically by viewer.js -->
   </main>
+
+  <div class="status-bar">
+    <p class="status-bar-field" id="ws-status">PDF を「開く」で読み込みます</p>
+    <p class="status-bar-field" id="appinfo"></p>
+  </div>
+
   <script type="module" src="./renderer.js"></script>
 </body>
 </html>
