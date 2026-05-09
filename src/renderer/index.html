@@ -51,6 +51,8 @@
     <div class="menu-item disabled" data-action="page-prev">前のページ (PageUp)</div>
     <div class="menu-item disabled" data-action="page-next">次のページ (PageDown)</div>
     <div class="menu-item disabled" data-action="page-goto">ページ移動... (Ctrl+G)</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="toggle-bookmarks">しおり (F4)</div>
   </div>
 
   <div class="menu-dropdown" id="menu-help" hidden>
@@ -72,9 +74,15 @@
     <span id="ws-label" class="ws-label"></span>
   </div>
 
-  <main id="viewer-container" class="viewer-container">
-    <!-- Page DOM is built dynamically by viewer.js -->
-  </main>
+  <div class="main-area">
+    <aside id="sidebar" class="sidebar" hidden>
+      <div class="sidebar-header">しおり</div>
+      <ul id="bookmark-tree" class="bookmark-tree"></ul>
+    </aside>
+    <main id="viewer-container" class="viewer-container">
+      <!-- Page DOM is built dynamically by viewer.js -->
+    </main>
+  </div>
 
   <div class="status-bar">
     <p class="status-bar-field" id="ws-status">PDF を「開く」で読み込みます</p>

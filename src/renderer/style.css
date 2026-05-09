@@ -116,6 +116,58 @@ button.toggled {
     inset 2px 2px grey;
 }
 
+/* ---- Main area (sidebar + viewer) ---- */
+.main-area {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.sidebar {
+  flex: 0 0 220px;
+  background: #c0c0c0;
+  border-right: 1px solid #808080;
+  overflow-y: auto;
+  font-family: "Pixelated MS Sans Serif", Arial;
+  font-size: 11px;
+}
+.sidebar-header {
+  padding: 3px 6px;
+  background: #000080;
+  color: #ffffff;
+  font-weight: bold;
+  position: sticky;
+  top: 0;
+}
+.bookmark-tree,
+.bookmark-children {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+.bookmark-children {
+  padding-left: 10px;
+  border-left: 1px dotted #808080;
+  margin-left: 6px;
+}
+.bookmark-item {
+  cursor: default;
+  padding: 2px 8px;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bookmark-item:hover {
+  background: #000080;
+  color: #ffffff;
+}
+.bookmark-empty {
+  padding: 8px;
+  color: #808080;
+  font-style: italic;
+}
+
 /* ---- Viewer area ---- */
 .viewer-container {
   flex: 1 1 auto;

@@ -21,7 +21,11 @@ import {
   listExports,
 } from "../backend/sqlite-store.js";
 import { createHash, randomUUID } from "node:crypto";
-import { extractPdfInfo, computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
+import {
+  extractPdfInfo,
+  computePdfFingerprint,
+  extractOutline,
+} from "../backend/mupdf-pdf-info.js";
 
 /**
  * Workspace handle. Wraps an open SQLite db and exposes domain-friendly methods.
@@ -187,5 +191,20 @@ export class Workspace {
   /** Return the exports audit log (newest first), metadata only. */
   listExports() {
     return listExports(this.db);
+  }
+
+  // ---- Outline / bookmarks (M5-5) -----------------------------------
+
+  /**
+   * Read the source PDF's /Outlines (bookmarks) as a flat hierarchy.
+   * Pure read-through to mupdf — bookmarks aren't yet persisted into the
+   * workspace itself (M6 will add an editable copy).
+   *
+   * @returns {import("../backend/mupdf-pdf-info.js").OutlineNode[]}
+   */
+  getOutline() {
+    const bytes = this.getSourceBytes();
+    if (!bytes) return [];
+    return extractOutline(bytes);
   }
 }

@@ -277,6 +277,11 @@ ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath) => {
   };
 });
 
+ipcMain.handle("kpdf3:get-outline", async () => {
+  if (!activeWorkspace) return [];
+  return activeWorkspace.getOutline();
+});
+
 ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   activeWorkspace.saveOverlays(overlays);

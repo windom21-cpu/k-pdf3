@@ -149,3 +149,38 @@ export async function computePdfFingerprint(data) {
   hash.update(data);
   return hash.digest("hex");
 }
+
+/**
+ * @typedef {object} OutlineNode
+ * @property {string} title
+ * @property {number | null} pageNo   1-based, null if the entry doesn't link to a page
+ * @property {OutlineNode[]} children
+ */
+
+/**
+ * Extract the PDF /Outlines hierarchy as a clean tree (1-based pageNo,
+ * recursive children, no mupdf-specific shape).
+ *
+ * @param {Buffer | Uint8Array | ArrayBuffer} data
+ * @returns {OutlineNode[]}
+ */
+export function extractOutline(data) {
+  const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const doc = mupdf.Document.openDocument(buf, "application/pdf");
+  try {
+    const items = doc.loadOutline();
+    return convertOutline(items);
+  } finally {
+    doc.destroy();
+  }
+}
+
+function convertOutline(items) {
+  if (!items || !Array.isArray(items)) return [];
+  return items.map((item) => ({
+    title: item.title ?? "",
+    // mupdf uses 0-based page indices; we surface 1-based to the renderer.
+    pageNo: typeof item.page === "number" ? item.page + 1 : null,
+    children: convertOutline(item.down),
+  }));
+}

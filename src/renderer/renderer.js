@@ -35,6 +35,8 @@ const wsLabel = $("ws-label");
 const wsStatus = $("ws-status");
 const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
+const sidebar = $("sidebar");
+const bookmarkTree = $("bookmark-tree");
 
 const viewer = new Viewer(viewerContainer, {
   projectStore,
@@ -385,6 +387,7 @@ function refreshMenuState() {
       !!viewer.registry &&
       viewer.currentPage < viewer.registry.count(),
     "page-goto": isOpen,
+    "toggle-bookmarks": isOpen,
     export: isOpen,
     print: isOpen,
     // Still M5+ stubs (clipboard)
@@ -415,6 +418,8 @@ async function refreshViewer() {
     activeSourceName = "";
     wsStatus.textContent = "PDF を「開く」で読み込みます";
     viewer.unload();
+    sidebar.hidden = true;
+    bookmarkTree.innerHTML = "";
     refreshDirtyIndicator();
     return;
   }
@@ -424,12 +429,15 @@ async function refreshViewer() {
     activeSourceName = "";
     wsStatus.textContent = "(PDF が読み込めませんでした)";
     viewer.unload();
+    sidebar.hidden = true;
+    bookmarkTree.innerHTML = "";
     refreshDirtyIndicator();
     return;
   }
   activeSourceName = meta.fileName ?? "";
   wsStatus.textContent = `${pages.length} ページ`;
   viewer.load(pages);
+  refreshBookmarks();
   refreshDirtyIndicator();
 }
 
@@ -630,6 +638,55 @@ function actionPageGoto() {
   viewer.scrollToPage(n);
 }
 
+// ---- Bookmarks sidebar (M5-5) ----------------------------------------
+
+async function refreshBookmarks() {
+  bookmarkTree.innerHTML = "";
+  if (!isOpen) return;
+  const outline = await kpdf3.getOutline();
+  if (!outline || outline.length === 0) {
+    const li = document.createElement("li");
+    li.className = "bookmark-empty";
+    li.textContent = "(しおりがありません)";
+    bookmarkTree.appendChild(li);
+    return;
+  }
+  for (const item of outline) {
+    bookmarkTree.appendChild(createBookmarkNode(item));
+  }
+}
+
+function createBookmarkNode(item) {
+  const li = document.createElement("li");
+  li.className = "bookmark-item";
+  li.textContent = item.title || "(無題)";
+  if (typeof item.pageNo === "number" && item.pageNo > 0) {
+    li.dataset.pageNo = String(item.pageNo);
+    li.title = `${item.title} (p.${item.pageNo})`;
+    li.addEventListener("click", (e) => {
+      e.stopPropagation();
+      viewer.scrollToPage(item.pageNo);
+    });
+  } else {
+    li.style.color = "#666";
+  }
+  if (Array.isArray(item.children) && item.children.length > 0) {
+    const ul = document.createElement("ul");
+    ul.className = "bookmark-children";
+    for (const child of item.children) {
+      ul.appendChild(createBookmarkNode(child));
+    }
+    li.appendChild(ul);
+  }
+  return li;
+}
+
+function actionToggleBookmarks() {
+  if (!isOpen) return;
+  sidebar.hidden = !sidebar.hidden;
+  refreshMenuState();
+}
+
 async function actionAbout() {
   const info = await kpdf3.getAppInfo();
   const lines = [
@@ -672,6 +729,7 @@ const menuBar = new MenuBar({
     "page-prev": actionPagePrev,
     "page-next": actionPageNext,
     "page-goto": actionPageGoto,
+    "toggle-bookmarks": actionToggleBookmarks,
   },
 });
 
@@ -736,6 +794,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 // PageUp / PageDown for page navigation (no Ctrl required, like a PDF viewer).
+// F4 toggles the bookmarks sidebar.
 window.addEventListener("keydown", (e) => {
   if (!isOpen) return;
   const target = e.target;
@@ -752,6 +811,9 @@ window.addEventListener("keydown", (e) => {
   } else if (e.key === "PageDown") {
     e.preventDefault();
     actionPageNext();
+  } else if (e.key === "F4") {
+    e.preventDefault();
+    actionToggleBookmarks();
   }
 });
 
