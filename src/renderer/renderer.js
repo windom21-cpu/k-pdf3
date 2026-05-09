@@ -42,6 +42,7 @@ const viewer = new Viewer(viewerContainer, {
   onOverlayClick: handleOverlayClick,
   onTextEditCommit: handleTextEditCommit,
   onOverlayDragEnd: handleOverlayDragEnd,
+  onOverlayResizeEnd: handleOverlayResizeEnd,
   onOverlayContextMenu: showOverlayContextMenu,
   onPageChange: updatePageIndicator,
 });
@@ -247,6 +248,21 @@ function handleOverlayDragEnd(id, newX, newY) {
   history.execute(
     new UpdateOverlayCommand(projectStore, id, { x: newX, y: newY }),
   );
+}
+
+function handleOverlayResizeEnd(id, bbox) {
+  if (!isOpen) return;
+  const ov = projectStore.get(id);
+  if (!ov) return;
+  if (
+    ov.x === bbox.x &&
+    ov.y === bbox.y &&
+    ov.w === bbox.w &&
+    ov.h === bbox.h
+  ) {
+    return;
+  }
+  history.execute(new UpdateOverlayCommand(projectStore, id, bbox));
 }
 
 // ---- Overlay context menu (right-click) ------------------------------

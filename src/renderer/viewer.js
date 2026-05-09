@@ -31,6 +31,7 @@ export class Viewer {
    * @param {(overlayId: string) => void} [opts.onOverlayClick]
    * @param {(overlayId: string, newText: string) => void} [opts.onTextEditCommit]
    * @param {(overlayId: string, newX: number, newY: number) => void} [opts.onOverlayDragEnd]
+   * @param {(overlayId: string, bbox: { x: number, y: number, w: number, h: number }) => void} [opts.onOverlayResizeEnd]
    * @param {(overlayId: string, clientX: number, clientY: number) => void} [opts.onOverlayContextMenu]
    * @param {(currentPage: number, totalPages: number) => void} [opts.onPageChange]
    */
@@ -41,6 +42,7 @@ export class Viewer {
     this.onOverlayClick = opts.onOverlayClick ?? null;
     this.onTextEditCommit = opts.onTextEditCommit ?? null;
     this.onOverlayDragEnd = opts.onOverlayDragEnd ?? null;
+    this.onOverlayResizeEnd = opts.onOverlayResizeEnd ?? null;
     this.onOverlayContextMenu = opts.onOverlayContextMenu ?? null;
     this.onPageChange = opts.onPageChange ?? null;
     /** @type {number} 1-based; 0 means "no page yet" */
@@ -335,6 +337,7 @@ export class Viewer {
       el.style.fontSize = `${fontSize}px`;
       el.style.color = props.color ?? "#000000";
       this._attachOverlayPointer(el, ov);
+      this._attachResizeHandles(el, ov);
       return el;
     }
 
@@ -350,6 +353,7 @@ export class Viewer {
       const frame = props.frame ?? "circle";
       el.classList.add(`overlay-stamp-${frame}`);
       this._attachOverlayPointer(el, ov);
+      this._attachResizeHandles(el, ov);
       return el;
     }
 
@@ -365,6 +369,7 @@ export class Viewer {
       // so it's visually distinct from text/stamp overlays.
       el.classList.add("overlay-redaction-marker");
       this._attachOverlayPointer(el, ov);
+      this._attachResizeHandles(el, ov);
       return el;
     }
 
@@ -471,6 +476,123 @@ export class Viewer {
       e.stopPropagation();
       this.onOverlayContextMenu(ov.id, e.clientX, e.clientY);
     });
+  }
+
+  /**
+   * Attach 4-corner resize handles to an overlay element. Handles are
+   * hidden by default and shown on hover (CSS). pointerdown on a handle
+   * captures the pointer, lives-mutates the overlay's inline left/top/
+   * width/height, and on pointerup fires onOverlayResizeEnd with the
+   * final canonical bbox.
+   *
+   * Like _attachOverlayPointer, this short-circuits while the overlay
+   * is in inline-edit so resize doesn't disturb a contenteditable
+   * selection.
+   *
+   * @param {HTMLElement} el
+   * @param {import("../domain/project-store.js").Overlay} ov
+   */
+  _attachResizeHandles(el, ov) {
+    const MIN = 5; // PDF point — anything smaller is impossible to grab
+    for (const corner of ["nw", "ne", "sw", "se"]) {
+      const handle = document.createElement("div");
+      handle.className = `overlay-handle overlay-handle-${corner}`;
+      handle.dataset.corner = corner;
+
+      handle.addEventListener("pointerdown", (e) => {
+        if (el.classList.contains("editing")) return;
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        e.preventDefault();
+        const z = this.zoom;
+        const start = {
+          clientX: e.clientX,
+          clientY: e.clientY,
+          x: parseFloat(el.style.left) / z,
+          y: parseFloat(el.style.top) / z,
+          w: parseFloat(el.style.width) / z,
+          h: parseFloat(el.style.height) / z,
+        };
+        const pointerId = e.pointerId;
+        try {
+          handle.setPointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
+        el.classList.add("resizing");
+
+        const onMove = (ev) => {
+          if (ev.pointerId !== pointerId) return;
+          const dx = (ev.clientX - start.clientX) / z;
+          const dy = (ev.clientY - start.clientY) / z;
+          let { x, y, w, h } = start;
+          if (corner.includes("w")) {
+            x = start.x + dx;
+            w = start.w - dx;
+            if (w < MIN) {
+              x = start.x + start.w - MIN;
+              w = MIN;
+            }
+          } else if (corner.includes("e")) {
+            w = Math.max(start.w + dx, MIN);
+          }
+          if (corner.includes("n")) {
+            y = start.y + dy;
+            h = start.h - dy;
+            if (h < MIN) {
+              y = start.y + start.h - MIN;
+              h = MIN;
+            }
+          } else if (corner.includes("s")) {
+            h = Math.max(start.h + dy, MIN);
+          }
+          el.style.left = `${x * z}px`;
+          el.style.top = `${y * z}px`;
+          el.style.width = `${w * z}px`;
+          el.style.height = `${h * z}px`;
+        };
+
+        const onUp = (ev) => {
+          if (ev.pointerId !== pointerId) return;
+          try {
+            handle.releasePointerCapture(pointerId);
+          } catch {
+            /* ignore */
+          }
+          handle.removeEventListener("pointermove", onMove);
+          handle.removeEventListener("pointerup", onUp);
+          handle.removeEventListener("pointercancel", onCancel);
+          el.classList.remove("resizing");
+          if (!this.onOverlayResizeEnd) return;
+          const bbox = {
+            x: parseFloat(el.style.left) / z,
+            y: parseFloat(el.style.top) / z,
+            w: parseFloat(el.style.width) / z,
+            h: parseFloat(el.style.height) / z,
+          };
+          this.onOverlayResizeEnd(ov.id, bbox);
+        };
+
+        const onCancel = (ev) => {
+          if (ev.pointerId !== pointerId) return;
+          handle.removeEventListener("pointermove", onMove);
+          handle.removeEventListener("pointerup", onUp);
+          handle.removeEventListener("pointercancel", onCancel);
+          // Restore original
+          el.style.left = `${start.x * z}px`;
+          el.style.top = `${start.y * z}px`;
+          el.style.width = `${start.w * z}px`;
+          el.style.height = `${start.h * z}px`;
+          el.classList.remove("resizing");
+        };
+
+        handle.addEventListener("pointermove", onMove);
+        handle.addEventListener("pointerup", onUp);
+        handle.addEventListener("pointercancel", onCancel);
+      });
+
+      el.appendChild(handle);
+    }
   }
 
   /**
