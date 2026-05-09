@@ -740,6 +740,51 @@ function parsePageRange(input, total) {
 const splitFlow = $("split-flow");
 const splitConfirmBtn = $("split-confirm");
 const splitCancelBtn = $("split-cancel");
+const thumbSizeSlider = $("thumb-size");
+const thumbSizeDisplay = $("thumb-size-display");
+const datePrefixToggle = $("date-prefix-toggle");
+const datePrefixPreview = $("date-prefix-preview");
+
+/** YYMMDD format for filename prefixes (e.g., 2026-05-09 → "260509"). */
+function getDateYYMMDD(d = new Date()) {
+  const yy = String(d.getFullYear() % 100).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
+// Refresh the preview number in the toggle label every time we enter
+// split mode, so a user who left the dialog open across midnight sees
+// the new date.
+function refreshDatePrefixPreview() {
+  if (datePrefixPreview) datePrefixPreview.textContent = getDateYYMMDD();
+}
+
+thumbSizeSlider.addEventListener("input", () => {
+  const w = thumbSizeSlider.value;
+  document.documentElement.style.setProperty("--split-thumb-width", `${w}px`);
+  thumbSizeDisplay.textContent = `${w}px`;
+});
+
+datePrefixToggle.addEventListener("change", () => {
+  const date = getDateYYMMDD();
+  const on = datePrefixToggle.checked;
+  // Update both the live <input> values and the splitState backing map
+  // so a subsequent rebuild keeps the prefix.
+  const inputs = splitFlow.querySelectorAll(".split-section-name");
+  inputs.forEach((input, idx) => {
+    if (on) {
+      if (!input.value.startsWith(date)) {
+        input.value = date + input.value;
+      }
+    } else {
+      // Strip a leading 6-digit run if it matches today's date, OR if
+      // it's any 6-digit prefix the toggle previously added.
+      input.value = input.value.replace(/^\d{6}/, "");
+    }
+    splitState.partNames.set(idx, input.value);
+  });
+});
 
 /** @type {Set<number>} 0-based page indices: split AFTER index i */
 const splitState = {
@@ -762,8 +807,14 @@ function computeParts(totalPages, splitAfter) {
   return parts;
 }
 
-function defaultPartName(idx) {
-  return `part${idx + 1}`;
+/**
+ * Default value for a part-name input. Empty by user request — the
+ * placeholder hints at "name your part". When the date-prefix toggle is
+ * on, new sections inherit today's date as their starting value so the
+ * UX matches "everything gets the prefix when toggle is on".
+ */
+function defaultPartName() {
+  return datePrefixToggle?.checked ? getDateYYMMDD() : "";
 }
 
 async function generateAllThumbnails(pages, onProgress) {
@@ -805,8 +856,9 @@ function rebuildSplitUI(pages) {
     header.appendChild(label);
     const nameInput = document.createElement("input");
     nameInput.className = "split-section-name";
+    nameInput.placeholder = `(パート ${partIdx + 1} の名前)`;
     nameInput.value =
-      splitState.partNames.get(partIdx) ?? defaultPartName(partIdx);
+      splitState.partNames.get(partIdx) ?? defaultPartName();
     nameInput.addEventListener("input", () => {
       splitState.partNames.set(partIdx, nameInput.value);
     });
@@ -918,6 +970,7 @@ async function actionSplitSave() {
   progressNode.textContent = "サムネイルを準備中... 0 / " + pages.length;
   splitFlow.appendChild(progressNode);
   setSplitMode(true);
+  refreshDatePrefixPreview();
 
   await generateAllThumbnails(pages, ({ done, total }) => {
     progressNode.textContent = `サムネイルを準備中... ${done} / ${total}`;
@@ -935,18 +988,15 @@ splitConfirmBtn.addEventListener("click", async () => {
   const folder = await kpdf3.pickExportFolder();
   if (!folder) return;
 
-  const meta = await kpdf3.getSourceMeta();
-  const sourceBase = (meta?.fileName ?? "split").replace(/\.[^.]+$/, "");
-
   setSplitMode(false);
   showBusy("分割保存", `0 / ${parts.length} パート`, 0);
   try {
     for (let p = 0; p < parts.length; p++) {
       const part = parts[p];
-      const partName = splitState.partNames.get(p) ?? defaultPartName(p);
+      const rawName = (splitState.partNames.get(p) ?? "").trim();
       const safeName =
-        partName.replace(/[/\\:*?"<>|]/g, "_") || `part${p + 1}`;
-      const savePath = `${folder}/${sourceBase}_${safeName}.pdf`;
+        rawName.replace(/[/\\:*?"<>|]/g, "_") || `part${p + 1}`;
+      const savePath = `${folder}/${safeName}.pdf`;
 
       updateBusy(
         `${p + 1} / ${parts.length} パート — ページを描画中...`,

@@ -186,6 +186,14 @@
         <p class="split-help">
           区切り線（｜）クリックで分割／点線（— ▼ —）クリックで結合。各パートに名前を付けて保存。
         </p>
+        <div class="split-controls">
+          <label for="thumb-size">サムネサイズ:</label>
+          <input type="range" id="thumb-size" min="40" max="200" value="80" />
+          <span id="thumb-size-display" class="thumb-size-display">80px</span>
+          <span class="toolbar-sep"></span>
+          <input type="checkbox" id="date-prefix-toggle" />
+          <label for="date-prefix-toggle">日付 (<span id="date-prefix-preview">260509</span>) を頭に付ける</label>
+        </div>
       </header>
       <div id="split-flow" class="split-flow"></div>
       <footer class="split-view-footer">

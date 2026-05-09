@@ -441,6 +441,24 @@ button.toggled {
   margin: 0 0 4px 0;
   font-size: 11px;
 }
+.split-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 4px 0;
+}
+.split-controls label {
+  user-select: none;
+}
+.split-controls input[type="range"] {
+  width: 140px;
+}
+.thumb-size-display {
+  min-width: 44px;
+  text-align: right;
+  color: #444;
+}
 .split-flow {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -502,9 +520,14 @@ button.toggled {
 }
 .split-thumb canvas {
   display: block;
-  width: 80px;
+  width: var(--split-thumb-width, 80px);
   height: auto;
   background: #eeeeee;
+}
+.split-thumb > div {
+  /* placeholder box also follows the size variable */
+  width: var(--split-thumb-width, 80px) !important;
+  height: calc(var(--split-thumb-width, 80px) * 1.4) !important;
 }
 .split-thumb .split-thumb-label {
   font-size: 10px;
