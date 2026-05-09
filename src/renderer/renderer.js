@@ -498,19 +498,76 @@ async function actionClose() {
   await refreshViewer();
 }
 
+// ---- Print dialog (M5-4 rework) -------------------------------------
+const printDialog = $("print-dialog");
+const printPrinterSelect = $("print-printer");
+const printCopiesInput = $("print-copies");
+const printConfirmBtn = $("print-confirm");
+const printCancelBtn = $("print-cancel");
+/** @type {((value: { deviceName: string, copies: number } | null) => void) | null} */
+let printDialogResolve = null;
+
+function showPrintDialog(printers) {
+  printPrinterSelect.innerHTML = "";
+  if (printers.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(プリンタが見つかりません)";
+    printPrinterSelect.appendChild(opt);
+    printConfirmBtn.disabled = true;
+  } else {
+    printConfirmBtn.disabled = false;
+    for (const p of printers) {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.displayName ?? p.name;
+      if (p.isDefault) opt.selected = true;
+      printPrinterSelect.appendChild(opt);
+    }
+  }
+  printCopiesInput.value = "1";
+  printDialog.hidden = false;
+  return new Promise((resolve) => {
+    printDialogResolve = resolve;
+  });
+}
+
+function hidePrintDialog() {
+  printDialog.hidden = true;
+}
+
+function settlePrintDialog(value) {
+  hidePrintDialog();
+  if (printDialogResolve) {
+    printDialogResolve(value);
+    printDialogResolve = null;
+  }
+}
+
+printConfirmBtn.addEventListener("click", () => {
+  settlePrintDialog({
+    deviceName: printPrinterSelect.value,
+    copies: Math.max(1, Number(printCopiesInput.value) || 1),
+  });
+});
+printCancelBtn.addEventListener("click", () => settlePrintDialog(null));
+printDialog.addEventListener("click", (e) => {
+  if (e.target === printDialog) settlePrintDialog(null);
+});
+
 async function actionPrint() {
   if (!isOpen) return;
   const pages = await kpdf3.getPages();
   if (pages.length === 0) return;
   const overlayCount = projectStore.count();
   const isCopy = overlayCount === 0;
+
   showBusy("印刷準備", "ページを描画しています...", 0);
+  /** @type {Array<any> | null} */
+  let composed = null;
   try {
-    if (isCopy) {
-      updateBusy("元 PDF をコピー中...", 50);
-      await kpdf3.printSourcePdf();
-    } else {
-      const composed = await composePagesForExport({
+    if (!isCopy) {
+      composed = await composePagesForExport({
         pages,
         projectStore,
         renderPage: kpdf3.renderPage,
@@ -518,17 +575,30 @@ async function actionPrint() {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
       });
-      updateBusy("PDF を組み立て中...", 90);
-      await kpdf3.printPdfRasterized({ pages: composed });
     }
-    updateBusy("ビューアを起動中...", 100);
+    updateBusy("プリンタ情報を取得中...", 90);
+    const printers = await kpdf3.listPrinters();
     hideBusy();
-    wsStatus.textContent =
-      "印刷用 PDF を別ビューアで開きました — そちらで Ctrl+P を押してください。";
+
+    const choice = await showPrintDialog(printers);
+    if (!choice) {
+      wsStatus.textContent = "印刷をキャンセルしました";
+      return;
+    }
+
+    showBusy("印刷中", `${choice.deviceName} に送信中...`, 50);
+    await kpdf3.printPdfSilent({
+      source: isCopy ? "byte-copy" : "rasterized",
+      pages: composed,
+      deviceName: choice.deviceName,
+      copies: choice.copies,
+    });
+    hideBusy();
+    wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部）`;
   } catch (err) {
     hideBusy();
     console.error("[renderer] print failed:", err);
-    wsStatus.textContent = `印刷準備失敗: ${err.message ?? err}`;
+    wsStatus.textContent = `印刷失敗: ${err.message ?? err}`;
   }
 }
 

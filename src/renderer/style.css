@@ -377,6 +377,39 @@ button.toggled {
 .busy-modal[hidden] {
   display: none;
 }
+
+/* Reuses the .busy-modal backdrop class — same overlay treatment, but
+ * with a wider window since it carries form fields. */
+.print-window {
+  width: 360px;
+}
+.print-window .window-body {
+  padding: 14px 16px;
+}
+.print-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 11px;
+}
+.print-row label {
+  min-width: 80px;
+}
+.print-row select,
+.print-row input[type="number"] {
+  flex: 1;
+  min-width: 0;
+}
+.print-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+.print-buttons button {
+  min-width: 75px;
+}
 .busy-window {
   width: 360px;
   /* 98.css supplies the windowed look; just ensure it's centred. */

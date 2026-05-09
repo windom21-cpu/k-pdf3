@@ -79,6 +79,29 @@
     </div>
   </div>
 
+  <!-- Custom print options dialog (M5-4 rework) -->
+  <div class="busy-modal" id="print-dialog" hidden>
+    <div class="window print-window">
+      <div class="title-bar">
+        <div class="title-bar-text">印刷</div>
+      </div>
+      <div class="window-body">
+        <div class="print-row">
+          <label for="print-printer">プリンタ:</label>
+          <select id="print-printer"></select>
+        </div>
+        <div class="print-row">
+          <label for="print-copies">部数:</label>
+          <input type="number" id="print-copies" value="1" min="1" max="99" />
+        </div>
+        <div class="print-buttons">
+          <button id="print-confirm" class="default">印刷</button>
+          <button id="print-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="toolbar">
     <button id="btn-open">開く</button>
     <button id="btn-close" disabled>閉じる</button>

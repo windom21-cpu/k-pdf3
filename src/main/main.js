@@ -130,6 +130,10 @@ app.on("before-quit", () => {
   }
   activeSourcePdfPath = null;
   closeRegistry();
+  if (printWindow && !printWindow.isDestroyed()) {
+    try { printWindow.destroy(); } catch { /* ignore */ }
+    printWindow = null;
+  }
 });
 
 // ---- IPC: workspace ------------------------------------------------------
@@ -383,12 +387,97 @@ function tempPrintPath() {
   return join(app.getPath("temp"), `kpdf3-print-${randomUUID()}.pdf`);
 }
 
-// Note: an earlier M5-4 polish tried to surface the OS print dialog
-// directly via a hidden BrowserWindow + webContents.print(). The dialog
-// did appear, but Electron's PDF-plugin teardown crashed the app shortly
-// after the user dismissed it (reproduced twice on Linux + Electron 38).
-// Until that's understood we fall back to opening the temp PDF in the
-// user's default PDF viewer where Ctrl+P works.
+// Reusable hidden BrowserWindow for silent printing. Singleton avoids
+// the close-mid-teardown crash we saw with per-print windows. Destroyed
+// on `before-quit` alongside the workspace + registry handles.
+//
+// Note (M5-4 history): OS dialogs (silent: false) crashed Electron's
+// PDF-plugin teardown on Linux + Electron 38. The renderer-side custom
+// dialog + silent: true path below avoids that whole code path.
+//
+// @type {BrowserWindow | null}
+let printWindow = null;
+
+function getPrintWindow() {
+  if (printWindow && !printWindow.isDestroyed()) return printWindow;
+  printWindow = new BrowserWindow({
+    show: false,
+    width: 800,
+    height: 600,
+    webPreferences: {
+      plugins: true, // enable Chromium's built-in PDF viewer
+      contextIsolation: true,
+      sandbox: false,
+    },
+  });
+  return printWindow;
+}
+
+/**
+ * Silently print a PDF file to a specific printer using
+ * webContents.print({ silent: true, deviceName }). No OS print dialog
+ * is shown — the renderer-side custom dialog has already collected
+ * the user's choices.
+ *
+ * @param {string} pdfPath
+ * @param {{ deviceName: string, copies?: number }} opts
+ * @returns {Promise<{ success: boolean }>}
+ */
+function silentPrintPdf(pdfPath, opts) {
+  return new Promise((resolve, reject) => {
+    const win = getPrintWindow();
+    let settled = false;
+    /** @type {(() => void) | null} */
+    let cleanup = null;
+
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (cleanup) cleanup();
+      fn(value);
+    };
+
+    const onDidFinishLoad = () => {
+      setTimeout(() => {
+        if (settled) return;
+        try {
+          win.webContents.print(
+            {
+              silent: true,
+              deviceName: opts.deviceName,
+              copies: opts.copies ?? 1,
+              printBackground: true,
+              color: true,
+            },
+            (success, errorType) => {
+              if (success) {
+                settle(resolve, { success: true });
+              } else {
+                settle(reject, new Error(errorType || "silent print failed"));
+              }
+            },
+          );
+        } catch (err) {
+          settle(reject, err);
+        }
+      }, 250);
+    };
+
+    const onDidFailLoad = (_e, code, desc) => {
+      settle(reject, new Error(`PDF load failed (${code}): ${desc}`));
+    };
+
+    cleanup = () => {
+      win.webContents.off("did-finish-load", onDidFinishLoad);
+      win.webContents.off("did-fail-load", onDidFailLoad);
+    };
+
+    win.webContents.once("did-finish-load", onDidFinishLoad);
+    win.webContents.once("did-fail-load", onDidFailLoad);
+
+    win.loadFile(pdfPath).catch((err) => settle(reject, err));
+  });
+}
 
 /**
  * Assemble a flatten PDF from per-page composited PNG bytes (from the
@@ -440,41 +529,57 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
  * viewer typically still has it open.
  */
 /**
- * @param {string} tempPath  the PDF file we just wrote
- * @returns {Promise<{ method: 'external-viewer', cancelled: boolean }>}
+ * Enumerate available system printers via the main window's webContents.
+ * Each printer has { name, displayName, description, isDefault, status }.
  */
-async function tryPrintOrOpenExternal(tempPath) {
-  const errMsg = await shell.openPath(tempPath);
-  if (errMsg) throw new Error(`shell.openPath: ${errMsg}`);
-  return { method: "external-viewer", cancelled: false };
-}
-
-ipcMain.handle("kpdf3:print-pdf-rasterized", async (_, payload) => {
-  if (!activeWorkspace) throw new Error("No active workspace");
-  const { pages } = payload;
-  if (!Array.isArray(pages) || pages.length === 0) {
-    throw new Error("print-pdf-rasterized: invalid payload");
+ipcMain.handle("kpdf3:list-printers", async () => {
+  if (!mainWindow) return [];
+  try {
+    const printers = await mainWindow.webContents.getPrintersAsync();
+    return printers.map((p) => ({
+      name: p.name,
+      displayName: p.displayName ?? p.name,
+      description: p.description ?? "",
+      isDefault: !!p.isDefault,
+      status: p.status ?? 0,
+    }));
+  } catch (err) {
+    console.error("[main] getPrintersAsync failed:", err);
+    return [];
   }
-  const pdfBytes = assembleRasterizedPdf(pages);
-  const tempPath = tempPrintPath();
-  writeFileSync(tempPath, pdfBytes);
-  const r = await tryPrintOrOpenExternal(tempPath);
-  return { tempPath, pageCount: pages.length, ...r };
 });
 
-ipcMain.handle("kpdf3:print-source-pdf", async () => {
+/**
+ * Silent print of a flatten / byte-copy PDF to a chosen printer. The
+ * renderer collects deviceName / copies from a custom dialog and calls
+ * this; main writes the temp PDF, loads it in the singleton hidden
+ * window, and silent-prints. No OS dialog appears.
+ *
+ * payload:
+ *   { source: 'byte-copy' | 'rasterized',
+ *     pages?: composedPages[],
+ *     deviceName: string,
+ *     copies?: number }
+ */
+ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   if (!activeWorkspace) throw new Error("No active workspace");
-  const bytes = activeWorkspace.getSourceBytes();
-  if (!bytes) throw new Error("print-source-pdf: workspace has no source PDF");
+  const { source, pages, deviceName, copies = 1 } = payload ?? {};
+  if (!deviceName) throw new Error("print-pdf-silent: deviceName missing");
+
+  let pdfBytes;
+  if (source === "byte-copy") {
+    pdfBytes = activeWorkspace.getSourceBytes();
+    if (!pdfBytes) throw new Error("No source PDF in workspace");
+  } else if (source === "rasterized" && Array.isArray(pages) && pages.length > 0) {
+    pdfBytes = assembleRasterizedPdf(pages);
+  } else {
+    throw new Error("print-pdf-silent: invalid source / pages");
+  }
+
   const tempPath = tempPrintPath();
-  writeFileSync(tempPath, bytes);
-  const r = await tryPrintOrOpenExternal(tempPath);
-  return {
-    tempPath,
-    pageCount: activeWorkspace.getSourceMeta()?.pageCount ?? 0,
-    byteCopy: true,
-    ...r,
-  };
+  writeFileSync(tempPath, pdfBytes);
+  await silentPrintPdf(tempPath, { deviceName, copies });
+  return { tempPath, deviceName, copies };
 });
 
 /**
