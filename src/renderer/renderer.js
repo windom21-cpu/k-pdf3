@@ -480,9 +480,10 @@ async function actionPrint() {
   const overlayCount = projectStore.count();
   const isCopy = overlayCount === 0;
   try {
+    let result;
     if (isCopy) {
       wsStatus.textContent = "印刷準備中...";
-      await kpdf3.printSourcePdf();
+      result = await kpdf3.printSourcePdf();
     } else {
       wsStatus.textContent = "印刷準備中...";
       const composed = await composePagesForExport({
@@ -494,10 +495,16 @@ async function actionPrint() {
         },
       });
       wsStatus.textContent = "PDF を組み立て中...";
-      await kpdf3.printPdfRasterized({ pages: composed });
+      result = await kpdf3.printPdfRasterized({ pages: composed });
     }
-    wsStatus.textContent =
-      "印刷用 PDF を別ビューアで開きました。そちらで Ctrl+P を押してください。";
+    if (result.method === "os-dialog") {
+      wsStatus.textContent = result.cancelled
+        ? "印刷をキャンセルしました"
+        : "印刷ダイアログを表示しました";
+    } else {
+      wsStatus.textContent =
+        "OS の印刷ダイアログを開けなかったため、別ビューアを起動しました。そちらで Ctrl+P を押してください。";
+    }
   } catch (err) {
     console.error("[renderer] print failed:", err);
     wsStatus.textContent = `印刷準備失敗: ${err.message ?? err}`;

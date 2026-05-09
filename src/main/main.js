@@ -384,6 +384,71 @@ function tempPrintPath() {
 }
 
 /**
+ * Show the OS print dialog directly for a PDF file by loading it into a
+ * hidden BrowserWindow (Chromium's built-in PDF viewer renders it) and
+ * invoking webContents.print(). Resolves on success / user-cancelled,
+ * rejects on a real failure so the caller can fall back to
+ * shell.openPath.
+ *
+ * @param {string} pdfPath
+ * @returns {Promise<{ success: boolean, cancelled: boolean }>}
+ */
+function printPdfViaHiddenWindow(pdfPath) {
+  return new Promise((resolve, reject) => {
+    const printWin = new BrowserWindow({
+      show: false,
+      width: 800,
+      height: 600,
+      webPreferences: {
+        plugins: true, // enable Chromium's built-in PDF viewer
+        contextIsolation: true,
+        sandbox: false,
+      },
+    });
+
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      try {
+        printWin.close();
+      } catch {
+        /* ignore */
+      }
+      fn(value);
+    };
+
+    printWin.webContents.once("did-finish-load", () => {
+      // Give the PDF plugin a beat to actually render the first page
+      // before invoking print. 250 ms is long enough on the development
+      // hardware we've tested with; if you see "blank pages printed"
+      // bumps that to 500 ms.
+      setTimeout(() => {
+        try {
+          printWin.webContents.print({}, (success, errorType) => {
+            if (success) {
+              finish(resolve, { success: true, cancelled: false });
+            } else if (errorType === "cancelled") {
+              finish(resolve, { success: false, cancelled: true });
+            } else {
+              finish(reject, new Error(errorType || "print failed"));
+            }
+          });
+        } catch (err) {
+          finish(reject, err);
+        }
+      }, 250);
+    });
+
+    printWin.webContents.once("did-fail-load", (_e, code, desc) => {
+      finish(reject, new Error(`PDF load failed (${code}): ${desc}`));
+    });
+
+    printWin.loadFile(pdfPath).catch((err) => finish(reject, err));
+  });
+}
+
+/**
  * Assemble a flatten PDF from per-page composited PNG bytes (from the
  * renderer) and write it to disk.
  *
@@ -432,6 +497,24 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
  * its tmp directory; we don't try to delete it because the spawned PDF
  * viewer typically still has it open.
  */
+/**
+ * @param {string} tempPath  the PDF file we just wrote
+ * @returns {Promise<{ method: 'os-dialog' | 'external-viewer', cancelled: boolean }>}
+ */
+async function tryPrintOrOpenExternal(tempPath) {
+  try {
+    const r = await printPdfViaHiddenWindow(tempPath);
+    return { method: "os-dialog", cancelled: r.cancelled };
+  } catch (err) {
+    // Fall back to opening the file with the OS's default PDF viewer
+    // so the user can still print it from there.
+    console.warn("[main] direct print failed, falling back to shell:", err);
+    const errMsg = await shell.openPath(tempPath);
+    if (errMsg) throw new Error(`Print + fallback both failed: ${err.message} | ${errMsg}`);
+    return { method: "external-viewer", cancelled: false };
+  }
+}
+
 ipcMain.handle("kpdf3:print-pdf-rasterized", async (_, payload) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   const { pages } = payload;
@@ -441,9 +524,8 @@ ipcMain.handle("kpdf3:print-pdf-rasterized", async (_, payload) => {
   const pdfBytes = assembleRasterizedPdf(pages);
   const tempPath = tempPrintPath();
   writeFileSync(tempPath, pdfBytes);
-  const errMsg = await shell.openPath(tempPath);
-  if (errMsg) throw new Error(`shell.openPath: ${errMsg}`);
-  return { tempPath, pageCount: pages.length };
+  const r = await tryPrintOrOpenExternal(tempPath);
+  return { tempPath, pageCount: pages.length, ...r };
 });
 
 ipcMain.handle("kpdf3:print-source-pdf", async () => {
@@ -452,12 +534,12 @@ ipcMain.handle("kpdf3:print-source-pdf", async () => {
   if (!bytes) throw new Error("print-source-pdf: workspace has no source PDF");
   const tempPath = tempPrintPath();
   writeFileSync(tempPath, bytes);
-  const errMsg = await shell.openPath(tempPath);
-  if (errMsg) throw new Error(`shell.openPath: ${errMsg}`);
+  const r = await tryPrintOrOpenExternal(tempPath);
   return {
     tempPath,
     pageCount: activeWorkspace.getSourceMeta()?.pageCount ?? 0,
     byteCopy: true,
+    ...r,
   };
 });
 
