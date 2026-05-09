@@ -187,23 +187,40 @@ button.toggled {
   z-index: 999;
 }
 
-/* ----- Stamp overlays (印影) ----- */
+/* ----- Stamp overlays (印影) -----
+ *
+ * The stamp's hit-test region must be a *rectangle* — otherwise CSS
+ * border-radius affects pointer-events and the corner resize handles
+ * become unreachable (cursor "leaves" the rounded element the moment
+ * it crosses the visible curve). We achieve that by drawing the
+ * circular / rectangular frame as a ::before pseudo-element with
+ * pointer-events: none, while the .overlay-stamp box itself stays a
+ * plain rectangle.
+ */
 .overlay-stamp {
   display: flex;
   align-items: center;
   justify-content: center;
   background: rgba(255, 255, 255, 0);
   outline: none; /* override the default dotted overlay outline */
+  position: absolute;
 }
-.overlay-stamp-circle {
-  border: 2px solid;
+.overlay-stamp::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.overlay-stamp-circle::before {
+  border: 2px solid currentColor;
   border-radius: 50%;
 }
-.overlay-stamp-rect {
-  border: 2px solid;
+.overlay-stamp-rect::before {
+  border: 2px solid currentColor;
   border-radius: 0;
 }
-.overlay-stamp-none {
+.overlay-stamp-none::before {
   border: none;
 }
 
