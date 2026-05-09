@@ -11,22 +11,30 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
+import { computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
 import { renderPageCanonical } from "./render-service.js";
+import {
+  closeRegistry,
+  findWorkspaceByFingerprint,
+  generateWorkspaceId,
+  registerWorkspace,
+  touchWorkspace,
+  workspacePathFor,
+} from "./workspace-registry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Compute the sidecar `.kpdf3` path for a given PDF path.
- * Same directory, same basename, extension swapped to `.kpdf3`.
+ * Path of a legacy sidecar `.kpdf3` next to the PDF (the ADR-0006 layout).
+ * Used only by the migration step in `kpdf3:open-pdf-file`.
  *
  *   /path/to/foo.pdf  →  /path/to/foo.kpdf3
- *   /path/to/FOO.PDF  →  /path/to/FOO.kpdf3
  */
-function sidecarKpdf3Path(pdfPath) {
+function legacySidecarPath(pdfPath) {
   const ext = extname(pdfPath);
   const stem = basename(pdfPath, ext);
   return join(dirname(pdfPath), `${stem}.kpdf3`);
@@ -36,6 +44,9 @@ function sidecarKpdf3Path(pdfPath) {
 let mainWindow = null;
 /** @type {Workspace | null} */
 let activeWorkspace = null;
+/** @type {string | null} the absolute path of the source PDF that opened
+ *                        the active workspace — used for export defaults. */
+let activeSourcePdfPath = null;
 /** @type {import("mupdf").Document | null} */
 let activeDoc = null;
 /** @type {Array<ReturnType<Workspace['getPages']>[number]>} */
@@ -89,6 +100,7 @@ function createMainWindow() {
       }
       activeWorkspace = null;
     }
+    activeSourcePdfPath = null;
     mainWindow = null;
   });
 }
@@ -106,6 +118,17 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  // Close the workspace + registry handles cleanly so SQLite WAL flushes.
+  disposeActiveDoc();
+  if (activeWorkspace) {
+    try { activeWorkspace.close(); } catch { /* ignore */ }
+    activeWorkspace = null;
+  }
+  activeSourcePdfPath = null;
+  closeRegistry();
 });
 
 // ---- IPC: workspace ------------------------------------------------------
@@ -152,6 +175,7 @@ ipcMain.handle("kpdf3:open-workspace", async (_, filePath) => {
     activeWorkspace.close();
     activeWorkspace = null;
   }
+  activeSourcePdfPath = null;
   activeWorkspace = Workspace.open(filePath);
   reopenActiveDoc();
   return { filePath, isNew: activeWorkspace.isNew };
@@ -163,6 +187,7 @@ ipcMain.handle("kpdf3:create-workspace", async (_, filePath) => {
     activeWorkspace.close();
     activeWorkspace = null;
   }
+  activeSourcePdfPath = null;
   activeWorkspace = Workspace.create(filePath);
   reopenActiveDoc();
   return { filePath, isNew: true };
@@ -173,6 +198,7 @@ ipcMain.handle("kpdf3:close-workspace", async () => {
   if (!activeWorkspace) return false;
   activeWorkspace.close();
   activeWorkspace = null;
+  activeSourcePdfPath = null;
   return true;
 });
 
@@ -184,39 +210,68 @@ ipcMain.handle("kpdf3:import-pdf", async (_, pdfPath) => {
 });
 
 /**
- * Combined "open" entry point for the PDF-first UX (ADR-0006).
+ * Combined "open" entry point for the PDF-first UX (ADR-0006 + ADR-0007).
  *
- *   1. Resolve the sidecar `.kpdf3` next to the PDF.
- *   2. If it exists, open it (with verifyWorkspace).
- *   3. If it doesn't, create a fresh workspace and import the PDF.
- *   4. Either way, open the mupdf doc and cache page rows.
- *
- * Returns `{ sidecarPath, pdfPath, pageCount, isNew }`.
+ *   1. Hash the chosen PDF (SHA-256) and look it up in the registry.
+ *   2. Hit  → open `userData/workspaces/{id}.kpdf3` directly.
+ *   3. Miss → check for a legacy sidecar next to the PDF (ADR-0006 layout)
+ *             and migrate it into userData; or create a fresh workspace.
+ *   4. Open the mupdf doc, cache page rows, return overlays to renderer.
  */
 ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath) => {
-  const sidecarPath = sidecarKpdf3Path(pdfPath);
-
   disposeActiveDoc();
   if (activeWorkspace) {
     activeWorkspace.close();
     activeWorkspace = null;
   }
+  activeSourcePdfPath = null;
 
-  let isNew;
-  if (existsSync(sidecarPath)) {
-    activeWorkspace = Workspace.open(sidecarPath);
-    isNew = false;
+  const pdfBytes = readFileSync(pdfPath);
+  const fingerprint = await computePdfFingerprint(pdfBytes);
+  const sourceName = basename(pdfPath);
+
+  let isNew = false;
+  let migrated = false;
+  const existing = findWorkspaceByFingerprint(fingerprint);
+  if (existing && existsSync(existing.workspacePath)) {
+    activeWorkspace = Workspace.open(existing.workspacePath);
+    touchWorkspace(fingerprint, pdfPath, sourceName);
   } else {
-    activeWorkspace = Workspace.create(sidecarPath);
-    await activeWorkspace.importPdfFromFile(pdfPath);
-    isNew = true;
+    const id = generateWorkspaceId();
+    const wsPath = workspacePathFor(id);
+    const legacy = legacySidecarPath(pdfPath);
+    if (existsSync(legacy)) {
+      // Migrate the ADR-0006 sidecar into userData/.
+      try {
+        renameSync(legacy, wsPath);
+      } catch (err) {
+        console.error("[main] sidecar migration rename failed:", err);
+        throw err;
+      }
+      activeWorkspace = Workspace.open(wsPath);
+      migrated = true;
+    } else {
+      activeWorkspace = Workspace.create(wsPath);
+      await activeWorkspace.importPdfFromFile(pdfPath);
+      isNew = true;
+    }
+    registerWorkspace({
+      fingerprint,
+      workspaceId: id,
+      workspacePath: wsPath,
+      sourcePdfPath: pdfPath,
+      sourcePdfName: sourceName,
+    });
   }
+
+  activeSourcePdfPath = pdfPath;
   reopenActiveDoc();
+
   return {
-    sidecarPath,
     pdfPath,
     pageCount: activeWorkspace.getSourceMeta()?.pageCount ?? 0,
     isNew,
+    migrated,
     overlays: activeWorkspace.loadOverlays(),
   };
 });
@@ -228,9 +283,11 @@ ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {
 });
 
 ipcMain.handle("kpdf3:pick-export-pdf", async () => {
-  // Suggest the source PDF's directory as the save location so the user
-  // doesn't have to navigate from wherever the OS dialog last opened.
-  const dir = activeWorkspace ? dirname(activeWorkspace.filePath) : null;
+  // Default dir = the directory of the source PDF the user opened (so the
+  // export sits next to its source); default name = the source PDF's
+  // basename, no marker. Same name + same dir means the OS dialog will
+  // surface its native overwrite-confirmation, which we let stand.
+  const dir = activeSourcePdfPath ? dirname(activeSourcePdfPath) : null;
   const name = defaultExportName();
   const defaultPath = dir ? join(dir, name) : name;
   const r = await dialog.showSaveDialog(mainWindow, {
@@ -322,30 +379,22 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
 });
 
 /**
- * Generate a default basename for the export dialog. The 「書出」 marker
- * (visibly Japanese) and the timestamp make it impossible to confuse with
- * the source PDF or with previous exports — the user can let the OS file
- * dialog sort by name to see export history.
+ * Default filename for the export dialog. ADR-0007: the export should
+ * look like a plain PDF — same name as the source, no app-specific
+ * marker — so the recipient sees a「普通の PDF」name. The OS dialog's
+ * own overwrite confirmation handles the source-overwrite case.
  *
- *   /path/契約書.pdf   →   /path/契約書_書出_20260509-185023.pdf
+ *   /path/契約書.pdf   →   契約書.pdf  (default name)
+ *
+ * The activeSourcePdfPath in pick-export-pdf supplies the directory.
  */
 function defaultExportName() {
-  if (!activeWorkspace) return defaultExportNameFor("export");
-  const meta = activeWorkspace.getSourceMeta();
-  const base = (meta?.fileName ?? "export").replace(/\.[^.]+$/, "");
-  return defaultExportNameFor(base);
-}
-
-function defaultExportNameFor(base) {
-  return `${base}_書出_${formatExportStamp(new Date())}.pdf`;
-}
-
-function formatExportStamp(d) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  );
+  if (activeSourcePdfPath) return basename(activeSourcePdfPath);
+  if (activeWorkspace) {
+    const meta = activeWorkspace.getSourceMeta();
+    if (meta?.fileName) return meta.fileName;
+  }
+  return "export.pdf";
 }
 
 ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {
