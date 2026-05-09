@@ -23,7 +23,8 @@ const history = new HistoryStack();
 const $ = (id) => document.getElementById(id);
 const btnOpen = $("btn-open");
 const btnClose = $("btn-close");
-const btnEditMode = $("btn-edit-mode");
+const btnModeText = $("btn-mode-text");
+const btnModeStamp = $("btn-mode-stamp");
 const wsLabel = $("ws-label");
 const wsStatus = $("ws-status");
 const viewerContainer = $("viewer-container");
@@ -37,12 +38,20 @@ const viewer = new Viewer(viewerContainer, {
 });
 
 let isOpen = false;
-let isEditMode = false;
+/** @type {'none' | 'text' | 'stamp'} */
+let placementMode = "none";
 let activeSourceName = "";
 
 function handlePagePointerDown(pageNo, x, y) {
-  if (!isOpen || !isEditMode) return;
-  // Default: drop a 100×20 (PDF point) text overlay anchored at the click.
+  if (!isOpen) return;
+  if (placementMode === "text") {
+    placeText(pageNo, x, y);
+  } else if (placementMode === "stamp") {
+    placeStamp(pageNo, x, y);
+  }
+}
+
+function placeText(pageNo, x, y) {
   const cmd = new AddOverlayCommand(projectStore, {
     pageNo,
     type: "text",
@@ -59,8 +68,32 @@ function handlePagePointerDown(pageNo, x, y) {
     },
   });
   history.execute(cmd);
-  // After placing, immediately enter inline edit on the new overlay so the
-  // user can start typing.
+  if (cmd._snapshot) {
+    setTimeout(() => viewer.enterTextEdit(cmd._snapshot.id), 0);
+  }
+}
+
+function placeStamp(pageNo, x, y) {
+  // Default 60×60-PDF-point round red seal centred on click.
+  const W = 60;
+  const H = 60;
+  const cmd = new AddOverlayCommand(projectStore, {
+    pageNo,
+    type: "stamp",
+    x: x - W / 2,
+    y: y - H / 2,
+    w: W,
+    h: H,
+    zOrder: 0,
+    properties: {
+      kind: "text-frame",
+      text: "印",
+      color: "#cc0000",
+      frame: "circle",
+      fontSize: 14,
+    },
+  });
+  history.execute(cmd);
   if (cmd._snapshot) {
     setTimeout(() => viewer.enterTextEdit(cmd._snapshot.id), 0);
   }
@@ -93,19 +126,23 @@ function handleOverlayDragEnd(id, newX, newY) {
   );
 }
 
-function setEditMode(on) {
-  isEditMode = !!on;
-  viewer.setEditMode(isEditMode);
-  btnEditMode.classList.toggle("toggled", isEditMode);
-  btnEditMode.textContent = isEditMode ? "編集モード ON" : "編集モード";
+/**
+ * @param {'none' | 'text' | 'stamp'} mode
+ */
+function setPlacementMode(mode) {
+  placementMode = mode;
+  viewer.setEditMode(mode !== "none");
+  btnModeText.classList.toggle("toggled", mode === "text");
+  btnModeStamp.classList.toggle("toggled", mode === "stamp");
 }
 
 function setOpen(open) {
   isOpen = open;
   btnOpen.disabled = open;
   btnClose.disabled = !open;
-  btnEditMode.disabled = !open;
-  if (!open) setEditMode(false);
+  btnModeText.disabled = !open;
+  btnModeStamp.disabled = !open;
+  if (!open) setPlacementMode("none");
   refreshMenuState();
   refreshDirtyIndicator();
 }
@@ -372,7 +409,12 @@ window.addEventListener("beforeunload", (e) => {
 // ---- Toolbar buttons --------------------------------------------------
 btnOpen.addEventListener("click", actionOpen);
 btnClose.addEventListener("click", actionClose);
-btnEditMode.addEventListener("click", () => setEditMode(!isEditMode));
+btnModeText.addEventListener("click", () =>
+  setPlacementMode(placementMode === "text" ? "none" : "text"),
+);
+btnModeStamp.addEventListener("click", () =>
+  setPlacementMode(placementMode === "stamp" ? "none" : "stamp"),
+);
 
 // ---- Initial state ----------------------------------------------------
 setOpen(false);

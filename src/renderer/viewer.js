@@ -278,8 +278,23 @@ export class Viewer {
       return el;
     }
 
-    // Other overlay types render as a simple frame for M3-3. M3-6 (stamp)
-    // / M3-7 (image) will fill them in.
+    if (ov.type === "stamp") {
+      const props = ov.properties ?? {};
+      el.textContent = props.text ?? "";
+      const color = props.color ?? "#cc0000";
+      const fontSize = (props.fontSize ?? 14) * z;
+      el.style.color = color;
+      el.style.borderColor = color;
+      el.style.fontSize = `${fontSize}px`;
+      el.style.fontWeight = "bold";
+      const frame = props.frame ?? "circle";
+      el.classList.add(`overlay-stamp-${frame}`);
+      this._attachOverlayPointer(el, ov);
+      return el;
+    }
+
+    // Other overlay types render as a simple frame for M3-3. Image-based
+    // stamps land later (asset library lives M3 / M4 per HANDOVER §15.4).
     el.textContent = ov.type;
     el.style.color = "#444";
     return el;
@@ -394,7 +409,13 @@ export class Viewer {
     if (this._editingId === id) return;
     if (!this.projectStore) return;
     const ov = this.projectStore.get(id);
-    if (!ov || ov.type !== "text") return;
+    if (!ov) return;
+    // Editable types: free text, and stamps that carry text (text-frame
+    // kind). Image / signature stamps without text are skipped.
+    const isEditable =
+      ov.type === "text" ||
+      (ov.type === "stamp" && (ov.properties?.kind ?? "text-frame") !== "image");
+    if (!isEditable) return;
     const el = this.container.querySelector(
       `.overlay[data-overlay-id="${cssEscape(id)}"]`,
     );

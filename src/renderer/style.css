@@ -168,6 +168,26 @@ button.toggled {
   align-items: flex-start;
 }
 
+/* ----- Stamp overlays (印影) ----- */
+.overlay-stamp {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0);
+  outline: none; /* override the default dotted overlay outline */
+}
+.overlay-stamp-circle {
+  border: 2px solid;
+  border-radius: 50%;
+}
+.overlay-stamp-rect {
+  border: 2px solid;
+  border-radius: 0;
+}
+.overlay-stamp-none {
+  border: none;
+}
+
 /* Overlay accepts pointer events (it sits inside an .overlay-layer with
  * pointer-events: none, so this is what makes the overlay clickable). */
 .overlay {
