@@ -443,6 +443,11 @@ window.addEventListener("keydown", (e) => {
     if (inText && target instanceof HTMLElement) target.blur();
     setTimeout(() => actionSave(), 0);
     return;
+  } else if (key === "e") {
+    e.preventDefault();
+    if (inText && target instanceof HTMLElement) target.blur();
+    setTimeout(() => actionExport(), 0);
+    return;
   }
 
   // Other shortcuts (undo/redo) defer to the host text input's native
