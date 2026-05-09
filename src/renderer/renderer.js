@@ -33,6 +33,7 @@ const viewer = new Viewer(viewerContainer, {
   onPagePointerDown: handlePagePointerDown,
   onOverlayClick: handleOverlayClick,
   onTextEditCommit: handleTextEditCommit,
+  onOverlayDragEnd: handleOverlayDragEnd,
 });
 
 let isOpen = false;
@@ -78,6 +79,17 @@ function handleTextEditCommit(id, newText) {
     new UpdateOverlayCommand(projectStore, id, {
       properties: { ...ov.properties, text: newText },
     }),
+  );
+}
+
+function handleOverlayDragEnd(id, newX, newY) {
+  if (!isOpen) return;
+  const ov = projectStore.get(id);
+  if (!ov) return;
+  // No-op when the gesture didn't actually move anything (rounding edge).
+  if (ov.x === newX && ov.y === newY) return;
+  history.execute(
+    new UpdateOverlayCommand(projectStore, id, { x: newX, y: newY }),
   );
 }
 

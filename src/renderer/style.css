@@ -172,7 +172,7 @@ button.toggled {
  * pointer-events: none, so this is what makes the overlay clickable). */
 .overlay {
   pointer-events: auto;
-  cursor: text;
+  cursor: move;
 }
 
 /* Visual state for the overlay currently in inline edit mode. */
@@ -184,6 +184,13 @@ button.toggled {
 }
 .overlay.editing:focus {
   outline: 2px solid #000080;
+}
+
+/* While a drag gesture is in flight. */
+.overlay.dragging {
+  cursor: grabbing;
+  opacity: 0.85;
+  outline: 1px dashed #000080;
 }
 
 .page-placeholder {

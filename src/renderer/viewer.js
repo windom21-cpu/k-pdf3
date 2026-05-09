@@ -30,6 +30,7 @@ export class Viewer {
    * @param {(pageNo: number, x: number, y: number, evt: PointerEvent) => void} [opts.onPagePointerDown]
    * @param {(overlayId: string) => void} [opts.onOverlayClick]
    * @param {(overlayId: string, newText: string) => void} [opts.onTextEditCommit]
+   * @param {(overlayId: string, newX: number, newY: number) => void} [opts.onOverlayDragEnd]
    */
   constructor(container, opts = {}) {
     this.container = container;
@@ -37,6 +38,7 @@ export class Viewer {
     this.onPagePointerDown = opts.onPagePointerDown ?? null;
     this.onOverlayClick = opts.onOverlayClick ?? null;
     this.onTextEditCommit = opts.onTextEditCommit ?? null;
+    this.onOverlayDragEnd = opts.onOverlayDragEnd ?? null;
     /** @type {string | null} id of overlay currently being inline-edited */
     this._editingId = null;
     /** @type {PageRegistry | null} */
@@ -247,12 +249,7 @@ export class Viewer {
       const fontSize = (props.fontSize ?? 12) * z;
       el.style.fontSize = `${fontSize}px`;
       el.style.color = props.color ?? "#000000";
-      el.addEventListener("click", (e) => {
-        // Don't fall through to .viewer-page (which would create a new
-        // overlay in placement mode).
-        e.stopPropagation();
-        if (this.onOverlayClick) this.onOverlayClick(ov.id);
-      });
+      this._attachOverlayPointer(el, ov);
       return el;
     }
 
@@ -261,6 +258,94 @@ export class Viewer {
     el.textContent = ov.type;
     el.style.color = "#444";
     return el;
+  }
+
+  /**
+   * Wire up pointerdown / move / up so a single click triggers edit and a
+   * drag (movement past a small threshold) repositions the overlay.
+   *
+   *   - Capture the pointer on pointerdown so move + up arrive at this
+   *     element even if the cursor crosses other DOM.
+   *   - Movement under MOVE_THRESHOLD px is still considered a click.
+   *   - Drag updates only inline style during the gesture; the
+   *     onOverlayDragEnd callback (triggered on pointerup) fires
+   *     UpdateOverlayCommand so history holds a single move per gesture.
+   *
+   * @param {HTMLElement} el
+   * @param {import("../domain/project-store.js").Overlay} ov
+   */
+  _attachOverlayPointer(el, ov) {
+    const MOVE_THRESHOLD = 4;
+    let drag = null;
+
+    el.addEventListener("pointerdown", (e) => {
+      // While in inline edit mode, the contentEditable owns the pointer.
+      if (el.classList.contains("editing")) return;
+      // Primary button only; ignore right-click etc.
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      drag = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        startLeft: parseFloat(el.style.left),
+        startTop: parseFloat(el.style.top),
+        moved: false,
+      };
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        /* some browsers can throw if capture is already held */
+      }
+    });
+
+    el.addEventListener("pointermove", (e) => {
+      if (!drag || drag.pointerId !== e.pointerId) return;
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (!drag.moved && Math.abs(dx) < MOVE_THRESHOLD && Math.abs(dy) < MOVE_THRESHOLD) {
+        return;
+      }
+      if (!drag.moved) {
+        drag.moved = true;
+        el.classList.add("dragging");
+      }
+      el.style.left = `${drag.startLeft + dx}px`;
+      el.style.top = `${drag.startTop + dy}px`;
+    });
+
+    el.addEventListener("pointerup", (e) => {
+      if (!drag || drag.pointerId !== e.pointerId) return;
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      const wasDrag = drag.moved;
+      const finalLeft = parseFloat(el.style.left);
+      const finalTop = parseFloat(el.style.top);
+      el.classList.remove("dragging");
+      drag = null;
+      if (!wasDrag) {
+        if (this.onOverlayClick) this.onOverlayClick(ov.id);
+        return;
+      }
+      const z = this.zoom;
+      const newX = finalLeft / z;
+      const newY = finalTop / z;
+      if (this.onOverlayDragEnd) this.onOverlayDragEnd(ov.id, newX, newY);
+    });
+
+    el.addEventListener("pointercancel", (e) => {
+      if (!drag || drag.pointerId !== e.pointerId) return;
+      // Pointer was cancelled (OS / scroll / pointer-capture loss).
+      // Restore the original position so we don't leave the overlay
+      // half-moved without a corresponding history entry.
+      el.style.left = `${drag.startLeft}px`;
+      el.style.top = `${drag.startTop}px`;
+      el.classList.remove("dragging");
+      drag = null;
+    });
   }
 
   /**
