@@ -22,6 +22,7 @@ import {
   closeRegistry,
   findWorkspaceByFingerprint,
   generateWorkspaceId,
+  listRecentPdfs,
   registerWorkspace,
   touchWorkspace,
   workspacePathFor,
@@ -279,6 +280,10 @@ ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath) => {
     migrated,
     overlays: activeWorkspace.loadOverlays(),
   };
+});
+
+ipcMain.handle("kpdf3:list-recent-pdfs", async () => {
+  return listRecentPdfs(10);
 });
 
 ipcMain.handle("kpdf3:get-outline", async () => {

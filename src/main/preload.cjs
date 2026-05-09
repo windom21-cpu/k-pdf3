@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   getSourceMeta:      ()        => ipcRenderer.invoke("kpdf3:get-source-meta"),
   getPages:           ()        => ipcRenderer.invoke("kpdf3:get-pages"),
   getOutline:         ()        => ipcRenderer.invoke("kpdf3:get-outline"),
+  listRecentPdfs:     ()        => ipcRenderer.invoke("kpdf3:list-recent-pdfs"),
   getAppInfo:         ()        => ipcRenderer.invoke("kpdf3:get-app-info"),
   // viewer rendering
   renderPage:         (pageNo, opts = {}) => ipcRenderer.invoke("kpdf3:render-page", pageNo, opts),

@@ -142,6 +142,36 @@ export function touchWorkspace(fingerprint, sourcePdfPath, sourcePdfName) {
     .run(sourcePdfPath, sourcePdfName, fingerprint);
 }
 
+/**
+ * List the most-recently-touched workspaces, newest first.
+ * Used to populate「最近開いた PDF」menu (M5-7).
+ *
+ * @param {number} [limit=10]
+ * @returns {Array<{
+ *   workspaceId: string,
+ *   workspacePath: string,
+ *   sourcePdfPath: string | null,
+ *   sourcePdfName: string | null,
+ *   updatedAt: string,
+ * }>}
+ */
+export function listRecentPdfs(limit = 10) {
+  return getDb()
+    .prepare(`
+      SELECT
+        workspace_id    AS workspaceId,
+        workspace_path  AS workspacePath,
+        source_pdf_path AS sourcePdfPath,
+        source_pdf_name AS sourcePdfName,
+        updated_at      AS updatedAt
+      FROM pdf_workspaces
+      WHERE source_pdf_path IS NOT NULL
+      ORDER BY datetime(updated_at) DESC
+      LIMIT ?
+    `)
+    .all(limit);
+}
+
 /** Close the registry handle (called on app quit). */
 export function closeRegistry() {
   if (_db) {

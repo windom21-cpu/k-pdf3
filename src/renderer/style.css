@@ -410,6 +410,70 @@ button.toggled {
 .print-buttons button {
   min-width: 75px;
 }
+
+/* Recent PDFs dialog */
+.recent-window {
+  width: 480px;
+  max-height: 70vh;
+}
+.recent-window .window-body {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+}
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  max-height: 50vh;
+  background: #ffffff;
+  border: 1px solid;
+  border-color: #808080 #ffffff #ffffff #808080;
+  font-size: 11px;
+}
+.recent-item {
+  padding: 4px 8px;
+  cursor: default;
+  border-bottom: 1px solid #f0f0f0;
+}
+.recent-item:hover {
+  background: #000080;
+  color: #ffffff;
+}
+.recent-item-name {
+  font-weight: bold;
+}
+.recent-item-path {
+  color: #666;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recent-item-meta {
+  color: #888;
+  font-size: 10px;
+}
+.recent-item:hover .recent-item-path,
+.recent-item:hover .recent-item-meta {
+  color: #cccccc;
+}
+.recent-empty {
+  padding: 24px;
+  text-align: center;
+  color: #888;
+  font-style: italic;
+}
+.recent-buttons {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.recent-buttons button {
+  min-width: 75px;
+}
 .busy-window {
   width: 360px;
   /* 98.css supplies the windowed look; just ensure it's centred. */

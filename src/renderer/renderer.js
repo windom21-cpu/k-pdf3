@@ -474,6 +474,70 @@ function confirmDiscardIfDirty() {
   );
 }
 
+// ---- Recent files dialog (M5-7) -------------------------------------
+const recentDialog = $("recent-dialog");
+const recentList = $("recent-list");
+const recentCancelBtn = $("recent-cancel");
+
+function hideRecentDialog() {
+  recentDialog.hidden = true;
+}
+
+async function actionShowRecent() {
+  if (!confirmDiscardIfDirty()) return;
+  const recents = await kpdf3.listRecentPdfs();
+  recentList.innerHTML = "";
+  if (!recents || recents.length === 0) {
+    const li = document.createElement("li");
+    li.className = "recent-empty";
+    li.textContent = "(履歴がまだありません)";
+    recentList.appendChild(li);
+  } else {
+    for (const r of recents) {
+      const li = document.createElement("li");
+      li.className = "recent-item";
+      li.title = r.sourcePdfPath ?? "";
+      const name = document.createElement("div");
+      name.className = "recent-item-name";
+      name.textContent = r.sourcePdfName ?? "(unknown)";
+      const path = document.createElement("div");
+      path.className = "recent-item-path";
+      path.textContent = r.sourcePdfPath ?? "";
+      const meta = document.createElement("div");
+      meta.className = "recent-item-meta";
+      meta.textContent = `最終: ${r.updatedAt ?? ""}`;
+      li.appendChild(name);
+      li.appendChild(path);
+      li.appendChild(meta);
+      li.addEventListener("click", () => {
+        hideRecentDialog();
+        openPdfPath(r.sourcePdfPath);
+      });
+      recentList.appendChild(li);
+    }
+  }
+  recentDialog.hidden = false;
+}
+
+recentCancelBtn.addEventListener("click", hideRecentDialog);
+recentDialog.addEventListener("click", (e) => {
+  if (e.target === recentDialog) hideRecentDialog();
+});
+
+async function openPdfPath(pdfPath) {
+  if (!pdfPath) return;
+  try {
+    const result = await kpdf3.openPdfFile(pdfPath);
+    projectStore.reset(result.overlays ?? []);
+    history.clear();
+    setOpen(true);
+    await refreshViewer();
+  } catch (err) {
+    console.error("[renderer] openPdfFile (recent) failed:", err);
+    wsStatus.textContent = `エラー: ${err.message ?? err}`;
+  }
+}
+
 async function actionOpen() {
   if (!confirmDiscardIfDirty()) return;
   const pdfPath = await kpdf3.pickPdf();
@@ -878,6 +942,7 @@ const menuBar = new MenuBar({
   },
   actions: {
     open: actionOpen,
+    recent: actionShowRecent,
     close: actionClose,
     save: actionSave,
     export: actionExport,
