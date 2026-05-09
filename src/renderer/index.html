@@ -81,6 +81,46 @@
     </div>
   </div>
 
+  <!-- Page range dialog (M5-6 fix — Electron disables window.prompt) -->
+  <div class="busy-modal" id="range-dialog" hidden>
+    <div class="window range-window">
+      <div class="title-bar">
+        <div class="title-bar-text" id="range-title">範囲指定で書き出し</div>
+      </div>
+      <div class="window-body">
+        <p class="range-message" id="range-message">書き出すページ範囲を入力してください。</p>
+        <div class="range-row">
+          <label for="range-input">範囲:</label>
+          <input type="text" id="range-input" />
+        </div>
+        <div class="range-buttons">
+          <button id="range-confirm" class="default">OK</button>
+          <button id="range-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Page-jump dialog (replaces window.prompt for goto-page) -->
+  <div class="busy-modal" id="goto-dialog" hidden>
+    <div class="window range-window">
+      <div class="title-bar">
+        <div class="title-bar-text">ページ移動</div>
+      </div>
+      <div class="window-body">
+        <p class="range-message" id="goto-message">ページ番号を入力:</p>
+        <div class="range-row">
+          <label for="goto-input">ページ:</label>
+          <input type="number" id="goto-input" min="1" />
+        </div>
+        <div class="range-buttons">
+          <button id="goto-confirm" class="default">移動</button>
+          <button id="goto-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Recent PDFs dialog (M5-7) -->
   <div class="busy-modal" id="recent-dialog" hidden>
     <div class="window recent-window">

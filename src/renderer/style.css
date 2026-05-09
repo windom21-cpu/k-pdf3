@@ -411,6 +411,40 @@ button.toggled {
   min-width: 75px;
 }
 
+/* Range / goto input dialog (single-input prompt replacement) */
+.range-window {
+  width: 360px;
+}
+.range-window .window-body {
+  padding: 14px 16px;
+}
+.range-message {
+  margin: 0 0 10px 0;
+  font-size: 11px;
+}
+.range-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 11px;
+}
+.range-row label {
+  min-width: 60px;
+}
+.range-row input {
+  flex: 1;
+  min-width: 0;
+}
+.range-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.range-buttons button {
+  min-width: 75px;
+}
+
 /* Recent PDFs dialog */
 .recent-window {
   width: 480px;

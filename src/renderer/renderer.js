@@ -474,6 +474,94 @@ function confirmDiscardIfDirty() {
   );
 }
 
+// ---- Custom prompt dialog (Electron disables window.prompt) ---------
+const rangeDialog = $("range-dialog");
+const rangeTitle = $("range-title");
+const rangeMessage = $("range-message");
+const rangeInput = $("range-input");
+const rangeConfirmBtn = $("range-confirm");
+const rangeCancelBtn = $("range-cancel");
+/** @type {((value: string | null) => void) | null} */
+let rangeDialogResolve = null;
+
+function showRangePrompt({ title, message, value = "" }) {
+  rangeTitle.textContent = title;
+  rangeMessage.textContent = message;
+  rangeInput.value = value;
+  rangeDialog.hidden = false;
+  setTimeout(() => {
+    rangeInput.focus();
+    rangeInput.select();
+  }, 0);
+  return new Promise((resolve) => {
+    rangeDialogResolve = resolve;
+  });
+}
+function settleRange(value) {
+  rangeDialog.hidden = true;
+  if (rangeDialogResolve) {
+    rangeDialogResolve(value);
+    rangeDialogResolve = null;
+  }
+}
+rangeConfirmBtn.addEventListener("click", () => settleRange(rangeInput.value));
+rangeCancelBtn.addEventListener("click", () => settleRange(null));
+rangeDialog.addEventListener("click", (e) => {
+  if (e.target === rangeDialog) settleRange(null);
+});
+rangeInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    settleRange(rangeInput.value);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    settleRange(null);
+  }
+});
+
+// Page-goto numeric prompt
+const gotoDialog = $("goto-dialog");
+const gotoMessage = $("goto-message");
+const gotoInput = $("goto-input");
+const gotoConfirmBtn = $("goto-confirm");
+const gotoCancelBtn = $("goto-cancel");
+let gotoDialogResolve = null;
+
+function showGotoPrompt({ message, value, max }) {
+  gotoMessage.textContent = message;
+  gotoInput.value = String(value ?? "");
+  if (typeof max === "number") gotoInput.max = String(max);
+  gotoDialog.hidden = false;
+  setTimeout(() => {
+    gotoInput.focus();
+    gotoInput.select();
+  }, 0);
+  return new Promise((resolve) => {
+    gotoDialogResolve = resolve;
+  });
+}
+function settleGoto(value) {
+  gotoDialog.hidden = true;
+  if (gotoDialogResolve) {
+    gotoDialogResolve(value);
+    gotoDialogResolve = null;
+  }
+}
+gotoConfirmBtn.addEventListener("click", () => settleGoto(gotoInput.value));
+gotoCancelBtn.addEventListener("click", () => settleGoto(null));
+gotoDialog.addEventListener("click", (e) => {
+  if (e.target === gotoDialog) settleGoto(null);
+});
+gotoInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    settleGoto(gotoInput.value);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    settleGoto(null);
+  }
+});
+
 // ---- Recent files dialog (M5-7) -------------------------------------
 const recentDialog = $("recent-dialog");
 const recentList = $("recent-list");
@@ -645,10 +733,11 @@ async function actionExportRange() {
   const pages = await kpdf3.getPages();
   if (pages.length === 0) return;
   const total = pages.length;
-  const input = window.prompt(
-    `書き出すページ範囲 (例: 1-${total} / 5-10 / 7):`,
-    `1-${total}`,
-  );
+  const input = await showRangePrompt({
+    title: "範囲指定で書き出し",
+    message: `書き出すページ範囲 (例: 1-${total} / 5-10 / 7):`,
+    value: `1-${total}`,
+  });
   if (input === null) return;
   const range = parsePageRange(input, total);
   if (!range) {
@@ -850,15 +939,16 @@ function actionPageNext() {
   if (cur < total) viewer.scrollToPage(cur + 1);
 }
 
-function actionPageGoto() {
+async function actionPageGoto() {
   if (!isOpen || !viewer.registry) return;
   const total = viewer.registry.count();
-  const input = window.prompt(
-    `ページ番号 (1-${total}):`,
-    String(viewer.currentPage || 1),
-  );
+  const input = await showGotoPrompt({
+    message: `ページ番号 (1-${total}):`,
+    value: viewer.currentPage || 1,
+    max: total,
+  });
   if (input === null) return;
-  const n = Number(input.trim());
+  const n = Number(String(input).trim());
   if (!Number.isInteger(n) || n < 1 || n > total) {
     wsStatus.textContent = `無効なページ番号: ${input}`;
     return;
