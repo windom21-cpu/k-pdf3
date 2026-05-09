@@ -213,6 +213,70 @@ export function canonicalToPdfMatrix(page) {
 }
 
 /**
+ * Multiply two 2D affine matrices in [a, b, c, d, e, f] form.
+ *
+ *   result = b ∘ a   — semantically: apply `a` first, then `b`.
+ *
+ * Each matrix represents
+ *
+ *   ⎡a c e⎤
+ *   ⎢b d f⎥
+ *   ⎣0 0 1⎦
+ *
+ * applied to a column vector (x, y, 1).
+ *
+ * @param {number[]} b
+ * @param {number[]} a
+ * @returns {number[]}
+ */
+export function multiplyMatrix(b, a) {
+  const [a0, b0, c0, d0, e0, f0] = b;
+  const [a1, b1, c1, d1, e1, f1] = a;
+  return [
+    a0 * a1 + c0 * b1,
+    b0 * a1 + d0 * b1,
+    a0 * c1 + c0 * d1,
+    b0 * c1 + d0 * d1,
+    a0 * e1 + c0 * f1 + e0,
+    b0 * e1 + d0 * f1 + f0,
+  ];
+}
+
+/**
+ * Invert a 2D affine matrix in [a, b, c, d, e, f] form.
+ * Throws if the linear part is singular (det ≈ 0).
+ *
+ * @param {number[]} m
+ * @returns {number[]}
+ */
+export function inverseMatrix(m) {
+  const [a, b, c, d, e, f] = m;
+  const det = a * d - b * c;
+  if (Math.abs(det) < 1e-12) {
+    throw new Error("inverseMatrix: matrix is singular");
+  }
+  const inv = 1 / det;
+  return [
+    d * inv,
+    -b * inv,
+    -c * inv,
+    a * inv,
+    (c * f - d * e) * inv,
+    (b * e - a * f) * inv,
+  ];
+}
+
+/**
+ * Uniform / non-uniform scale matrix.
+ * @param {number} zx
+ * @param {number} [zy=zx]
+ * @returns {number[]}
+ */
+export function scaleMatrix(zx, zy = zx) {
+  return [zx, 0, 0, zy, 0, 0];
+}
+
+/**
  * Build a default PageBox where mediabox == cropbox starting at (0, 0).
  * Convenience helper for tests / simple PDFs.
  */

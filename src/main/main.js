@@ -12,6 +12,8 @@ import { app, BrowserWindow, ipcMain, dialog, Menu } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Workspace } from "../domain/workspace.js";
+import { openPdfDocument } from "../backend/mupdf-render.js";
+import { renderPageCanonical } from "./render-service.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +21,35 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 let mainWindow = null;
 /** @type {Workspace | null} */
 let activeWorkspace = null;
+/** @type {import("mupdf").Document | null} */
+let activeDoc = null;
+/** @type {Array<ReturnType<Workspace['getPages']>[number]>} */
+let activePages = [];
+
+/**
+ * Open the active workspace's source PDF into mupdf and cache the page list.
+ * No-op if there's no active workspace or the workspace has no source PDF yet.
+ */
+function reopenActiveDoc() {
+  disposeActiveDoc();
+  if (!activeWorkspace) return;
+  const bytes = activeWorkspace.getSourceBytes();
+  if (!bytes) return;
+  activeDoc = openPdfDocument(bytes);
+  activePages = activeWorkspace.getPages();
+}
+
+function disposeActiveDoc() {
+  if (activeDoc) {
+    try {
+      activeDoc.destroy();
+    } catch {
+      /* ignore */
+    }
+    activeDoc = null;
+  }
+  activePages = [];
+}
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -34,6 +65,7 @@ function createMainWindow() {
   });
   mainWindow.loadFile(join(__dirname, "..", "renderer", "index.html"));
   mainWindow.on("closed", () => {
+    disposeActiveDoc();
     if (activeWorkspace) {
       try {
         activeWorkspace.close();
@@ -91,15 +123,18 @@ ipcMain.handle("kpdf3:pick-pdf", async () => {
 });
 
 ipcMain.handle("kpdf3:open-workspace", async (_, filePath) => {
+  disposeActiveDoc();
   if (activeWorkspace) {
     activeWorkspace.close();
     activeWorkspace = null;
   }
   activeWorkspace = Workspace.open(filePath);
+  reopenActiveDoc();
   return { filePath, isNew: activeWorkspace.isNew };
 });
 
 ipcMain.handle("kpdf3:close-workspace", async () => {
+  disposeActiveDoc();
   if (!activeWorkspace) return false;
   activeWorkspace.close();
   activeWorkspace = null;
@@ -108,7 +143,19 @@ ipcMain.handle("kpdf3:close-workspace", async () => {
 
 ipcMain.handle("kpdf3:import-pdf", async (_, pdfPath) => {
   if (!activeWorkspace) throw new Error("No active workspace");
-  return await activeWorkspace.importPdfFromFile(pdfPath);
+  const info = await activeWorkspace.importPdfFromFile(pdfPath);
+  reopenActiveDoc();
+  return info;
+});
+
+ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {
+  if (!activeDoc) throw new Error("No PDF loaded");
+  const row = activePages[pageNo - 1];
+  if (!row) throw new Error(`Page ${pageNo} out of range (have ${activePages.length})`);
+  return renderPageCanonical(activeDoc, row, {
+    zoom: opts?.zoom ?? 1.0,
+    alpha: opts?.alpha ?? true,
+  });
 });
 
 ipcMain.handle("kpdf3:get-source-meta", async () => {

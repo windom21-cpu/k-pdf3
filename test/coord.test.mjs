@@ -14,6 +14,9 @@ import {
   effectiveRotation,
   simplePage,
   canonicalToPdfMatrix,
+  multiplyMatrix,
+  inverseMatrix,
+  scaleMatrix,
 } from "../src/domain/coord.js";
 
 let pass = 0;
@@ -222,6 +225,47 @@ describe("matrix form: all rotations", () => {
         `matrix vs point rot=${rot} ${JSON.stringify(cp)}: ${JSON.stringify(viaMatrix)} vs ${JSON.stringify(viaPoint)}`);
     }
   }
+});
+
+// =====================================================================
+// Matrix utilities (multiplyMatrix / inverseMatrix / scaleMatrix /
+// pdfToPixmapMatrix) used by the page renderer.
+// =====================================================================
+describe("matrix utilities", () => {
+  // Identity properties
+  const I = [1, 0, 0, 1, 0, 0];
+  const M = [2, -1, 0.5, 3, 5, 7];
+  const lhsId = multiplyMatrix(I, M);
+  const rhsId = multiplyMatrix(M, I);
+  for (let i = 0; i < 6; i++) {
+    assert(approxEq(lhsId[i], M[i]), `I ∘ M [${i}]`);
+    assert(approxEq(rhsId[i], M[i]), `M ∘ I [${i}]`);
+  }
+
+  // Inverse correctness: M ∘ M^-1 = I
+  const Mi = inverseMatrix(M);
+  const product = multiplyMatrix(M, Mi);
+  for (let i = 0; i < 6; i++) {
+    assert(approxEq(product[i], I[i]), `M ∘ M^-1 [${i}]`);
+  }
+
+  // Singular matrix throws
+  let threw = false;
+  try {
+    inverseMatrix([1, 2, 2, 4, 0, 0]); // det = 0
+  } catch (e) {
+    threw = true;
+  }
+  assert(threw, "inverseMatrix throws on singular matrix");
+
+  // scaleMatrix
+  const s = scaleMatrix(2, 3);
+  assert(approxEq(s[0], 2) && approxEq(s[3], 3), "scaleMatrix(2, 3)");
+  // Apply to (10, 20): expected (20, 60)
+  const sx = s[0] * 10 + s[2] * 20 + s[4];
+  const sy = s[1] * 10 + s[3] * 20 + s[5];
+  assert(approxEq(sx, 20) && approxEq(sy, 60), "scaleMatrix application");
+
 });
 
 // =====================================================================
