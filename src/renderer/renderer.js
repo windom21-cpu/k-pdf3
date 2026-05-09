@@ -13,6 +13,7 @@ import {
   UpdateOverlayCommand,
   RemoveOverlayCommand,
 } from "../domain/commands.js";
+import { composePagesForExport } from "./exporter.js";
 
 const { kpdf3 } = window;
 
@@ -217,8 +218,8 @@ function refreshMenuState() {
     "zoom-out": isOpen && z > ZOOM_STEPS[0],
     "zoom-fit": isOpen,
     "zoom-100": isOpen && Math.abs(z - 1.0) > 1e-6,
-    // Still M3+ stubs
-    export: false,
+    export: isOpen,
+    // Still M5+ stubs (clipboard)
     cut: false,
     copy: false,
     paste: false,
@@ -284,6 +285,34 @@ async function actionClose() {
   history.clear();
   setOpen(false);
   await refreshViewer();
+}
+
+async function actionExport() {
+  if (!isOpen) return;
+  const pages = await kpdf3.getPages();
+  if (pages.length === 0) return;
+  const savePath = await kpdf3.pickExportPdf();
+  if (!savePath) return;
+  try {
+    wsStatus.textContent = "書き出し準備中...";
+    const composed = await composePagesForExport({
+      pages,
+      projectStore,
+      renderPage: kpdf3.renderPage,
+      onProgress: ({ done, total }) => {
+        wsStatus.textContent = `書き出し中 ${done} / ${total}`;
+      },
+    });
+    wsStatus.textContent = `PDF を組み立て中...`;
+    const result = await kpdf3.exportPdfRasterized({
+      savePath,
+      pages: composed,
+    });
+    wsStatus.textContent = `書き出し完了 (${result.pageCount} ページ → ${savePath})`;
+  } catch (err) {
+    console.error("[renderer] export failed:", err);
+    wsStatus.textContent = `書き出し失敗: ${err.message ?? err}`;
+  }
 }
 
 async function actionSave() {
@@ -379,6 +408,7 @@ const menuBar = new MenuBar({
     open: actionOpen,
     close: actionClose,
     save: actionSave,
+    export: actionExport,
     exit: actionExit,
     about: actionAbout,
     undo: actionUndo,

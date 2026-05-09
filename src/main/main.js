@@ -11,7 +11,8 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
 import { renderPageCanonical } from "./render-service.js";
@@ -225,6 +226,97 @@ ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {
   activeWorkspace.saveOverlays(overlays);
   return { savedAt: new Date().toISOString(), count: overlays.length };
 });
+
+ipcMain.handle("kpdf3:pick-export-pdf", async () => {
+  const r = await dialog.showSaveDialog(mainWindow, {
+    title: "PDF として書き出し",
+    defaultPath: defaultExportName(),
+    filters: [
+      { name: "PDF", extensions: ["pdf"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  });
+  return r.canceled ? null : r.filePath;
+});
+
+/**
+ * Assemble a flatten PDF from per-page composited PNG bytes (from the
+ * renderer) and write it to disk.
+ *
+ * Each page becomes an image-only page in the new PDF, sized to the
+ * canonical PDF-point dimensions. The image is embedded as a single
+ * /XObject and drawn with a single `cm` + `Do` content-stream pair.
+ *
+ * Limitations to address in later M4 sub-steps:
+ *   - File size: PNG is lossless and large. M4 polish: switch to
+ *     JPEG / DCT for source pages when no overlays touch them.
+ *   - No metadata strip / no xref rebuild — qpdf integration M4-3.
+ *   - Revision id / exports BLOB history — M4-2.
+ */
+ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const { savePath, pages } = payload;
+  if (!savePath || !Array.isArray(pages) || pages.length === 0) {
+    throw new Error("export-pdf-rasterized: invalid payload");
+  }
+
+  const newDoc = new mupdf.PDFDocument();
+  try {
+    for (const p of pages) {
+      const png = p.png instanceof Uint8Array ? p.png : new Uint8Array(p.png);
+      const image = new mupdf.Image(png);
+      try {
+        const imageRef = newDoc.addImage(image);
+        const xobjects = newDoc.newDictionary();
+        xobjects.put("Im0", imageRef);
+        const resources = newDoc.newDictionary();
+        resources.put("XObject", xobjects);
+
+        // Content stream: full-bleed image draw.
+        // `cm` sets the current transformation matrix; the image's natural
+        // 1×1 unit square is scaled to (widthPt, heightPt).
+        const cs = `q\n${p.widthPt} 0 0 ${p.heightPt} 0 0 cm\n/Im0 Do\nQ\n`;
+        const contents = new TextEncoder().encode(cs);
+
+        const pageObj = newDoc.addPage(
+          [0, 0, p.widthPt, p.heightPt],
+          0,
+          resources,
+          contents,
+        );
+        newDoc.insertPage(newDoc.countPages(), pageObj);
+      } finally {
+        image.destroy?.();
+      }
+    }
+
+    const buf = newDoc.saveToBuffer();
+    try {
+      writeFileSync(savePath, Buffer.from(buf.asUint8Array()));
+    } finally {
+      buf.destroy?.();
+    }
+  } finally {
+    newDoc.destroy();
+  }
+
+  return {
+    savedAt: new Date().toISOString(),
+    savePath,
+    pageCount: pages.length,
+  };
+});
+
+/**
+ * Generate a sensible default basename for the export dialog, e.g. for
+ * a workspace at /path/foo.kpdf3 → /path/foo-export.pdf.
+ */
+function defaultExportName() {
+  if (!activeWorkspace) return "export.pdf";
+  const meta = activeWorkspace.getSourceMeta();
+  const base = meta?.fileName?.replace(/\.[^.]+$/, "") ?? "export";
+  return `${base}-export.pdf`;
+}
 
 ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {
   if (!activeDoc) throw new Error("No PDF loaded");
