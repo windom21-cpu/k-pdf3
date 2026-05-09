@@ -8,7 +8,7 @@
 //   - low-level CRUD helpers (callers stay schema-aware)
 
 import Database from "better-sqlite3";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -28,10 +28,21 @@ export const SCHEMA_VERSION = 1;
  * If the file does not exist, it is created and the schema is applied.
  * If it exists, basic integrity & version checks are performed.
  *
+ * Pass `{ force: true }` to wipe an existing file before opening — used by
+ * the "new workspace" flow where `showSaveDialog` may have selected an
+ * existing path that the user has agreed to overwrite. WAL sidecars (-wal,
+ * -shm) are also removed.
+ *
  * @param {string} filePath  absolute path to the .kpdf3 file
+ * @param {{ force?: boolean }} [opts]
  * @returns {{ db: import("better-sqlite3").Database, isNew: boolean }}
  */
-export function openWorkspace(filePath) {
+export function openWorkspace(filePath, opts = {}) {
+  if (opts.force) {
+    if (existsSync(filePath)) rmSync(filePath, { force: true });
+    rmSync(filePath + "-wal", { force: true });
+    rmSync(filePath + "-shm", { force: true });
+  }
   const isNew = !existsSync(filePath);
   const db = new Database(filePath);
 

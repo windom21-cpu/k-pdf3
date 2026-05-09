@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>K-PDF3 v2.0.0 (M1 skeleton)</title>
+  <title>K-PDF3 v2.0.0 (M2)</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -11,28 +11,16 @@
     <span class="title-bar-text">K-PDF3 — 法律実務向け PDF Workspace</span>
     <span id="appinfo" class="appinfo"></span>
   </header>
-  <main class="content">
-    <h1>K-PDF3 v2.0.0 — M1 Foundation</h1>
-    <p class="status">
-      Architecture-first build. UI lands in M2 / M3.
-      Workspace I/O & coordinate transform are wired up — verify via the smoke test below.
-    </p>
-
-    <section>
-      <h2>Workspace</h2>
-      <div class="row">
-        <button id="btn-new">新規 workspace を作成 + PDF 取込</button>
-        <button id="btn-open">既存 workspace を開く</button>
-        <button id="btn-close" disabled>workspace を閉じる</button>
-      </div>
-      <pre id="ws-info">(no workspace)</pre>
-    </section>
-
-    <section>
-      <h2>Pages</h2>
-      <pre id="pages-info">(no pages)</pre>
-    </section>
+  <nav class="toolbar">
+    <button id="btn-new">新規 + PDF 取込</button>
+    <button id="btn-open">既存を開く</button>
+    <button id="btn-close" disabled>閉じる</button>
+    <span class="ws-label" id="ws-label"></span>
+    <span class="ws-status" id="ws-status">(no workspace)</span>
+  </nav>
+  <main id="viewer-container" class="viewer-container">
+    <!-- Page DOM is built dynamically by viewer.js -->
   </main>
-  <script src="./renderer.js"></script>
+  <script type="module" src="./renderer.js"></script>
 </body>
 </html>

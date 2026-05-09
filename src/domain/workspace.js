@@ -35,11 +35,27 @@ export class Workspace {
 
   /**
    * Open or create a workspace at the given path.
+   * If the path already holds a recognised .kpdf3 file, it is opened.
+   * If the path is empty / non-existent, a fresh workspace is created.
+   *
    * @param {string} filePath
    */
   static open(filePath) {
     const { db, isNew } = openWorkspace(filePath);
     return new Workspace(filePath, db, isNew);
+  }
+
+  /**
+   * Force-create a fresh workspace at the given path. Any existing file at
+   * `filePath` (and its WAL sidecars) are removed first. Use this for the
+   * "new" flow where `showSaveDialog` returned a path the user has chosen
+   * to overwrite.
+   *
+   * @param {string} filePath
+   */
+  static create(filePath) {
+    const { db } = openWorkspace(filePath, { force: true });
+    return new Workspace(filePath, db, true);
   }
 
   close() {

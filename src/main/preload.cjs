@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   pickPdf:            ()        => ipcRenderer.invoke("kpdf3:pick-pdf"),
   // workspace lifecycle
   openWorkspace:      (path)    => ipcRenderer.invoke("kpdf3:open-workspace", path),
+  createWorkspace:    (path)    => ipcRenderer.invoke("kpdf3:create-workspace", path),
   closeWorkspace:     ()        => ipcRenderer.invoke("kpdf3:close-workspace"),
   importPdf:          (pdfPath) => ipcRenderer.invoke("kpdf3:import-pdf", pdfPath),
   getSourceMeta:      ()        => ipcRenderer.invoke("kpdf3:get-source-meta"),

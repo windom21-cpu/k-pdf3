@@ -99,7 +99,10 @@ ipcMain.handle("kpdf3:pick-workspace-save", async () => {
   const r = await dialog.showSaveDialog(mainWindow, {
     title: "新しい workspace を保存",
     defaultPath: "untitled.kpdf3",
-    filters: [{ name: "K-PDF3 workspace", extensions: ["kpdf3"] }],
+    filters: [
+      { name: "K-PDF3 workspace", extensions: ["kpdf3"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
   });
   return r.canceled ? null : r.filePath;
 });
@@ -107,7 +110,10 @@ ipcMain.handle("kpdf3:pick-workspace-save", async () => {
 ipcMain.handle("kpdf3:pick-workspace-open", async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
     title: "workspace を開く",
-    filters: [{ name: "K-PDF3 workspace", extensions: ["kpdf3"] }],
+    filters: [
+      { name: "K-PDF3 workspace", extensions: ["kpdf3"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
     properties: ["openFile"],
   });
   return r.canceled ? null : r.filePaths[0];
@@ -116,7 +122,10 @@ ipcMain.handle("kpdf3:pick-workspace-open", async () => {
 ipcMain.handle("kpdf3:pick-pdf", async () => {
   const r = await dialog.showOpenDialog(mainWindow, {
     title: "PDF を選択",
-    filters: [{ name: "PDF", extensions: ["pdf"] }],
+    filters: [
+      { name: "PDF", extensions: ["pdf", "PDF"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
     properties: ["openFile"],
   });
   return r.canceled ? null : r.filePaths[0];
@@ -131,6 +140,17 @@ ipcMain.handle("kpdf3:open-workspace", async (_, filePath) => {
   activeWorkspace = Workspace.open(filePath);
   reopenActiveDoc();
   return { filePath, isNew: activeWorkspace.isNew };
+});
+
+ipcMain.handle("kpdf3:create-workspace", async (_, filePath) => {
+  disposeActiveDoc();
+  if (activeWorkspace) {
+    activeWorkspace.close();
+    activeWorkspace = null;
+  }
+  activeWorkspace = Workspace.create(filePath);
+  reopenActiveDoc();
+  return { filePath, isNew: true };
 });
 
 ipcMain.handle("kpdf3:close-workspace", async () => {

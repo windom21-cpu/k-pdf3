@@ -1,14 +1,23 @@
-/* M1 placeholder styles. 98.css integration lands in M3 / M6. */
+/* K-PDF3 M2 viewer styles. 98.css integration lands in M6. */
+
 * { box-sizing: border-box; }
 
-body {
+html, body {
   margin: 0;
+  height: 100%;
   font-family: "Kosugi", "MS UI Gothic", "Hiragino Kaku Gothic ProN", sans-serif;
   background: #c0c0c0;
   color: #111;
 }
 
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ----- Title bar ----- */
 .title-bar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -18,29 +27,33 @@ body {
   font-weight: bold;
   font-size: 12px;
 }
-.appinfo { font-size: 11px; opacity: 0.85; font-weight: normal; }
-
-.content {
-  padding: 16px 24px;
-  max-width: 960px;
+.appinfo {
+  font-size: 11px;
+  opacity: 0.85;
+  font-weight: normal;
 }
 
-h1 { margin: 8px 0 4px; font-size: 18px; }
-h2 { margin: 16px 0 8px; font-size: 14px; }
-
-.status {
-  background: #ffffe1;
-  border: 1px solid #888;
-  padding: 8px 12px;
+/* ----- Toolbar ----- */
+.toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: #c0c0c0;
+  border-bottom: 1px solid #808080;
   font-size: 12px;
 }
-
-.row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
+.ws-label {
+  font-weight: bold;
+  margin-left: 8px;
 }
+.ws-status {
+  margin-left: auto;
+  color: #444;
+}
+
+/* ----- 98-style buttons ----- */
 button {
   font-family: inherit;
   font-size: 12px;
@@ -53,15 +66,38 @@ button {
 button:active:not(:disabled) {
   border-color: #808080 #fff #fff #808080;
 }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
-pre {
+/* ----- Viewer ----- */
+.viewer-container {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  background: #6e6e6e;
+  padding: 16px 0;
+  /* 98-inset border feel */
+  border-top: 1px solid #404040;
+  border-bottom: 1px solid #404040;
+}
+
+.viewer-page {
   background: #fff;
-  border: 1px solid #888;
-  padding: 8px;
-  font-size: 11px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 300px;
-  overflow: auto;
+  box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.page-placeholder {
+  font-family: "MS UI Gothic", monospace;
+  font-size: 24px;
+  color: #b0b0b0;
+  user-select: none;
+}
+
+.page-error {
+  color: #c00;
+  font-size: 12px;
 }
