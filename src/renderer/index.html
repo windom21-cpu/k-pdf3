@@ -46,6 +46,10 @@
     <div class="menu-item disabled" data-action="zoom-out">縮小 (Ctrl+-)</div>
     <div class="menu-item disabled" data-action="zoom-fit">ウィンドウに合わせる</div>
     <div class="menu-item disabled" data-action="zoom-100">100% (Ctrl+0)</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="page-prev">前のページ (PageUp)</div>
+    <div class="menu-item disabled" data-action="page-next">次のページ (PageDown)</div>
+    <div class="menu-item disabled" data-action="page-goto">ページ移動... (Ctrl+G)</div>
   </div>
 
   <div class="menu-dropdown" id="menu-help" hidden>
@@ -73,6 +77,7 @@
 
   <div class="status-bar">
     <p class="status-bar-field" id="ws-status">PDF を「開く」で読み込みます</p>
+    <p class="status-bar-field status-bar-page" id="page-indicator"></p>
     <p class="status-bar-field" id="appinfo"></p>
   </div>
 

@@ -33,6 +33,7 @@ const btnModeStamp = $("btn-mode-stamp");
 const btnModeRedaction = $("btn-mode-redaction");
 const wsLabel = $("ws-label");
 const wsStatus = $("ws-status");
+const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
 
 const viewer = new Viewer(viewerContainer, {
@@ -42,7 +43,16 @@ const viewer = new Viewer(viewerContainer, {
   onTextEditCommit: handleTextEditCommit,
   onOverlayDragEnd: handleOverlayDragEnd,
   onOverlayContextMenu: showOverlayContextMenu,
+  onPageChange: updatePageIndicator,
 });
+
+function updatePageIndicator(current, total) {
+  if (!total || total === 0) {
+    pageIndicator.textContent = "";
+    return;
+  }
+  pageIndicator.textContent = `${current} / ${total}`;
+}
 
 let isOpen = false;
 /** @type {'none' | 'text' | 'stamp' | 'redaction'} */
@@ -353,6 +363,12 @@ function refreshMenuState() {
     "zoom-out": isOpen && z > ZOOM_STEPS[0],
     "zoom-fit": isOpen,
     "zoom-100": isOpen && Math.abs(z - 1.0) > 1e-6,
+    "page-prev": isOpen && viewer.currentPage > 1,
+    "page-next":
+      isOpen &&
+      !!viewer.registry &&
+      viewer.currentPage < viewer.registry.count(),
+    "page-goto": isOpen,
     export: isOpen,
     // Still M5+ stubs (clipboard)
     cut: false,
@@ -366,6 +382,16 @@ projectStore.subscribe(() => {
   refreshDirtyIndicator();
   refreshMenuState();
 });
+
+// Refresh menu state when the page indicator changes (page-prev / page-next
+// availability depends on currentPage). Done by chaining the existing
+// onPageChange callback.
+const _origUpdatePageIndicator = updatePageIndicator;
+function updatePageIndicatorAndMenu(current, total) {
+  _origUpdatePageIndicator(current, total);
+  refreshMenuState();
+}
+viewer.onPageChange = updatePageIndicatorAndMenu;
 
 async function refreshViewer() {
   if (!isOpen) {
@@ -527,6 +553,35 @@ function actionZoomFit() {
   applyZoom(targetWidth / maxCanonW);
 }
 
+function actionPagePrev() {
+  if (!isOpen || !viewer.registry) return;
+  const cur = viewer.currentPage;
+  if (cur > 1) viewer.scrollToPage(cur - 1);
+}
+
+function actionPageNext() {
+  if (!isOpen || !viewer.registry) return;
+  const cur = viewer.currentPage;
+  const total = viewer.registry.count();
+  if (cur < total) viewer.scrollToPage(cur + 1);
+}
+
+function actionPageGoto() {
+  if (!isOpen || !viewer.registry) return;
+  const total = viewer.registry.count();
+  const input = window.prompt(
+    `ページ番号 (1-${total}):`,
+    String(viewer.currentPage || 1),
+  );
+  if (input === null) return;
+  const n = Number(input.trim());
+  if (!Number.isInteger(n) || n < 1 || n > total) {
+    wsStatus.textContent = `無効なページ番号: ${input}`;
+    return;
+  }
+  viewer.scrollToPage(n);
+}
+
 async function actionAbout() {
   const info = await kpdf3.getAppInfo();
   const lines = [
@@ -565,6 +620,9 @@ const menuBar = new MenuBar({
     "zoom-out": actionZoomOut,
     "zoom-100": actionZoom100,
     "zoom-fit": actionZoomFit,
+    "page-prev": actionPagePrev,
+    "page-next": actionPageNext,
+    "page-goto": actionPageGoto,
   },
 });
 
@@ -617,6 +675,29 @@ window.addEventListener("keydown", (e) => {
   } else if (key === "0") {
     e.preventDefault();
     actionZoom100();
+  } else if (key === "g") {
+    e.preventDefault();
+    actionPageGoto();
+  }
+});
+
+// PageUp / PageDown for page navigation (no Ctrl required, like a PDF viewer).
+window.addEventListener("keydown", (e) => {
+  if (!isOpen) return;
+  const target = e.target;
+  if (
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA")
+  )
+    return;
+  if (e.key === "PageUp") {
+    e.preventDefault();
+    actionPagePrev();
+  } else if (e.key === "PageDown") {
+    e.preventDefault();
+    actionPageNext();
   }
 });
 

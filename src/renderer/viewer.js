@@ -16,7 +16,7 @@
 //
 // M3+ will add: zoom control, overlay editor surface, canvas eviction LRU.
 
-import { PageRegistry } from "../domain/page-registry.js";
+import { PageRegistry, visiblePageRange } from "../domain/page-registry.js";
 
 const DEFAULT_ZOOM = 1.5;
 const GAP = 8; // px between pages (CSS pixel)
@@ -32,6 +32,7 @@ export class Viewer {
    * @param {(overlayId: string, newText: string) => void} [opts.onTextEditCommit]
    * @param {(overlayId: string, newX: number, newY: number) => void} [opts.onOverlayDragEnd]
    * @param {(overlayId: string, clientX: number, clientY: number) => void} [opts.onOverlayContextMenu]
+   * @param {(currentPage: number, totalPages: number) => void} [opts.onPageChange]
    */
   constructor(container, opts = {}) {
     this.container = container;
@@ -41,6 +42,11 @@ export class Viewer {
     this.onTextEditCommit = opts.onTextEditCommit ?? null;
     this.onOverlayDragEnd = opts.onOverlayDragEnd ?? null;
     this.onOverlayContextMenu = opts.onOverlayContextMenu ?? null;
+    this.onPageChange = opts.onPageChange ?? null;
+    /** @type {number} 1-based; 0 means "no page yet" */
+    this._currentPage = 0;
+    /** @type {((evt: Event) => void) | null} */
+    this._scrollHandler = null;
     /** @type {string | null} id of overlay currently being inline-edited */
     this._editingId = null;
     /** @type {PageRegistry | null} */
@@ -99,15 +105,22 @@ export class Viewer {
   load(pages) {
     this.unload();
     this._pages = pages;
-    if (pages.length === 0) return;
+    if (pages.length === 0) {
+      this._currentPage = 0;
+      if (this.onPageChange) this.onPageChange(0, 0);
+      return;
+    }
 
     this.registry = new PageRegistry(pages);
     this.layout = this.registry.layout({ zoom: this._zoom, gap: GAP });
     this._buildPageDoms();
     this._setupObserver();
+    this._setupScrollListener();
     // Reset to top by default. setZoom overrides this afterwards to keep
     // the user's scroll position relative to the document.
     this.container.scrollTop = 0;
+    this._currentPage = 1;
+    if (this.onPageChange) this.onPageChange(1, pages.length);
   }
 
   /** Tear down DOM + observers; safe to call multiple times. _pages is
@@ -117,12 +130,53 @@ export class Viewer {
       this.observer.disconnect();
       this.observer = null;
     }
+    if (this._scrollHandler) {
+      this.container.removeEventListener("scroll", this._scrollHandler);
+      this._scrollHandler = null;
+    }
     this.container.innerHTML = "";
     this.pageEls.clear();
     this.canvasEls.clear();
     this.pendingRenders.clear();
     this.registry = null;
     this.layout = null;
+  }
+
+  /** Current 1-based page number (best-effort, based on visible-range). */
+  get currentPage() {
+    return this._currentPage;
+  }
+
+  /** Scroll the viewer so `pageNo` is at the top of the viewport. */
+  scrollToPage(pageNo) {
+    if (!this.layout) return;
+    if (pageNo < 1 || pageNo > this.layout.pageTops.length) return;
+    this.container.scrollTop = this.layout.pageTops[pageNo - 1];
+  }
+
+  _setupScrollListener() {
+    let scheduled = false;
+    this._scrollHandler = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        if (!this.layout || !this.registry) return;
+        const range = visiblePageRange(
+          this.layout,
+          this.container.scrollTop,
+          this.container.clientHeight,
+        );
+        const next = range.first > 0 ? range.first : this._currentPage;
+        if (next !== this._currentPage) {
+          this._currentPage = next;
+          if (this.onPageChange) this.onPageChange(next, this.registry.count());
+        }
+      });
+    };
+    this.container.addEventListener("scroll", this._scrollHandler, {
+      passive: true,
+    });
   }
 
   dispose() {
