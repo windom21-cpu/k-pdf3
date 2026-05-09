@@ -414,6 +414,7 @@ function refreshMenuState() {
     "page-goto": isOpen,
     "toggle-bookmarks": isOpen,
     export: isOpen,
+    "export-range": isOpen,
     print: isOpen,
     // Still M5+ stubs (clipboard)
     cut: false,
@@ -554,6 +555,70 @@ printCancelBtn.addEventListener("click", () => settlePrintDialog(null));
 printDialog.addEventListener("click", (e) => {
   if (e.target === printDialog) settlePrintDialog(null);
 });
+
+/**
+ * Parse a page-range string into { start, end } (1-based, inclusive).
+ * Accepts "5-10", "5", "  5  -  10  ". Returns null on invalid input
+ * or out-of-range values.
+ */
+function parsePageRange(input, total) {
+  const m = String(input).match(/^\s*(\d+)\s*(?:-\s*(\d+))?\s*$/);
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = m[2] ? Number(m[2]) : start;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
+  if (start < 1 || end > total || start > end) return null;
+  return { start, end };
+}
+
+/**
+ * Export a page range as a flatten PDF (always rasterized — byte-copy
+ * doesn't apply to a sub-set of the source). Run multiple times for a
+ * "split" workflow (出口 1 = pages 1-5, 出口 2 = pages 6-12, etc.).
+ */
+async function actionExportRange() {
+  if (!isOpen) return;
+  const pages = await kpdf3.getPages();
+  if (pages.length === 0) return;
+  const total = pages.length;
+  const input = window.prompt(
+    `書き出すページ範囲 (例: 1-${total} / 5-10 / 7):`,
+    `1-${total}`,
+  );
+  if (input === null) return;
+  const range = parsePageRange(input, total);
+  if (!range) {
+    wsStatus.textContent = `無効な範囲: ${input}`;
+    return;
+  }
+  const savePath = await kpdf3.pickExportPdf();
+  if (!savePath) return;
+
+  const filteredPages = pages.slice(range.start - 1, range.end);
+  showBusy("書き出し準備", `ページ ${range.start}-${range.end} を描画しています...`, 0);
+  try {
+    const composed = await composePagesForExport({
+      pages: filteredPages,
+      projectStore,
+      renderPage: kpdf3.renderPage,
+      onProgress: ({ done, total: t }) => {
+        updateBusy(`${done} / ${t} ページを描画中...`, (done / t) * 80);
+      },
+    });
+    updateBusy("PDF を組み立て中...", 90);
+    const result = await kpdf3.exportPdfRasterized({
+      savePath,
+      pages: composed,
+    });
+    hideBusy();
+    wsStatus.textContent =
+      `書き出し完了 (p.${range.start}-${range.end}, rev ${result.revisionId.slice(0, 8)} → ${savePath})`;
+  } catch (err) {
+    hideBusy();
+    console.error("[renderer] export-range failed:", err);
+    wsStatus.textContent = `書き出し失敗: ${err.message ?? err}`;
+  }
+}
 
 async function actionPrint() {
   if (!isOpen) return;
@@ -816,6 +881,7 @@ const menuBar = new MenuBar({
     close: actionClose,
     save: actionSave,
     export: actionExport,
+    "export-range": actionExportRange,
     print: actionPrint,
     exit: actionExit,
     about: actionAbout,
