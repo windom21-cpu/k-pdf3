@@ -64,6 +64,21 @@
     <div class="menu-item" data-ctx="delete">削除 (Del)</div>
   </div>
 
+  <!-- Modal busy indicator for long-running operations (export / print). -->
+  <div class="busy-modal" id="busy-modal" hidden>
+    <div class="window busy-window">
+      <div class="title-bar">
+        <div class="title-bar-text" id="busy-title">処理中</div>
+      </div>
+      <div class="window-body">
+        <p id="busy-message" class="busy-message">準備中...</p>
+        <div class="progress-indicator">
+          <span class="progress-indicator-bar" id="busy-progress-bar"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="toolbar">
     <button id="btn-open">開く</button>
     <button id="btn-close" disabled>閉じる</button>

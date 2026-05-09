@@ -357,3 +357,33 @@ button.toggled {
   min-width: 90px;
   text-align: center;
 }
+
+/* ---- Busy modal (export / print progress) ---- */
+.busy-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.busy-window {
+  width: 360px;
+  /* 98.css supplies the windowed look; just ensure it's centred. */
+}
+.busy-window .window-body {
+  padding: 14px 16px;
+}
+.busy-message {
+  margin: 0 0 12px 0;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.busy-modal .progress-indicator {
+  width: 100%;
+}
+.busy-modal .progress-indicator-bar {
+  width: 0%;
+  transition: width 0.15s linear;
+}

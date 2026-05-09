@@ -37,6 +37,31 @@ const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
 const sidebar = $("sidebar");
 const bookmarkTree = $("bookmark-tree");
+const busyModal = $("busy-modal");
+const busyTitle = $("busy-title");
+const busyMessage = $("busy-message");
+const busyProgressBar = $("busy-progress-bar");
+
+/**
+ * Show / update / hide a 98-styled modal busy indicator with a progress
+ * bar. Used for long operations (export / print) where the user might
+ * otherwise think the app froze.
+ */
+function showBusy(title, message, percent = 0) {
+  busyTitle.textContent = title;
+  busyMessage.textContent = message;
+  busyProgressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  busyModal.hidden = false;
+}
+function updateBusy(message, percent) {
+  if (typeof message === "string") busyMessage.textContent = message;
+  if (typeof percent === "number") {
+    busyProgressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  }
+}
+function hideBusy() {
+  busyModal.hidden = true;
+}
 
 const viewer = new Viewer(viewerContainer, {
   projectStore,
@@ -479,33 +504,29 @@ async function actionPrint() {
   if (pages.length === 0) return;
   const overlayCount = projectStore.count();
   const isCopy = overlayCount === 0;
+  showBusy("印刷準備", "ページを描画しています...", 0);
   try {
-    let result;
     if (isCopy) {
-      wsStatus.textContent = "印刷準備中...";
-      result = await kpdf3.printSourcePdf();
+      updateBusy("元 PDF をコピー中...", 50);
+      await kpdf3.printSourcePdf();
     } else {
-      wsStatus.textContent = "印刷準備中...";
       const composed = await composePagesForExport({
         pages,
         projectStore,
         renderPage: kpdf3.renderPage,
         onProgress: ({ done, total }) => {
-          wsStatus.textContent = `印刷準備中 ${done} / ${total}`;
+          updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
       });
-      wsStatus.textContent = "PDF を組み立て中...";
-      result = await kpdf3.printPdfRasterized({ pages: composed });
+      updateBusy("PDF を組み立て中...", 90);
+      await kpdf3.printPdfRasterized({ pages: composed });
     }
-    if (result.method === "os-dialog") {
-      wsStatus.textContent = result.cancelled
-        ? "印刷をキャンセルしました"
-        : "印刷ダイアログを表示しました";
-    } else {
-      wsStatus.textContent =
-        "OS の印刷ダイアログを開けなかったため、別ビューアを起動しました。そちらで Ctrl+P を押してください。";
-    }
+    updateBusy("ビューアを起動中...", 100);
+    hideBusy();
+    wsStatus.textContent =
+      "印刷用 PDF を別ビューアで開きました — そちらで Ctrl+P を押してください。";
   } catch (err) {
+    hideBusy();
     console.error("[renderer] print failed:", err);
     wsStatus.textContent = `印刷準備失敗: ${err.message ?? err}`;
   }
@@ -521,33 +542,34 @@ async function actionExport() {
   // rasterising — preserves the original PDF's text layer and size.
   const overlayCount = projectStore.count();
   const isCopy = overlayCount === 0;
+  const verb = isCopy ? "コピー" : "書き出し";
+  showBusy(`${verb}準備`, "ページを描画しています...", 0);
   try {
     let result;
     if (isCopy) {
-      wsStatus.textContent = "原本をコピー中...";
+      updateBusy("元 PDF をコピー中...", 50);
       result = await kpdf3.copySourcePdf(savePath);
     } else {
-      wsStatus.textContent = "書き出し準備中...";
       const composed = await composePagesForExport({
         pages,
         projectStore,
         renderPage: kpdf3.renderPage,
         onProgress: ({ done, total }) => {
-          wsStatus.textContent = `書き出し中 ${done} / ${total}`;
+          updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
       });
-      wsStatus.textContent = "PDF を組み立て中...";
+      updateBusy("PDF を組み立て中...", 90);
       result = await kpdf3.exportPdfRasterized({
         savePath,
         pages: composed,
       });
     }
-    const verb = isCopy ? "コピー" : "書き出し";
+    hideBusy();
     wsStatus.textContent =
       `${verb}完了 (${result.pageCount} ページ, rev ${result.revisionId.slice(0, 8)} → ${savePath})`;
   } catch (err) {
+    hideBusy();
     console.error("[renderer] export failed:", err);
-    const verb = isCopy ? "コピー" : "書き出し";
     wsStatus.textContent = `${verb}失敗: ${err.message ?? err}`;
   }
 }

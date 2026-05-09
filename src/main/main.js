@@ -130,10 +130,6 @@ app.on("before-quit", () => {
   }
   activeSourcePdfPath = null;
   closeRegistry();
-  if (printWindow && !printWindow.isDestroyed()) {
-    try { printWindow.destroy(); } catch { /* ignore */ }
-    printWindow = null;
-  }
 });
 
 // ---- IPC: workspace ------------------------------------------------------
@@ -387,91 +383,12 @@ function tempPrintPath() {
   return join(app.getPath("temp"), `kpdf3-print-${randomUUID()}.pdf`);
 }
 
-/**
- * One reusable hidden BrowserWindow for OS-level printing. Reusing it
- * (instead of allocating + closing per print) avoids a Chromium/PDF-plugin
- * crash that surfaced when the window closed mid print-job teardown.
- * The singleton is destroyed on `before-quit`.
- *
- * @type {BrowserWindow | null}
- */
-let printWindow = null;
-
-function getPrintWindow() {
-  if (printWindow && !printWindow.isDestroyed()) return printWindow;
-  printWindow = new BrowserWindow({
-    show: false,
-    width: 800,
-    height: 600,
-    webPreferences: {
-      plugins: true, // enable Chromium's built-in PDF viewer
-      contextIsolation: true,
-      sandbox: false,
-    },
-  });
-  return printWindow;
-}
-
-/**
- * Show the OS print dialog directly for a PDF file by loading it into a
- * hidden BrowserWindow (Chromium's built-in PDF viewer renders it) and
- * invoking webContents.print(). Resolves on success / user-cancelled,
- * rejects on a real failure so the caller can fall back to
- * shell.openPath.
- *
- * @param {string} pdfPath
- * @returns {Promise<{ success: boolean, cancelled: boolean }>}
- */
-function printPdfViaHiddenWindow(pdfPath) {
-  return new Promise((resolve, reject) => {
-    const win = getPrintWindow();
-    let settled = false;
-    /** @type {(() => void) | null} */
-    let cleanupListeners = null;
-
-    const settle = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      if (cleanupListeners) cleanupListeners();
-      fn(value);
-    };
-
-    const onDidFinishLoad = () => {
-      // Give the PDF plugin a beat to actually render the first page
-      // before invoking print.
-      setTimeout(() => {
-        if (settled) return;
-        try {
-          win.webContents.print({}, (success, errorType) => {
-            if (success) {
-              settle(resolve, { success: true, cancelled: false });
-            } else if (errorType === "cancelled") {
-              settle(resolve, { success: false, cancelled: true });
-            } else {
-              settle(reject, new Error(errorType || "print failed"));
-            }
-          });
-        } catch (err) {
-          settle(reject, err);
-        }
-      }, 250);
-    };
-
-    const onDidFailLoad = (_e, code, desc) => {
-      settle(reject, new Error(`PDF load failed (${code}): ${desc}`));
-    };
-
-    cleanupListeners = () => {
-      win.webContents.off("did-finish-load", onDidFinishLoad);
-      win.webContents.off("did-fail-load", onDidFailLoad);
-    };
-
-    win.webContents.once("did-finish-load", onDidFinishLoad);
-    win.webContents.once("did-fail-load", onDidFailLoad);
-
-    win.loadFile(pdfPath).catch((err) => settle(reject, err));
-  });
-}
+// Note: an earlier M5-4 polish tried to surface the OS print dialog
+// directly via a hidden BrowserWindow + webContents.print(). The dialog
+// did appear, but Electron's PDF-plugin teardown crashed the app shortly
+// after the user dismissed it (reproduced twice on Linux + Electron 38).
+// Until that's understood we fall back to opening the temp PDF in the
+// user's default PDF viewer where Ctrl+P works.
 
 /**
  * Assemble a flatten PDF from per-page composited PNG bytes (from the
@@ -524,20 +441,12 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
  */
 /**
  * @param {string} tempPath  the PDF file we just wrote
- * @returns {Promise<{ method: 'os-dialog' | 'external-viewer', cancelled: boolean }>}
+ * @returns {Promise<{ method: 'external-viewer', cancelled: boolean }>}
  */
 async function tryPrintOrOpenExternal(tempPath) {
-  try {
-    const r = await printPdfViaHiddenWindow(tempPath);
-    return { method: "os-dialog", cancelled: r.cancelled };
-  } catch (err) {
-    // Fall back to opening the file with the OS's default PDF viewer
-    // so the user can still print it from there.
-    console.warn("[main] direct print failed, falling back to shell:", err);
-    const errMsg = await shell.openPath(tempPath);
-    if (errMsg) throw new Error(`Print + fallback both failed: ${err.message} | ${errMsg}`);
-    return { method: "external-viewer", cancelled: false };
-  }
+  const errMsg = await shell.openPath(tempPath);
+  if (errMsg) throw new Error(`shell.openPath: ${errMsg}`);
+  return { method: "external-viewer", cancelled: false };
 }
 
 ipcMain.handle("kpdf3:print-pdf-rasterized", async (_, payload) => {
