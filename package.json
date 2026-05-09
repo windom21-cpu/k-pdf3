@@ -8,6 +8,11 @@
   "scripts": {
     "start": "electron . --no-sandbox",
     "spike": "node spike/mupdf-layout.mjs",
+    "test:coord": "node test/coord.test.mjs",
+    "test:m1": "node test/m1-exit-criteria.mjs",
+    "test": "npm run test:coord && npm run test:m1",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "electron-builder install-app-deps",
     "build": "electron-builder",
     "build:linux": "electron-builder --linux",
     "build:win": "electron-builder --win",

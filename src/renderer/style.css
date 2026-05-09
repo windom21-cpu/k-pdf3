@@ -1,0 +1,67 @@
+/* M1 placeholder styles. 98.css integration lands in M3 / M6. */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Kosugi", "MS UI Gothic", "Hiragino Kaku Gothic ProN", sans-serif;
+  background: #c0c0c0;
+  color: #111;
+}
+
+.title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #000080;
+  color: #fff;
+  padding: 4px 8px;
+  font-weight: bold;
+  font-size: 12px;
+}
+.appinfo { font-size: 11px; opacity: 0.85; font-weight: normal; }
+
+.content {
+  padding: 16px 24px;
+  max-width: 960px;
+}
+
+h1 { margin: 8px 0 4px; font-size: 18px; }
+h2 { margin: 16px 0 8px; font-size: 14px; }
+
+.status {
+  background: #ffffe1;
+  border: 1px solid #888;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+button {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  background: #c0c0c0;
+  border: 1px solid;
+  border-color: #fff #808080 #808080 #fff;
+  cursor: pointer;
+}
+button:active:not(:disabled) {
+  border-color: #808080 #fff #fff #808080;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+pre {
+  background: #fff;
+  border: 1px solid #888;
+  padding: 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow: auto;
+}
