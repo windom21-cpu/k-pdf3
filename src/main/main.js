@@ -228,9 +228,14 @@ ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {
 });
 
 ipcMain.handle("kpdf3:pick-export-pdf", async () => {
+  // Suggest the source PDF's directory as the save location so the user
+  // doesn't have to navigate from wherever the OS dialog last opened.
+  const dir = activeWorkspace ? dirname(activeWorkspace.filePath) : null;
+  const name = defaultExportName();
+  const defaultPath = dir ? join(dir, name) : name;
   const r = await dialog.showSaveDialog(mainWindow, {
     title: "PDF として書き出し",
-    defaultPath: defaultExportName(),
+    defaultPath,
     filters: [
       { name: "PDF", extensions: ["pdf"] },
       { name: "All Files", extensions: ["*"] },
@@ -317,14 +322,30 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
 });
 
 /**
- * Generate a sensible default basename for the export dialog, e.g. for
- * a workspace at /path/foo.kpdf3 → /path/foo-export.pdf.
+ * Generate a default basename for the export dialog. The 「書出」 marker
+ * (visibly Japanese) and the timestamp make it impossible to confuse with
+ * the source PDF or with previous exports — the user can let the OS file
+ * dialog sort by name to see export history.
+ *
+ *   /path/契約書.pdf   →   /path/契約書_書出_20260509-185023.pdf
  */
 function defaultExportName() {
-  if (!activeWorkspace) return "export.pdf";
+  if (!activeWorkspace) return defaultExportNameFor("export");
   const meta = activeWorkspace.getSourceMeta();
-  const base = meta?.fileName?.replace(/\.[^.]+$/, "") ?? "export";
-  return `${base}-export.pdf`;
+  const base = (meta?.fileName ?? "export").replace(/\.[^.]+$/, "");
+  return defaultExportNameFor(base);
+}
+
+function defaultExportNameFor(base) {
+  return `${base}_書出_${formatExportStamp(new Date())}.pdf`;
+}
+
+function formatExportStamp(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
 }
 
 ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {
