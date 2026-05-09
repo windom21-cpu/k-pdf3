@@ -94,10 +94,26 @@ body {
 .toolbar button {
   min-width: 75px;
 }
+.toolbar-sep {
+  display: inline-block;
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: linear-gradient(to right, #808080, #808080);
+  box-shadow: 1px 0 0 #ffffff;
+}
 .ws-label {
   margin-left: 8px;
   font-weight: bold;
   /* 98.css's bitmap font handles the rest */
+}
+button.toggled {
+  /* Pressed-in look for sticky-toggle buttons (Edit mode) */
+  box-shadow:
+    inset -1px -1px #ffffff,
+    inset 1px 1px #0a0a0a,
+    inset -2px -2px #dfdfdf,
+    inset 2px 2px grey;
 }
 
 /* ---- Viewer area ---- */
@@ -119,6 +135,37 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Allow absolutely-positioned overlay layer to anchor to this. */
+  position: absolute;
+}
+
+/* When edit mode is on, switch the page cursor so it's clear that a click
+ * will create something. */
+.viewer-container.edit-mode .viewer-page {
+  cursor: crosshair;
+}
+
+/* Overlay layer sits on top of the page canvas. */
+.overlay-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* selection/drag come in M3-6 */
+}
+.overlay {
+  position: absolute;
+  box-sizing: border-box;
+  font-family: "MS UI Gothic", "Hiragino Kaku Gothic ProN",
+    "Pixelated MS Sans Serif", sans-serif;
+  line-height: 1;
+  white-space: pre-wrap;
+  user-select: none;
+  /* Light dotted outline so empty / placement-sized overlays are visible
+   * during M3-3 development. M3-6 will make this conditional on selection. */
+  outline: 1px dotted rgba(0, 0, 128, 0.4);
+}
+.overlay-text {
+  display: flex;
+  align-items: flex-start;
 }
 
 .page-placeholder {

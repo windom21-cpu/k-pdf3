@@ -8,13 +8,14 @@ import { Viewer } from "./viewer.js";
 import { MenuBar } from "./menu-bar.js";
 import { ProjectStore } from "../domain/project-store.js";
 import { HistoryStack } from "../domain/history.js";
+import { AddOverlayCommand } from "../domain/commands.js";
 
 const { kpdf3 } = window;
 
 /**
  * Renderer-side overlay store (M3 architecture: ProjectStore lives in the
  * renderer; main process only handles SQLite I/O on save / load). Reset
- * to the saved snapshot whenever a PDF is opened. Editing UI lands M3-3.
+ * to the saved snapshot whenever a PDF is opened.
  */
 const projectStore = new ProjectStore();
 const history = new HistoryStack();
@@ -22,18 +23,53 @@ const history = new HistoryStack();
 const $ = (id) => document.getElementById(id);
 const btnOpen = $("btn-open");
 const btnClose = $("btn-close");
+const btnEditMode = $("btn-edit-mode");
 const wsLabel = $("ws-label");
 const wsStatus = $("ws-status");
 const viewerContainer = $("viewer-container");
 
-const viewer = new Viewer(viewerContainer);
+const viewer = new Viewer(viewerContainer, {
+  projectStore,
+  onPagePointerDown: handlePagePointerDown,
+});
 
 let isOpen = false;
+let isEditMode = false;
+
+function handlePagePointerDown(pageNo, x, y) {
+  if (!isOpen || !isEditMode) return;
+  // Default: drop a 100×20 (PDF point) text overlay anchored at the click.
+  const cmd = new AddOverlayCommand(projectStore, {
+    pageNo,
+    type: "text",
+    x,
+    y,
+    w: 100,
+    h: 20,
+    zOrder: 0,
+    properties: {
+      text: "テキスト",
+      fontSize: 12,
+      color: "#000000",
+      fontId: "default",
+    },
+  });
+  history.execute(cmd);
+}
+
+function setEditMode(on) {
+  isEditMode = !!on;
+  viewer.setEditMode(isEditMode);
+  btnEditMode.classList.toggle("toggled", isEditMode);
+  btnEditMode.textContent = isEditMode ? "編集モード ON" : "編集モード";
+}
 
 function setOpen(open) {
   isOpen = open;
   btnOpen.disabled = open;
   btnClose.disabled = !open;
+  btnEditMode.disabled = !open;
+  if (!open) setEditMode(false);
   refreshMenuState();
 }
 
@@ -169,6 +205,7 @@ window.addEventListener("keydown", (e) => {
 // ---- Toolbar buttons --------------------------------------------------
 btnOpen.addEventListener("click", actionOpen);
 btnClose.addEventListener("click", actionClose);
+btnEditMode.addEventListener("click", () => setEditMode(!isEditMode));
 
 // ---- Initial state ----------------------------------------------------
 setOpen(false);

@@ -23,9 +23,16 @@ const GAP = 8; // px between pages (CSS pixel)
 const ROOT_MARGIN = "200px 0px"; // prefetch threshold
 
 export class Viewer {
-  /** @param {HTMLElement} container scrollable host element (overflow-y: auto) */
-  constructor(container) {
+  /**
+   * @param {HTMLElement} container scrollable host element (overflow-y: auto)
+   * @param {object} [opts]
+   * @param {import("../domain/project-store.js").ProjectStore} [opts.projectStore]
+   * @param {(pageNo: number, x: number, y: number, evt: PointerEvent) => void} [opts.onPagePointerDown]
+   */
+  constructor(container, opts = {}) {
     this.container = container;
+    this.projectStore = opts.projectStore ?? null;
+    this.onPagePointerDown = opts.onPagePointerDown ?? null;
     /** @type {PageRegistry | null} */
     this.registry = null;
     /** @type {ReturnType<PageRegistry['layout']> | null} */
@@ -38,6 +45,19 @@ export class Viewer {
     this.pendingRenders = new Set();
     /** @type {IntersectionObserver | null} */
     this.observer = null;
+    /** @type {(() => void) | null} */
+    this._unsubscribeStore = null;
+    if (this.projectStore) {
+      this._subscribeStore();
+    }
+  }
+
+  /**
+   * Page space (canonical PDF point) ↔ pixel scale used by the viewer.
+   * Currently fixed; the View > zoom menu (M3-7) will make it dynamic.
+   */
+  get zoom() {
+    return ZOOM;
   }
 
   /**
@@ -70,6 +90,33 @@ export class Viewer {
     this.layout = null;
   }
 
+  dispose() {
+    this.unload();
+    if (this._unsubscribeStore) {
+      this._unsubscribeStore();
+      this._unsubscribeStore = null;
+    }
+  }
+
+  setEditMode(on) {
+    this.container.classList.toggle("edit-mode", !!on);
+  }
+
+  _subscribeStore() {
+    if (!this.projectStore) return;
+    this._unsubscribeStore = this.projectStore.subscribe((event) => {
+      if (event.kind === "reset") {
+        for (const pageNo of this.pageEls.keys()) {
+          this._renderPageOverlays(pageNo);
+        }
+      } else if (event.pages) {
+        for (const pageNo of event.pages) {
+          this._renderPageOverlays(pageNo);
+        }
+      }
+    });
+  }
+
   _buildPageDoms() {
     const inner = document.createElement("div");
     inner.className = "viewer-inner";
@@ -80,9 +127,10 @@ export class Viewer {
 
     const N = this.registry.count();
     for (let i = 0; i < N; i++) {
+      const pageNo = i + 1;
       const div = document.createElement("div");
       div.className = "viewer-page";
-      div.dataset.pageNo = String(i + 1);
+      div.dataset.pageNo = String(pageNo);
       div.style.position = "absolute";
       div.style.top = `${this.layout.pageTops[i]}px`;
       const left = (this.layout.maxWidth - this.layout.pageWidths[i]) / 2;
@@ -91,13 +139,93 @@ export class Viewer {
       div.style.height = `${this.layout.pageHeights[i]}px`;
       const placeholder = document.createElement("span");
       placeholder.className = "page-placeholder";
-      placeholder.textContent = String(i + 1);
+      placeholder.textContent = String(pageNo);
       div.appendChild(placeholder);
+
+      div.addEventListener("pointerdown", (e) =>
+        this._handlePagePointerDown(pageNo, div, e),
+      );
+
       inner.appendChild(div);
-      this.pageEls.set(i + 1, div);
+      this.pageEls.set(pageNo, div);
     }
 
     this.container.appendChild(inner);
+
+    // If overlays were already loaded before the viewer DOM existed, paint them.
+    if (this.projectStore) {
+      for (const pageNo of this.pageEls.keys()) {
+        this._renderPageOverlays(pageNo);
+      }
+    }
+  }
+
+  /**
+   * Pointer-down handler bound to each .viewer-page. Translates the click
+   * into canonical (PDF point) coordinates and forwards to the host's
+   * onPagePointerDown callback. The host decides whether the gesture is
+   * meaningful (edit mode etc.) — viewer stays passive.
+   */
+  _handlePagePointerDown(pageNo, div, evt) {
+    if (!this.onPagePointerDown) return;
+    const rect = div.getBoundingClientRect();
+    const x = (evt.clientX - rect.left) / this.zoom;
+    const y = (evt.clientY - rect.top) / this.zoom;
+    this.onPagePointerDown(pageNo, x, y, evt);
+  }
+
+  /**
+   * Build (or rebuild) the overlay DOM layer for `pageNo` from the
+   * ProjectStore's current state. Called by the store-subscriber on add /
+   * update / remove / reset events.
+   */
+  _renderPageOverlays(pageNo) {
+    if (!this.projectStore) return;
+    const div = this.pageEls.get(pageNo);
+    if (!div) return;
+    const existing = div.querySelector(":scope > .overlay-layer");
+    if (existing) existing.remove();
+    const overlays = this.projectStore.getPageOverlays(pageNo);
+    if (overlays.length === 0) return;
+
+    const layer = document.createElement("div");
+    layer.className = "overlay-layer";
+
+    for (const ov of overlays) {
+      const el = this._createOverlayElement(ov);
+      if (el) layer.appendChild(el);
+    }
+    div.appendChild(layer);
+  }
+
+  /**
+   * @param {import("../domain/project-store.js").Overlay} ov
+   * @returns {HTMLElement | null}
+   */
+  _createOverlayElement(ov) {
+    const z = this.zoom;
+    const el = document.createElement("div");
+    el.className = `overlay overlay-${ov.type}`;
+    el.dataset.overlayId = ov.id;
+    el.style.left = `${ov.x * z}px`;
+    el.style.top = `${ov.y * z}px`;
+    el.style.width = `${ov.w * z}px`;
+    el.style.height = `${ov.h * z}px`;
+
+    if (ov.type === "text") {
+      const props = ov.properties ?? {};
+      el.textContent = props.text ?? "";
+      const fontSize = (props.fontSize ?? 12) * z;
+      el.style.fontSize = `${fontSize}px`;
+      el.style.color = props.color ?? "#000000";
+      return el;
+    }
+
+    // Other overlay types render as a simple frame for M3-3. M3-6 (stamp)
+    // / M3-7 (image) will fill them in.
+    el.textContent = ov.type;
+    el.style.color = "#444";
+    return el;
   }
 
   _setupObserver() {
