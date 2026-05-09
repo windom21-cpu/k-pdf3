@@ -30,6 +30,7 @@ const btnOpen = $("btn-open");
 const btnClose = $("btn-close");
 const btnModeText = $("btn-mode-text");
 const btnModeStamp = $("btn-mode-stamp");
+const btnModeRedaction = $("btn-mode-redaction");
 const wsLabel = $("ws-label");
 const wsStatus = $("ws-status");
 const viewerContainer = $("viewer-container");
@@ -44,17 +45,119 @@ const viewer = new Viewer(viewerContainer, {
 });
 
 let isOpen = false;
-/** @type {'none' | 'text' | 'stamp'} */
+/** @type {'none' | 'text' | 'stamp' | 'redaction'} */
 let placementMode = "none";
 let activeSourceName = "";
 
-function handlePagePointerDown(pageNo, x, y) {
+function handlePagePointerDown(pageNo, x, y, evt, div) {
   if (!isOpen) return;
   if (placementMode === "text") {
     placeText(pageNo, x, y);
   } else if (placementMode === "stamp") {
     placeStamp(pageNo, x, y);
+  } else if (placementMode === "redaction") {
+    startRedactionDrag(pageNo, x, y, evt, div);
   }
+}
+
+/**
+ * Drag-to-define rectangle for a redaction (M5-1). On a page pointerdown
+ * in 墨消し mode we capture the pointer, paint a live preview rect, and
+ * commit it as an overlay on pointerup. Movements smaller than 5 PDF
+ * point in either dimension fall back to a default 200×30 rect anchored
+ * at the click — handles the「クリックした、もう離した」case without
+ * leaving an invisible 0×0 redaction.
+ */
+function startRedactionDrag(pageNo, startX, startY, downEvt, div) {
+  if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
+    placeRedaction(pageNo, startX - 100, startY - 15, 200, 30);
+    setPlacementMode("none");
+    return;
+  }
+  const pointerId = downEvt.pointerId;
+  const z = viewer.zoom;
+  const preview = document.createElement("div");
+  preview.className = "redaction-preview";
+  preview.style.left = `${startX * z}px`;
+  preview.style.top = `${startY * z}px`;
+  preview.style.width = "0px";
+  preview.style.height = "0px";
+  div.appendChild(preview);
+
+  let curX = startX;
+  let curY = startY;
+  try {
+    div.setPointerCapture(pointerId);
+  } catch {
+    /* ignore */
+  }
+
+  function onMove(e) {
+    if (e.pointerId !== pointerId) return;
+    const rect = div.getBoundingClientRect();
+    curX = (e.clientX - rect.left) / z;
+    curY = (e.clientY - rect.top) / z;
+    const x = Math.min(startX, curX);
+    const y = Math.min(startY, curY);
+    const w = Math.abs(curX - startX);
+    const h = Math.abs(curY - startY);
+    preview.style.left = `${x * z}px`;
+    preview.style.top = `${y * z}px`;
+    preview.style.width = `${w * z}px`;
+    preview.style.height = `${h * z}px`;
+  }
+
+  function cleanup() {
+    try {
+      div.releasePointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+    div.removeEventListener("pointermove", onMove);
+    div.removeEventListener("pointerup", onUp);
+    div.removeEventListener("pointercancel", onCancel);
+    preview.remove();
+  }
+
+  function onUp(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+    const x = Math.min(startX, curX);
+    const y = Math.min(startY, curY);
+    const w = Math.abs(curX - startX);
+    const h = Math.abs(curY - startY);
+    if (w < 5 || h < 5) {
+      placeRedaction(pageNo, startX - 100, startY - 15, 200, 30);
+    } else {
+      placeRedaction(pageNo, x, y, w, h);
+    }
+    setPlacementMode("none");
+  }
+
+  function onCancel(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+    setPlacementMode("none");
+  }
+
+  div.addEventListener("pointermove", onMove);
+  div.addEventListener("pointerup", onUp);
+  div.addEventListener("pointercancel", onCancel);
+}
+
+function placeRedaction(pageNo, x, y, w, h) {
+  const cmd = new AddOverlayCommand(projectStore, {
+    pageNo,
+    type: "redaction",
+    x,
+    y,
+    w,
+    h,
+    // Redactions sit above text/stamps so they actually cover content.
+    zOrder: 100,
+    properties: { color: "black", mode: "applied" },
+  });
+  history.execute(cmd);
 }
 
 function placeText(pageNo, x, y) {
@@ -204,6 +307,7 @@ function setPlacementMode(mode) {
   viewer.setEditMode(mode !== "none");
   btnModeText.classList.toggle("toggled", mode === "text");
   btnModeStamp.classList.toggle("toggled", mode === "stamp");
+  btnModeRedaction.classList.toggle("toggled", mode === "redaction");
 }
 
 function setOpen(open) {
@@ -212,6 +316,7 @@ function setOpen(open) {
   btnClose.disabled = !open;
   btnModeText.disabled = !open;
   btnModeStamp.disabled = !open;
+  btnModeRedaction.disabled = !open;
   if (!open) setPlacementMode("none");
   refreshMenuState();
   refreshDirtyIndicator();
@@ -531,6 +636,9 @@ btnModeText.addEventListener("click", () =>
 );
 btnModeStamp.addEventListener("click", () =>
   setPlacementMode(placementMode === "stamp" ? "none" : "stamp"),
+);
+btnModeRedaction.addEventListener("click", () =>
+  setPlacementMode(placementMode === "redaction" ? "none" : "redaction"),
 );
 
 // ---- Initial state ----------------------------------------------------

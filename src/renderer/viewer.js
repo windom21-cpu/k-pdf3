@@ -200,13 +200,17 @@ export class Viewer {
    * into canonical (PDF point) coordinates and forwards to the host's
    * onPagePointerDown callback. The host decides whether the gesture is
    * meaningful (edit mode etc.) — viewer stays passive.
+   *
+   * The page <div> element is forwarded as a fifth argument so the host
+   * can run a drag-to-define gesture (M5-1 redaction) using
+   * setPointerCapture on the page itself.
    */
   _handlePagePointerDown(pageNo, div, evt) {
     if (!this.onPagePointerDown) return;
     const rect = div.getBoundingClientRect();
     const x = (evt.clientX - rect.left) / this.zoom;
     const y = (evt.clientY - rect.top) / this.zoom;
-    this.onPagePointerDown(pageNo, x, y, evt);
+    this.onPagePointerDown(pageNo, x, y, evt, div);
   }
 
   /**
@@ -291,6 +295,21 @@ export class Viewer {
       el.style.fontWeight = "bold";
       const frame = props.frame ?? "circle";
       el.classList.add(`overlay-stamp-${frame}`);
+      this._attachOverlayPointer(el, ov);
+      return el;
+    }
+
+    if (ov.type === "redaction") {
+      const props = ov.properties ?? {};
+      const fill = props.color === "white" ? "#ffffff" : "#000000";
+      const mode = props.mode ?? "applied";
+      el.style.background = fill;
+      // Editing-time visualisation: keep some transparency so the user
+      // can confirm what's being covered. Export draws solid black.
+      el.style.opacity = mode === "draft" ? "0.55" : "0.85";
+      // Override the default dotted outline with a redaction-specific one
+      // so it's visually distinct from text/stamp overlays.
+      el.classList.add("overlay-redaction-marker");
       this._attachOverlayPointer(el, ov);
       return el;
     }

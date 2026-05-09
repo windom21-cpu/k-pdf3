@@ -165,6 +165,16 @@ function drawOverlay(ctx, ov, zoom) {
     return;
   }
 
+  if (ov.type === "redaction") {
+    // True redaction: paint a fully opaque rectangle (default black).
+    // The page is already rasterised at this point, so the underlying
+    // text layer is gone; this rectangle then covers the matching pixels.
+    const fill = props.color === "white" ? "#ffffff" : "#000000";
+    ctx.fillStyle = fill;
+    ctx.fillRect(x, y, w, h);
+    return;
+  }
+
   // Other types render as a stroked rect placeholder.
   ctx.strokeStyle = "#888";
   ctx.strokeRect(x, y, w, h);

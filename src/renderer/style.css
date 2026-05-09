@@ -168,6 +168,25 @@ button.toggled {
   align-items: flex-start;
 }
 
+/* ----- Redaction overlays (墨消し) ----- */
+.overlay-redaction {
+  /* Background colour comes from inline style (props.color). */
+  outline: 1px dashed #ff8000; /* orange marker so editor can see it */
+}
+.overlay-redaction.editing,
+.overlay-redaction.dragging {
+  outline-color: #ff8000;
+}
+
+/* While dragging out a new redaction rectangle on a page. */
+.redaction-preview {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.5);
+  outline: 1px dashed #ff8000;
+  pointer-events: none;
+  z-index: 999;
+}
+
 /* ----- Stamp overlays (印影) ----- */
 .overlay-stamp {
   display: flex;
