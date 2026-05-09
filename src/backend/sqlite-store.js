@@ -57,8 +57,25 @@ export function openWorkspace(filePath, opts = {}) {
     db.exec(schema);
   } else {
     verifyWorkspace(db, filePath);
+    migrateExportsSchema(db);
   }
   return { db, isNew };
+}
+
+/**
+ * Idempotent schema migration for ADR-0008: drop the `blob` column from
+ * the `exports` table if it still exists (M4-2 era). Newly-created
+ * workspaces have the post-ADR-0008 schema with no `blob` column from the
+ * start, so this is a no-op for fresh files.
+ *
+ * better-sqlite3 12.9.x ships with SQLite ≥ 3.45 which supports
+ * `ALTER TABLE … DROP COLUMN` (added in 3.35).
+ */
+function migrateExportsSchema(db) {
+  const cols = db.pragma("table_info(exports)");
+  if (cols.some((c) => c.name === "blob")) {
+    db.exec("ALTER TABLE exports DROP COLUMN blob");
+  }
 }
 
 /**
@@ -273,29 +290,30 @@ export function getAllOverlays(db) {
   }));
 }
 
-// ---- Exports (revision history) -----------------------------------------
+// ---- Exports (revision audit log, ADR-0008) -----------------------------
 
 /**
- * Record an exported PDF as a bit-identical row in the `exports` table.
- * Used to satisfy HANDOVER §17.3「提出版を .kpdf3 内に bit-identical 履歴保管」.
+ * Record an exported PDF in the `exports` table as audit metadata only.
+ * Per ADR-0008, no blob is stored — output_hash + size + timestamp +
+ * revision_id are sufficient for cross-checking against the ad-hoc
+ * named PDF copies the user keeps on disk.
  *
  * @param {import("better-sqlite3").Database} db
  * @param {object} row
- * @param {string} row.id            UUID v4 — primary key
- * @param {string} row.revisionId    UUID v4 — embedded in the PDF (M4+)
- * @param {string} row.timestamp     ISO 8601
- * @param {string} row.outputHash    SHA-256 hex of the PDF bytes
- * @param {number} row.outputSize    byte length of the PDF
- * @param {Buffer} row.blob          the PDF itself
+ * @param {string} row.id
+ * @param {string} row.revisionId
+ * @param {string} row.timestamp
+ * @param {string} row.outputHash
+ * @param {number} row.outputSize
  * @param {string | null} [row.note]
  * @param {boolean} [row.isSecure=false]
  */
 export function setExport(db, row) {
   db.prepare(`
     INSERT INTO exports (
-      id, revision_id, timestamp, output_hash, output_size, blob, note, is_secure
+      id, revision_id, timestamp, output_hash, output_size, note, is_secure
     ) VALUES (
-      @id, @revisionId, @timestamp, @outputHash, @outputSize, @blob, @note, @isSecure
+      @id, @revisionId, @timestamp, @outputHash, @outputSize, @note, @isSecure
     )
   `).run({
     id: row.id,
@@ -303,16 +321,13 @@ export function setExport(db, row) {
     timestamp: row.timestamp,
     outputHash: row.outputHash,
     outputSize: row.outputSize,
-    blob: row.blob,
     note: row.note ?? null,
     isSecure: row.isSecure ? 1 : 0,
   });
 }
 
 /**
- * List exports newest-first, *without* the blob (memory-friendly for the
- * UI list). Use `getExportBlob` to fetch a specific export's bytes.
- *
+ * List exports newest-first.
  * @param {import("better-sqlite3").Database} db
  */
 export function listExports(db) {
@@ -324,16 +339,6 @@ export function listExports(db) {
     FROM exports
     ORDER BY timestamp DESC
   `).all();
-}
-
-/**
- * @param {import("better-sqlite3").Database} db
- * @param {string} id
- * @returns {Buffer | null}
- */
-export function getExportBlob(db, id) {
-  const row = db.prepare("SELECT blob FROM exports WHERE id = ?").get(id);
-  return row ? row.blob : null;
 }
 
 // ---- Metadata ------------------------------------------------------------

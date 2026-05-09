@@ -282,6 +282,33 @@ ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {
   return { savedAt: new Date().toISOString(), count: overlays.length };
 });
 
+/**
+ * Byte-copy the workspace's source PDF to a user-chosen path. Used by
+ * "Save As" when the project store has no overlays — preserves the
+ * original PDF bytes (text layer, exact size) instead of degrading to
+ * the rasterized flatten path. ADR-0008.
+ */
+ipcMain.handle("kpdf3:copy-source-pdf", async (_, savePath) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  if (!savePath) throw new Error("copy-source-pdf: savePath missing");
+  const bytes = activeWorkspace.getSourceBytes();
+  if (!bytes) throw new Error("copy-source-pdf: workspace has no source PDF");
+  writeFileSync(savePath, bytes);
+  const rev = activeWorkspace.recordExport(bytes, {
+    note: "byte-copy of source PDF",
+    isSecure: false,
+  });
+  return {
+    savedAt: rev.timestamp,
+    savePath,
+    pageCount: activeWorkspace.getSourceMeta()?.pageCount ?? 0,
+    revisionId: rev.revisionId,
+    outputHash: rev.outputHash,
+    outputSize: rev.outputSize,
+    byteCopy: true,
+  };
+});
+
 ipcMain.handle("kpdf3:pick-export-pdf", async () => {
   // Default dir = the directory of the source PDF the user opened (so the
   // export sits next to its source); default name = the source PDF's

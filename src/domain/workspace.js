@@ -19,7 +19,6 @@ import {
   getAllOverlays,
   setExport,
   listExports,
-  getExportBlob,
 } from "../backend/sqlite-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import { extractPdfInfo, computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
@@ -153,12 +152,12 @@ export class Workspace {
   // ---- Export history (M4-2) -----------------------------------------
 
   /**
-   * Record an exported PDF in the `exports` table for revision history.
-   * Allocates a fresh `id` and `revisionId` (UUID v4 each), computes a
-   * SHA-256 of `blob`, and stamps the row with the current timestamp.
+   * Record an exported PDF in the `exports` table as audit metadata
+   * (ADR-0008). The bytes are passed in only to compute the SHA-256 +
+   * size; no blob is persisted.
    *
-   * Returns the new ids so the caller can show "revision X just saved"
-   * feedback or persist an external pointer.
+   * Returns the freshly-generated ids so the caller can show 「rev …」
+   * feedback in the status bar.
    *
    * @param {Buffer} blob
    * @param {{ note?: string | null, isSecure?: boolean }} [opts]
@@ -177,7 +176,6 @@ export class Workspace {
       timestamp,
       outputHash,
       outputSize,
-      blob: buf,
       note: opts.note ?? null,
       isSecure: !!opts.isSecure,
     });
@@ -186,13 +184,8 @@ export class Workspace {
     return { id, revisionId, timestamp, outputHash, outputSize };
   }
 
-  /** Return the exports list (newest first), without blob bytes. */
+  /** Return the exports audit log (newest first), metadata only. */
   listExports() {
     return listExports(this.db);
-  }
-
-  /** @param {string} id */
-  getExportBlob(id) {
-    return getExportBlob(this.db, id);
   }
 }

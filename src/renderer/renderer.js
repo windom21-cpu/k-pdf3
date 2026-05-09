@@ -323,26 +323,38 @@ async function actionExport() {
   if (pages.length === 0) return;
   const savePath = await kpdf3.pickExportPdf();
   if (!savePath) return;
+  // ADR-0008: with no overlays, byte-copy the source PDF instead of
+  // rasterising — preserves the original PDF's text layer and size.
+  const overlayCount = projectStore.count();
+  const isCopy = overlayCount === 0;
   try {
-    wsStatus.textContent = "書き出し準備中...";
-    const composed = await composePagesForExport({
-      pages,
-      projectStore,
-      renderPage: kpdf3.renderPage,
-      onProgress: ({ done, total }) => {
-        wsStatus.textContent = `書き出し中 ${done} / ${total}`;
-      },
-    });
-    wsStatus.textContent = `PDF を組み立て中...`;
-    const result = await kpdf3.exportPdfRasterized({
-      savePath,
-      pages: composed,
-    });
+    let result;
+    if (isCopy) {
+      wsStatus.textContent = "原本をコピー中...";
+      result = await kpdf3.copySourcePdf(savePath);
+    } else {
+      wsStatus.textContent = "書き出し準備中...";
+      const composed = await composePagesForExport({
+        pages,
+        projectStore,
+        renderPage: kpdf3.renderPage,
+        onProgress: ({ done, total }) => {
+          wsStatus.textContent = `書き出し中 ${done} / ${total}`;
+        },
+      });
+      wsStatus.textContent = "PDF を組み立て中...";
+      result = await kpdf3.exportPdfRasterized({
+        savePath,
+        pages: composed,
+      });
+    }
+    const verb = isCopy ? "コピー" : "書き出し";
     wsStatus.textContent =
-      `書き出し完了 (${result.pageCount} ページ, rev ${result.revisionId.slice(0, 8)} → ${savePath})`;
+      `${verb}完了 (${result.pageCount} ページ, rev ${result.revisionId.slice(0, 8)} → ${savePath})`;
   } catch (err) {
     console.error("[renderer] export failed:", err);
-    wsStatus.textContent = `書き出し失敗: ${err.message ?? err}`;
+    const verb = isCopy ? "コピー" : "書き出し";
+    wsStatus.textContent = `${verb}失敗: ${err.message ?? err}`;
   }
 }
 

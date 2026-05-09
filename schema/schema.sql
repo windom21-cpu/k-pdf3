@@ -124,7 +124,10 @@ CREATE TABLE bookmarks (
 CREATE INDEX idx_bookmarks_parent ON bookmarks(parent_id, sort_order);
 
 -- ===================================================================
--- exports: 配布版 PDF を BLOB で履歴保管（法律実務の真正性要件）
+-- exports: 配布版 PDF の監査ログ（メタデータのみ、ADR-0008）
+-- 当初は bit-identical な PDF blob を保管していたが、容量肥大の問題
+-- から ADR-0008 で blob 列を廃止。ハッシュ + サイズ + revision_id で
+-- ユーザーが別名保存運用で残す現物との照合が可能。
 -- ===================================================================
 CREATE TABLE exports (
     id            TEXT PRIMARY KEY,                   -- UUID v4
@@ -132,7 +135,6 @@ CREATE TABLE exports (
     timestamp     TEXT NOT NULL DEFAULT (datetime('now')),
     output_hash   TEXT NOT NULL,                      -- output PDF の SHA-256
     output_size   INTEGER NOT NULL,
-    blob          BLOB NOT NULL,                      -- 出力した PDF そのもの
     note          TEXT,                               -- ユーザーが付ける説明（提出先・用途等）
     is_secure     INTEGER NOT NULL DEFAULT 0          -- secure export かどうか
 );

@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   saveOverlays:       (ovs)     => ipcRenderer.invoke("kpdf3:save-overlays", ovs),
   pickExportPdf:      ()        => ipcRenderer.invoke("kpdf3:pick-export-pdf"),
   exportPdfRasterized: (payload) => ipcRenderer.invoke("kpdf3:export-pdf-rasterized", payload),
+  copySourcePdf:      (savePath) => ipcRenderer.invoke("kpdf3:copy-source-pdf", savePath),
   // queries
   getSourceMeta:      ()        => ipcRenderer.invoke("kpdf3:get-source-meta"),
   getPages:           ()        => ipcRenderer.invoke("kpdf3:get-pages"),
