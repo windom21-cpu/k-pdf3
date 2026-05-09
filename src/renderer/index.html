@@ -82,25 +82,6 @@
     </div>
   </div>
 
-  <!-- Split dialog (M5-6 V2 — visual page splitter with thumbnails) -->
-  <div class="busy-modal" id="split-dialog" hidden>
-    <div class="window split-window">
-      <div class="title-bar">
-        <div class="title-bar-text">分割保存</div>
-      </div>
-      <div class="window-body">
-        <p class="split-help">
-          区切り線（｜）をクリックするとそこで分割。点線（— ▼ —）をクリックすると結合。各パートに名前を付けて保存できます。
-        </p>
-        <div id="split-flow" class="split-flow"></div>
-        <div class="split-buttons">
-          <button id="split-confirm" class="default">フォルダを選んで保存</button>
-          <button id="split-cancel">キャンセル</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Page range dialog (M5-6 fix — Electron disables window.prompt) -->
   <div class="busy-modal" id="range-dialog" hidden>
     <div class="window range-window">
@@ -186,10 +167,12 @@
     <button id="btn-mode-text" disabled>テキスト</button>
     <button id="btn-mode-stamp" disabled>印影</button>
     <button id="btn-mode-redaction" disabled>墨消し</button>
+    <span class="toolbar-sep"></span>
+    <button id="btn-split" disabled>分割保存</button>
     <span id="ws-label" class="ws-label"></span>
   </div>
 
-  <div class="main-area">
+  <div id="main-area" class="main-area">
     <aside id="sidebar" class="sidebar" hidden>
       <div class="sidebar-header">しおり</div>
       <ul id="bookmark-tree" class="bookmark-tree"></ul>
@@ -197,6 +180,19 @@
     <main id="viewer-container" class="viewer-container">
       <!-- Page DOM is built dynamically by viewer.js -->
     </main>
+    <section id="split-view" class="split-view" hidden>
+      <header class="split-view-header">
+        <h2>分割保存</h2>
+        <p class="split-help">
+          区切り線（｜）クリックで分割／点線（— ▼ —）クリックで結合。各パートに名前を付けて保存。
+        </p>
+      </header>
+      <div id="split-flow" class="split-flow"></div>
+      <footer class="split-view-footer">
+        <button id="split-confirm" class="default">フォルダを選んで保存</button>
+        <button id="split-cancel">通常表示に戻る</button>
+      </footer>
+    </section>
   </div>
 
   <div class="status-bar">

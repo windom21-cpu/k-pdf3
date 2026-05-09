@@ -411,22 +411,34 @@ button.toggled {
   min-width: 75px;
 }
 
-/* Split dialog (M5-6 V2 — visual page splitter) */
-.split-window {
-  width: min(960px, 96vw);
-  max-height: 92vh;
-  display: flex;
-  flex-direction: column;
-}
-.split-window .window-body {
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
+/* Split-save panel (M5-6 V2 — sits in main-area as a sibling of the
+ * viewer + sidebar; one is visible at a time). */
+.split-view {
   flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  background: #c0c0c0;
+  padding: 8px 10px;
   min-height: 0;
 }
+.split-view[hidden] {
+  display: none !important;
+}
+.main-area.split-mode > #sidebar,
+.main-area.split-mode > #viewer-container {
+  display: none;
+}
+.split-view-header {
+  flex: 0 0 auto;
+  margin-bottom: 6px;
+}
+.split-view-header h2 {
+  font-size: 13px;
+  margin: 0 0 4px 0;
+  font-weight: bold;
+}
 .split-help {
-  margin: 0 0 8px 0;
+  margin: 0 0 4px 0;
   font-size: 11px;
 }
 .split-flow {
@@ -437,6 +449,16 @@ button.toggled {
   border-color: #808080 #ffffff #ffffff #808080;
   padding: 8px;
   min-height: 200px;
+}
+.split-view-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.split-view-footer button {
+  min-width: 95px;
 }
 .split-section {
   margin-bottom: 10px;
@@ -524,15 +546,6 @@ button.toggled {
 .split-active-mark:hover {
   color: #880000;
   background: rgba(204, 0, 0, 0.04);
-}
-.split-buttons {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-top: 8px;
-}
-.split-buttons button {
-  min-width: 75px;
 }
 .split-progress {
   text-align: center;

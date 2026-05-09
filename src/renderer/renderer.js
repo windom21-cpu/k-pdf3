@@ -37,6 +37,9 @@ const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
 const sidebar = $("sidebar");
 const bookmarkTree = $("bookmark-tree");
+const mainArea = $("main-area");
+const splitView = $("split-view");
+const btnSplit = $("btn-split");
 const busyModal = $("busy-modal");
 const busyTitle = $("busy-title");
 const busyMessage = $("busy-message");
@@ -370,7 +373,11 @@ function setOpen(open) {
   btnModeText.disabled = !open;
   btnModeStamp.disabled = !open;
   btnModeRedaction.disabled = !open;
-  if (!open) setPlacementMode("none");
+  btnSplit.disabled = !open;
+  if (!open) {
+    setPlacementMode("none");
+    setSplitMode(false);
+  }
   refreshMenuState();
   refreshDirtyIndicator();
 }
@@ -729,8 +736,7 @@ function parsePageRange(input, total) {
  * doesn't apply to a sub-set of the source). Run multiple times for a
  * "split" workflow (出口 1 = pages 1-5, 出口 2 = pages 6-12, etc.).
  */
-// ---- Split-save dialog (M5-6 V2) ------------------------------------
-const splitDialog = $("split-dialog");
+// ---- Split-save panel (M5-6 V2 — inline panel, not a modal) --------
 const splitFlow = $("split-flow");
 const splitConfirmBtn = $("split-confirm");
 const splitCancelBtn = $("split-cancel");
@@ -882,8 +888,22 @@ function createThumbElement(pageRow) {
   return wrap;
 }
 
+let isSplitMode = false;
+
+function setSplitMode(on) {
+  isSplitMode = !!on;
+  mainArea.classList.toggle("split-mode", isSplitMode);
+  splitView.hidden = !isSplitMode;
+  btnSplit.classList.toggle("toggled", isSplitMode);
+}
+
 async function actionSplitSave() {
   if (!isOpen) return;
+  if (isSplitMode) {
+    // Toggle off — back to viewer
+    setSplitMode(false);
+    return;
+  }
   const pages = await kpdf3.getPages();
   if (pages.length === 0) return;
 
@@ -897,21 +917,17 @@ async function actionSplitSave() {
   progressNode.className = "split-progress";
   progressNode.textContent = "サムネイルを準備中... 0 / " + pages.length;
   splitFlow.appendChild(progressNode);
-  splitDialog.hidden = false;
+  setSplitMode(true);
 
   await generateAllThumbnails(pages, ({ done, total }) => {
     progressNode.textContent = `サムネイルを準備中... ${done} / ${total}`;
   });
-
+  // User may have left split mode while we were rendering
+  if (!isSplitMode) return;
   rebuildSplitUI(pages);
 }
 
-splitCancelBtn.addEventListener("click", () => {
-  splitDialog.hidden = true;
-});
-splitDialog.addEventListener("click", (e) => {
-  if (e.target === splitDialog) splitDialog.hidden = true;
-});
+splitCancelBtn.addEventListener("click", () => setSplitMode(false));
 
 splitConfirmBtn.addEventListener("click", async () => {
   const pages = await kpdf3.getPages();
@@ -919,19 +935,17 @@ splitConfirmBtn.addEventListener("click", async () => {
   const folder = await kpdf3.pickExportFolder();
   if (!folder) return;
 
-  // Determine source basename for default filenames.
   const meta = await kpdf3.getSourceMeta();
-  const sourceBase =
-    (meta?.fileName ?? "split").replace(/\.[^.]+$/, "");
+  const sourceBase = (meta?.fileName ?? "split").replace(/\.[^.]+$/, "");
 
-  splitDialog.hidden = true;
+  setSplitMode(false);
   showBusy("分割保存", `0 / ${parts.length} パート`, 0);
   try {
     for (let p = 0; p < parts.length; p++) {
       const part = parts[p];
-      const partName =
-        splitState.partNames.get(p) ?? defaultPartName(p);
-      const safeName = partName.replace(/[/\\:*?"<>|]/g, "_") || `part${p + 1}`;
+      const partName = splitState.partNames.get(p) ?? defaultPartName(p);
+      const safeName =
+        partName.replace(/[/\\:*?"<>|]/g, "_") || `part${p + 1}`;
       const savePath = `${folder}/${sourceBase}_${safeName}.pdf`;
 
       updateBusy(
@@ -961,6 +975,8 @@ splitConfirmBtn.addEventListener("click", async () => {
     wsStatus.textContent = `分割保存失敗: ${err.message ?? err}`;
   }
 });
+
+btnSplit.addEventListener("click", actionSplitSave);
 
 async function actionExportRange() {
   if (!isOpen) return;
