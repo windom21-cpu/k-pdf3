@@ -130,6 +130,10 @@ app.on("before-quit", () => {
   }
   activeSourcePdfPath = null;
   closeRegistry();
+  if (printWindow && !printWindow.isDestroyed()) {
+    try { printWindow.destroy(); } catch { /* ignore */ }
+    printWindow = null;
+  }
 });
 
 // ---- IPC: workspace ------------------------------------------------------
@@ -384,6 +388,31 @@ function tempPrintPath() {
 }
 
 /**
+ * One reusable hidden BrowserWindow for OS-level printing. Reusing it
+ * (instead of allocating + closing per print) avoids a Chromium/PDF-plugin
+ * crash that surfaced when the window closed mid print-job teardown.
+ * The singleton is destroyed on `before-quit`.
+ *
+ * @type {BrowserWindow | null}
+ */
+let printWindow = null;
+
+function getPrintWindow() {
+  if (printWindow && !printWindow.isDestroyed()) return printWindow;
+  printWindow = new BrowserWindow({
+    show: false,
+    width: 800,
+    height: 600,
+    webPreferences: {
+      plugins: true, // enable Chromium's built-in PDF viewer
+      contextIsolation: true,
+      sandbox: false,
+    },
+  });
+  return printWindow;
+}
+
+/**
  * Show the OS print dialog directly for a PDF file by loading it into a
  * hidden BrowserWindow (Chromium's built-in PDF viewer renders it) and
  * invoking webContents.print(). Resolves on success / user-cancelled,
@@ -395,56 +424,52 @@ function tempPrintPath() {
  */
 function printPdfViaHiddenWindow(pdfPath) {
   return new Promise((resolve, reject) => {
-    const printWin = new BrowserWindow({
-      show: false,
-      width: 800,
-      height: 600,
-      webPreferences: {
-        plugins: true, // enable Chromium's built-in PDF viewer
-        contextIsolation: true,
-        sandbox: false,
-      },
-    });
-
+    const win = getPrintWindow();
     let settled = false;
-    const finish = (fn, value) => {
+    /** @type {(() => void) | null} */
+    let cleanupListeners = null;
+
+    const settle = (fn, value) => {
       if (settled) return;
       settled = true;
-      try {
-        printWin.close();
-      } catch {
-        /* ignore */
-      }
+      if (cleanupListeners) cleanupListeners();
       fn(value);
     };
 
-    printWin.webContents.once("did-finish-load", () => {
+    const onDidFinishLoad = () => {
       // Give the PDF plugin a beat to actually render the first page
-      // before invoking print. 250 ms is long enough on the development
-      // hardware we've tested with; if you see "blank pages printed"
-      // bumps that to 500 ms.
+      // before invoking print.
       setTimeout(() => {
+        if (settled) return;
         try {
-          printWin.webContents.print({}, (success, errorType) => {
+          win.webContents.print({}, (success, errorType) => {
             if (success) {
-              finish(resolve, { success: true, cancelled: false });
+              settle(resolve, { success: true, cancelled: false });
             } else if (errorType === "cancelled") {
-              finish(resolve, { success: false, cancelled: true });
+              settle(resolve, { success: false, cancelled: true });
             } else {
-              finish(reject, new Error(errorType || "print failed"));
+              settle(reject, new Error(errorType || "print failed"));
             }
           });
         } catch (err) {
-          finish(reject, err);
+          settle(reject, err);
         }
       }, 250);
-    });
+    };
 
-    printWin.webContents.once("did-fail-load", (_e, code, desc) => {
-      finish(reject, new Error(`PDF load failed (${code}): ${desc}`));
-    });
+    const onDidFailLoad = (_e, code, desc) => {
+      settle(reject, new Error(`PDF load failed (${code}): ${desc}`));
+    };
 
-    printWin.loadFile(pdfPath).catch((err) => finish(reject, err));
+    cleanupListeners = () => {
+      win.webContents.off("did-finish-load", onDidFinishLoad);
+      win.webContents.off("did-fail-load", onDidFailLoad);
+    };
+
+    win.webContents.once("did-finish-load", onDidFinishLoad);
+    win.webContents.once("did-fail-load", onDidFailLoad);
+
+    win.loadFile(pdfPath).catch((err) => settle(reject, err));
   });
 }
 
