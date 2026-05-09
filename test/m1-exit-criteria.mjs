@@ -154,5 +154,9 @@ try {
   exitCode = 1;
 } finally {
   rmSync(tmpDir, { recursive: true, force: true });
-  process.exit(exitCode);
 }
+// process.exitCode is honored both when run directly via `node` (Node exits
+// with this code at script end) and when imported by the Electron runner
+// (the runner reads it post-import and calls app.exit). Avoids hard-killing
+// the Electron process before subsequent tests can run.
+process.exitCode = exitCode;
