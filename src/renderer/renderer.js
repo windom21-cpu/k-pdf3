@@ -127,22 +127,25 @@ function refreshDirtyIndicator() {
  * Recompute menu enabled state from the current open / history state.
  * Called whenever isOpen changes or history fires its listener.
  */
+const ZOOM_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+
 function refreshMenuState() {
+  const z = viewer.zoom;
   menuBar.setEnabled({
     open: !isOpen,
     close: isOpen,
     save: isOpen && projectStore.isDirty(),
     undo: isOpen && history.canUndo(),
     redo: isOpen && history.canRedo(),
+    "zoom-in": isOpen && z < ZOOM_STEPS[ZOOM_STEPS.length - 1],
+    "zoom-out": isOpen && z > ZOOM_STEPS[0],
+    "zoom-fit": isOpen,
+    "zoom-100": isOpen && Math.abs(z - 1.0) > 1e-6,
     // Still M3+ stubs
     export: false,
     cut: false,
     copy: false,
     paste: false,
-    "zoom-in": false,
-    "zoom-out": false,
-    "zoom-fit": false,
-    "zoom-100": false,
   });
 }
 
@@ -232,6 +235,45 @@ function actionRedo() {
   history.redo();
 }
 
+function applyZoom(z) {
+  viewer.setZoom(z);
+  refreshMenuState();
+  if (isOpen) wsStatus.textContent = `${Math.round(z * 100)}%`;
+}
+
+function actionZoomIn() {
+  if (!isOpen) return;
+  const cur = viewer.zoom;
+  const next = ZOOM_STEPS.find((s) => s > cur + 1e-6);
+  if (next !== undefined) applyZoom(next);
+}
+
+function actionZoomOut() {
+  if (!isOpen) return;
+  const cur = viewer.zoom;
+  let next;
+  for (const s of ZOOM_STEPS) if (s < cur - 1e-6) next = s;
+  if (next !== undefined) applyZoom(next);
+}
+
+function actionZoom100() {
+  if (!isOpen) return;
+  applyZoom(1.0);
+}
+
+function actionZoomFit() {
+  if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return;
+  let maxCanonW = 0;
+  for (let p = 1; p <= viewer.registry.count(); p++) {
+    const sz = viewer.registry.getCanonicalSize(p);
+    if (sz.w > maxCanonW) maxCanonW = sz.w;
+  }
+  // 32 px breathing room left + right
+  const targetWidth = viewerContainer.clientWidth - 32;
+  if (targetWidth <= 0 || maxCanonW <= 0) return;
+  applyZoom(targetWidth / maxCanonW);
+}
+
 async function actionAbout() {
   const info = await kpdf3.getAppInfo();
   const lines = [
@@ -265,6 +307,10 @@ const menuBar = new MenuBar({
     about: actionAbout,
     undo: actionUndo,
     redo: actionRedo,
+    "zoom-in": actionZoomIn,
+    "zoom-out": actionZoomOut,
+    "zoom-100": actionZoom100,
+    "zoom-fit": actionZoomFit,
   },
 });
 
@@ -302,6 +348,16 @@ window.addEventListener("keydown", (e) => {
   } else if ((key === "z" && e.shiftKey) || key === "y") {
     e.preventDefault();
     actionRedo();
+  } else if (key === "=" || key === "+") {
+    // Both Ctrl+= and Ctrl+Shift+= (= +) zoom in
+    e.preventDefault();
+    actionZoomIn();
+  } else if (key === "-") {
+    e.preventDefault();
+    actionZoomOut();
+  } else if (key === "0") {
+    e.preventDefault();
+    actionZoom100();
   }
 });
 

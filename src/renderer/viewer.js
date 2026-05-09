@@ -18,7 +18,7 @@
 
 import { PageRegistry } from "../domain/page-registry.js";
 
-const ZOOM = 1.5;
+const DEFAULT_ZOOM = 1.5;
 const GAP = 8; // px between pages (CSS pixel)
 const ROOT_MARGIN = "200px 0px"; // prefetch threshold
 
@@ -55,17 +55,39 @@ export class Viewer {
     this.observer = null;
     /** @type {(() => void) | null} */
     this._unsubscribeStore = null;
+    /** @type {Array<any> | null} pages last passed to load() — used by setZoom to rebuild */
+    this._pages = null;
+    this._zoom = DEFAULT_ZOOM;
     if (this.projectStore) {
       this._subscribeStore();
     }
   }
 
-  /**
-   * Page space (canonical PDF point) ↔ pixel scale used by the viewer.
-   * Currently fixed; the View > zoom menu (M3-7) will make it dynamic.
-   */
+  /** Page space (canonical PDF point) ↔ pixel scale currently in use. */
   get zoom() {
-    return ZOOM;
+    return this._zoom;
+  }
+
+  /**
+   * Change the zoom factor. Re-layouts and re-renders all pages while
+   * preserving the user's scroll position relative to the document so
+   * they stay near the same content.
+   *
+   * @param {number} z
+   */
+  setZoom(z) {
+    if (z <= 0 || !Number.isFinite(z)) return;
+    if (Math.abs(this._zoom - z) < 1e-6) return;
+    if (!this._pages || this._pages.length === 0) {
+      this._zoom = z;
+      return;
+    }
+    const oldHeight = Math.max(this.container.scrollHeight, 1);
+    const ratio = this.container.scrollTop / oldHeight;
+    this._zoom = z;
+    // load() rebuilds at the current zoom (which we just updated).
+    this.load(this._pages);
+    this.container.scrollTop = ratio * Math.max(this.container.scrollHeight, 1);
   }
 
   /**
@@ -74,17 +96,20 @@ export class Viewer {
    */
   load(pages) {
     this.unload();
+    this._pages = pages;
     if (pages.length === 0) return;
 
     this.registry = new PageRegistry(pages);
-    this.layout = this.registry.layout({ zoom: ZOOM, gap: GAP });
+    this.layout = this.registry.layout({ zoom: this._zoom, gap: GAP });
     this._buildPageDoms();
     this._setupObserver();
-    // Reset scroll to top
+    // Reset to top by default. setZoom overrides this afterwards to keep
+    // the user's scroll position relative to the document.
     this.container.scrollTop = 0;
   }
 
-  /** Tear down DOM + observers; safe to call multiple times. */
+  /** Tear down DOM + observers; safe to call multiple times. _pages is
+   *  retained so setZoom can rebuild without re-fetching from main. */
   unload() {
     if (this.observer) {
       this.observer.disconnect();
@@ -479,7 +504,7 @@ export class Viewer {
     if (this.pendingRenders.has(pageNo)) return;
     this.pendingRenders.add(pageNo);
     try {
-      const result = await window.kpdf3.renderPage(pageNo, { zoom: ZOOM });
+      const result = await window.kpdf3.renderPage(pageNo, { zoom: this._zoom });
       // Bail if the viewer was unloaded while we were waiting
       const div = this.pageEls.get(pageNo);
       if (!div) return;
