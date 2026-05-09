@@ -519,12 +519,28 @@ export class Viewer {
         } catch {
           /* ignore */
         }
-        el.classList.add("resizing");
+        // Track whether the user actually moved beyond the click threshold;
+        // a pure click on a handle (mouse never moved) should fall through
+        // to the overlay click handler so the user can still enter edit
+        // mode by clicking on a corner that happens to host a handle.
+        let moved = false;
+        const MOVE_THRESHOLD = 4;
 
         const onMove = (ev) => {
           if (ev.pointerId !== pointerId) return;
           const dx = (ev.clientX - start.clientX) / z;
           const dy = (ev.clientY - start.clientY) / z;
+          if (
+            !moved &&
+            Math.abs(ev.clientX - start.clientX) < MOVE_THRESHOLD &&
+            Math.abs(ev.clientY - start.clientY) < MOVE_THRESHOLD
+          ) {
+            return;
+          }
+          if (!moved) {
+            moved = true;
+            el.classList.add("resizing");
+          }
           let { x, y, w, h } = start;
           if (corner.includes("w")) {
             x = start.x + dx;
@@ -563,6 +579,12 @@ export class Viewer {
           handle.removeEventListener("pointerup", onUp);
           handle.removeEventListener("pointercancel", onCancel);
           el.classList.remove("resizing");
+          if (!moved) {
+            // Forward as a plain overlay click — preserves "click on
+            // corner enters edit" intent.
+            if (this.onOverlayClick) this.onOverlayClick(ov.id);
+            return;
+          }
           if (!this.onOverlayResizeEnd) return;
           const bbox = {
             x: parseFloat(el.style.left) / z,

@@ -232,7 +232,16 @@ button.toggled {
   outline: 1px dashed #000080;
 }
 
-/* ----- Resize handles (M5-3) ----- */
+/* ----- Resize handles (M5-3) -----
+ *
+ * Handles sit *inside* the overlay's bounding box at the four corners.
+ * Earlier they were placed at -5px offsets so they protruded outside the
+ * box; that caused :hover on .overlay to lose state the moment the cursor
+ * crossed the overlay's edge approaching a handle, and the handles
+ * disappeared before the user could grab them. Anchoring them at left:0
+ * / top:0 / etc. keeps the cursor inside .overlay throughout the
+ * approach, so .overlay:hover stays active.
+ */
 .overlay-handle {
   position: absolute;
   width: 9px;
@@ -249,10 +258,10 @@ button.toggled {
 .overlay.resizing .overlay-handle {
   display: block;
 }
-.overlay-handle-nw { left: -5px;  top:    -5px; cursor: nwse-resize; }
-.overlay-handle-ne { right: -5px; top:    -5px; cursor: nesw-resize; }
-.overlay-handle-sw { left: -5px;  bottom: -5px; cursor: nesw-resize; }
-.overlay-handle-se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.overlay-handle-nw { left:  0;    top:    0;    cursor: nwse-resize; }
+.overlay-handle-ne { right: 0;    top:    0;    cursor: nesw-resize; }
+.overlay-handle-sw { left:  0;    bottom: 0;    cursor: nesw-resize; }
+.overlay-handle-se { right: 0;    bottom: 0;    cursor: nwse-resize; }
 .overlay.resizing {
   /* Visual cue while resizing */
   outline: 1px dashed #000080;
