@@ -215,6 +215,37 @@ export class ProjectStore {
   }
 
   /**
+   * Re-insert (or replace) an overlay with a *given* id. Used by undo/redo
+   * commands so the overlay's id, timestamps, and other identity fields
+   * survive across history operations. Single-overlay event emitted —
+   * 'add' if the id was absent, 'update' if it was already present.
+   *
+   * Marks the store dirty.
+   *
+   * @param {Overlay} ov
+   */
+  restoreOverlay(ov) {
+    const wasPresent = this._byId.has(ov.id);
+    if (wasPresent) {
+      const prev = this._byId.get(ov.id);
+      if (prev.pageNo !== ov.pageNo) {
+        // Page changed — keep the index consistent.
+        this._removeFromPageIndex(prev.pageNo, ov.id);
+        this._addToPageIndex(ov.pageNo, ov.id);
+      }
+    } else {
+      this._addToPageIndex(ov.pageNo, ov.id);
+    }
+    this._byId.set(ov.id, ov);
+    this._dirty = true;
+    this._emit({
+      kind: wasPresent ? "update" : "add",
+      overlay: ov,
+      pages: [ov.pageNo],
+    });
+  }
+
+  /**
    * Replace all overlays atomically. Used by load-from-SQLite (M3).
    * Emits a single 'reset' event with all affected pages.
    * Resets the dirty flag to false (freshly loaded state).

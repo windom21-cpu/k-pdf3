@@ -7,6 +7,7 @@
 import { Viewer } from "./viewer.js";
 import { MenuBar } from "./menu-bar.js";
 import { ProjectStore } from "../domain/project-store.js";
+import { HistoryStack } from "../domain/history.js";
 
 const { kpdf3 } = window;
 
@@ -16,6 +17,7 @@ const { kpdf3 } = window;
  * to the saved snapshot whenever a PDF is opened. Editing UI lands M3-3.
  */
 const projectStore = new ProjectStore();
+const history = new HistoryStack();
 
 const $ = (id) => document.getElementById(id);
 const btnOpen = $("btn-open");
@@ -32,14 +34,23 @@ function setOpen(open) {
   isOpen = open;
   btnOpen.disabled = open;
   btnClose.disabled = !open;
+  refreshMenuState();
+}
+
+/**
+ * Recompute menu enabled state from the current open / history state.
+ * Called whenever isOpen changes or history fires its listener.
+ */
+function refreshMenuState() {
   menuBar.setEnabled({
-    open: !open,
-    close: open,
-    // save / export / undo / redo / zoom-* are still M3+ stubs
+    open: !isOpen,
+    close: isOpen,
+    // M3-2: undo/redo wired
+    undo: isOpen && history.canUndo(),
+    redo: isOpen && history.canRedo(),
+    // Still M3+ stubs
     save: false,
     export: false,
-    undo: false,
-    redo: false,
     cut: false,
     copy: false,
     paste: false,
@@ -49,6 +60,8 @@ function setOpen(open) {
     "zoom-100": false,
   });
 }
+
+history.subscribe(() => refreshMenuState());
 
 async function refreshViewer() {
   if (!isOpen) {
@@ -76,6 +89,7 @@ async function actionOpen() {
   try {
     const result = await kpdf3.openPdfFile(pdfPath);
     projectStore.reset(result.overlays ?? []);
+    history.clear();
     setOpen(true);
     await refreshViewer();
   } catch (err) {
@@ -87,8 +101,17 @@ async function actionOpen() {
 async function actionClose() {
   await kpdf3.closeWorkspace();
   projectStore.reset([]);
+  history.clear();
   setOpen(false);
   await refreshViewer();
+}
+
+function actionUndo() {
+  history.undo();
+}
+
+function actionRedo() {
+  history.redo();
 }
 
 async function actionAbout() {
@@ -121,7 +144,26 @@ const menuBar = new MenuBar({
     close: actionClose,
     exit: actionExit,
     about: actionAbout,
+    undo: actionUndo,
+    redo: actionRedo,
   },
+});
+
+// ---- Keyboard shortcuts ----------------------------------------------
+// M3-3 will need to skip these when an editable text overlay has focus
+// (let the contentEditable / textarea handle its own undo).
+window.addEventListener("keydown", (e) => {
+  if (!isOpen) return;
+  const ctrlOrCmd = e.ctrlKey || e.metaKey;
+  if (!ctrlOrCmd) return;
+  const key = e.key.toLowerCase();
+  if (key === "z" && !e.shiftKey) {
+    e.preventDefault();
+    actionUndo();
+  } else if ((key === "z" && e.shiftKey) || key === "y") {
+    e.preventDefault();
+    actionRedo();
+  }
 });
 
 // ---- Toolbar buttons --------------------------------------------------
