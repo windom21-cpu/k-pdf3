@@ -291,20 +291,29 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
     }
 
     const buf = newDoc.saveToBuffer();
+    let pdfBytes;
     try {
-      writeFileSync(savePath, Buffer.from(buf.asUint8Array()));
+      pdfBytes = Buffer.from(buf.asUint8Array());
     } finally {
       buf.destroy?.();
     }
+    writeFileSync(savePath, pdfBytes);
+    // Bit-identical history copy in the workspace (HANDOVER §17.3).
+    const rev = activeWorkspace.recordExport(pdfBytes, {
+      note: payload.note ?? null,
+      isSecure: false, // qpdf sanitize lands M4-3
+    });
+    return {
+      savedAt: rev.timestamp,
+      savePath,
+      pageCount: pages.length,
+      revisionId: rev.revisionId,
+      outputHash: rev.outputHash,
+      outputSize: rev.outputSize,
+    };
   } finally {
     newDoc.destroy();
   }
-
-  return {
-    savedAt: new Date().toISOString(),
-    savePath,
-    pageCount: pages.length,
-  };
 });
 
 /**

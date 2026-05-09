@@ -308,7 +308,8 @@ async function actionExport() {
       savePath,
       pages: composed,
     });
-    wsStatus.textContent = `書き出し完了 (${result.pageCount} ページ → ${savePath})`;
+    wsStatus.textContent =
+      `書き出し完了 (${result.pageCount} ページ, rev ${result.revisionId.slice(0, 8)} → ${savePath})`;
   } catch (err) {
     console.error("[renderer] export failed:", err);
     wsStatus.textContent = `書き出し失敗: ${err.message ?? err}`;

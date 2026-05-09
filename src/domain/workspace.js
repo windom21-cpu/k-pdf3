@@ -17,7 +17,11 @@ import {
   getMetadata,
   setOverlays,
   getAllOverlays,
+  setExport,
+  listExports,
+  getExportBlob,
 } from "../backend/sqlite-store.js";
+import { createHash, randomUUID } from "node:crypto";
 import { extractPdfInfo, computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
 
 /**
@@ -144,5 +148,51 @@ export class Workspace {
    */
   loadOverlays() {
     return getAllOverlays(this.db);
+  }
+
+  // ---- Export history (M4-2) -----------------------------------------
+
+  /**
+   * Record an exported PDF in the `exports` table for revision history.
+   * Allocates a fresh `id` and `revisionId` (UUID v4 each), computes a
+   * SHA-256 of `blob`, and stamps the row with the current timestamp.
+   *
+   * Returns the new ids so the caller can show "revision X just saved"
+   * feedback or persist an external pointer.
+   *
+   * @param {Buffer} blob
+   * @param {{ note?: string | null, isSecure?: boolean }} [opts]
+   * @returns {{ id: string, revisionId: string, timestamp: string, outputHash: string, outputSize: number }}
+   */
+  recordExport(blob, opts = {}) {
+    const buf = Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
+    const id = randomUUID();
+    const revisionId = randomUUID();
+    const timestamp = new Date().toISOString();
+    const outputHash = createHash("sha256").update(buf).digest("hex");
+    const outputSize = buf.length;
+    setExport(this.db, {
+      id,
+      revisionId,
+      timestamp,
+      outputHash,
+      outputSize,
+      blob: buf,
+      note: opts.note ?? null,
+      isSecure: !!opts.isSecure,
+    });
+    setMetadata(this.db, "last_export_at", timestamp);
+    setMetadata(this.db, "last_export_revision_id", revisionId);
+    return { id, revisionId, timestamp, outputHash, outputSize };
+  }
+
+  /** Return the exports list (newest first), without blob bytes. */
+  listExports() {
+    return listExports(this.db);
+  }
+
+  /** @param {string} id */
+  getExportBlob(id) {
+    return getExportBlob(this.db, id);
   }
 }

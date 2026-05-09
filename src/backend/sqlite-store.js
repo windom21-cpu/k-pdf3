@@ -273,6 +273,69 @@ export function getAllOverlays(db) {
   }));
 }
 
+// ---- Exports (revision history) -----------------------------------------
+
+/**
+ * Record an exported PDF as a bit-identical row in the `exports` table.
+ * Used to satisfy HANDOVER §17.3「提出版を .kpdf3 内に bit-identical 履歴保管」.
+ *
+ * @param {import("better-sqlite3").Database} db
+ * @param {object} row
+ * @param {string} row.id            UUID v4 — primary key
+ * @param {string} row.revisionId    UUID v4 — embedded in the PDF (M4+)
+ * @param {string} row.timestamp     ISO 8601
+ * @param {string} row.outputHash    SHA-256 hex of the PDF bytes
+ * @param {number} row.outputSize    byte length of the PDF
+ * @param {Buffer} row.blob          the PDF itself
+ * @param {string | null} [row.note]
+ * @param {boolean} [row.isSecure=false]
+ */
+export function setExport(db, row) {
+  db.prepare(`
+    INSERT INTO exports (
+      id, revision_id, timestamp, output_hash, output_size, blob, note, is_secure
+    ) VALUES (
+      @id, @revisionId, @timestamp, @outputHash, @outputSize, @blob, @note, @isSecure
+    )
+  `).run({
+    id: row.id,
+    revisionId: row.revisionId,
+    timestamp: row.timestamp,
+    outputHash: row.outputHash,
+    outputSize: row.outputSize,
+    blob: row.blob,
+    note: row.note ?? null,
+    isSecure: row.isSecure ? 1 : 0,
+  });
+}
+
+/**
+ * List exports newest-first, *without* the blob (memory-friendly for the
+ * UI list). Use `getExportBlob` to fetch a specific export's bytes.
+ *
+ * @param {import("better-sqlite3").Database} db
+ */
+export function listExports(db) {
+  return db.prepare(`
+    SELECT
+      id, revision_id AS revisionId, timestamp,
+      output_hash AS outputHash, output_size AS outputSize,
+      note, is_secure AS isSecure
+    FROM exports
+    ORDER BY timestamp DESC
+  `).all();
+}
+
+/**
+ * @param {import("better-sqlite3").Database} db
+ * @param {string} id
+ * @returns {Buffer | null}
+ */
+export function getExportBlob(db, id) {
+  const row = db.prepare("SELECT blob FROM exports WHERE id = ?").get(id);
+  return row ? row.blob : null;
+}
+
 // ---- Metadata ------------------------------------------------------------
 
 export function getMetadata(db, key) {

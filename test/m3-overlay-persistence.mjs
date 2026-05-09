@@ -133,6 +133,29 @@ try {
   ws2.close();
   const ws3 = Workspace.open(wsPath);
   eq(ws3.loadOverlays().length, 0, "after save([]) → 0 overlays");
+
+  // ---------- Export history (M4-2) ----------
+  console.log("\n[8] recordExport / listExports round-trip");
+  const fakePdf1 = Buffer.from("%PDF-1.4\n%fake export #1\n%%EOF\n");
+  const fakePdf2 = Buffer.from("%PDF-1.4\n%fake export #2 (different bytes)\n%%EOF\n");
+  const rev1 = ws3.recordExport(fakePdf1, { note: "draft" });
+  const rev2 = ws3.recordExport(fakePdf2, { note: "submission", isSecure: true });
+  ok(rev1.id !== rev2.id, "two exports get distinct ids");
+  ok(rev1.revisionId !== rev2.revisionId, "two exports get distinct revisionIds");
+  eq(rev1.outputSize, fakePdf1.length, "rev1 output_size = fakePdf1.length");
+  eq(rev2.outputSize, fakePdf2.length, "rev2 output_size = fakePdf2.length");
+
+  const list = ws3.listExports();
+  eq(list.length, 2, "listExports returns 2 rows");
+  // Newest-first order
+  ok(list[0].timestamp >= list[1].timestamp, "list is newest-first");
+
+  const blob1 = ws3.getExportBlob(rev1.id);
+  ok(blob1 !== null && blob1.equals(fakePdf1), "blob1 round-trip bit-identical");
+  const blob2 = ws3.getExportBlob(rev2.id);
+  ok(blob2 !== null && blob2.equals(fakePdf2), "blob2 round-trip bit-identical");
+
+  eq(ws3.getMetadata("last_export_revision_id"), rev2.revisionId, "metadata last_export_revision_id");
   ws3.close();
 
   console.log(`\n=== Result: ${pass} pass, ${fail} fail ===`);
