@@ -197,6 +197,14 @@ body {
   padding: 0 22px 0 4px;
   font-size: 12px;
 }
+/* Compact inline select sized to fit between toolbar buttons. */
+.toolbar-inline-select {
+  min-width: 0;
+  width: auto;
+  height: 22px;
+  padding: 0 22px 0 4px;
+  font-size: 12px;
+}
 .toolbar-sep {
   display: inline-block;
   width: 1px;
@@ -455,6 +463,9 @@ button.toggled {
   outline: 1px dashed #ff8000;
   pointer-events: none;
   z-index: 999;
+}
+.redaction-preview-white {
+  background: rgba(255, 255, 255, 0.7);
 }
 
 /* ----- Stamp overlays (印影) -----

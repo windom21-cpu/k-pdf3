@@ -34,6 +34,7 @@ const zoomSelect = $("zoom-select");
 const btnModeText = $("btn-mode-text");
 const btnModeStamp = $("btn-mode-stamp");
 const btnModeRedaction = $("btn-mode-redaction");
+const redactionColorSel = $("redaction-color");
 const wsStatus = $("ws-status");
 const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
@@ -124,8 +125,10 @@ function startRedactionDrag(pageNo, startX, startY, downEvt, div) {
   }
   const pointerId = downEvt.pointerId;
   const z = viewer.zoom;
+  const previewColor = currentRedactionColor();
   const preview = document.createElement("div");
   preview.className = "redaction-preview";
+  if (previewColor === "white") preview.classList.add("redaction-preview-white");
   preview.style.left = `${startX * z}px`;
   preview.style.top = `${startY * z}px`;
   preview.style.width = "0px";
@@ -193,6 +196,13 @@ function startRedactionDrag(pageNo, startX, startY, downEvt, div) {
   div.addEventListener("pointercancel", onCancel);
 }
 
+// Last-used redaction color persisted across sessions (§17.13).
+const REDACTION_COLOR_STORAGE_KEY = "kpdf3.redactionColor";
+function currentRedactionColor() {
+  const v = redactionColorSel?.value;
+  return v === "white" ? "white" : "black";
+}
+
 function placeRedaction(pageNo, x, y, w, h) {
   const cmd = new AddOverlayCommand(projectStore, {
     pageNo,
@@ -203,7 +213,7 @@ function placeRedaction(pageNo, x, y, w, h) {
     h,
     // Redactions sit above text/stamps so they actually cover content.
     zOrder: 100,
-    properties: { color: "black", mode: "applied" },
+    properties: { color: currentRedactionColor(), mode: "applied" },
   });
   history.execute(cmd);
 }
@@ -391,6 +401,7 @@ function setOpen(open) {
   btnSplit.disabled = !open;
   btnRotateLeft.disabled = !open;
   btnRotateRight.disabled = !open;
+  if (redactionColorSel) redactionColorSel.disabled = !open;
   if (!open) {
     setPlacementMode("none");
     setSplitMode(false);
@@ -3001,6 +3012,18 @@ btnModeRedaction.addEventListener("click", () =>
 );
 btnRotateLeft.addEventListener("click", actionRotateLeft);
 btnRotateRight.addEventListener("click", actionRotateRight);
+
+// Restore last-used redaction color (§17.13). The select also auto-
+// switches the redaction mode on so a single click on the color drops
+// the user into "place a white redaction" without a second toolbar trip.
+if (redactionColorSel) {
+  const saved = localStorage.getItem(REDACTION_COLOR_STORAGE_KEY);
+  if (saved === "white" || saved === "black") redactionColorSel.value = saved;
+  redactionColorSel.addEventListener("change", () => {
+    localStorage.setItem(REDACTION_COLOR_STORAGE_KEY, currentRedactionColor());
+    if (isOpen && placementMode !== "redaction") setPlacementMode("redaction");
+  });
+}
 
 // ---- Initial state ----------------------------------------------------
 setOpen(false);
