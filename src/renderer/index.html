@@ -562,21 +562,9 @@
       </select>
     </div>
     <div class="mode-options" data-mode="stamp" hidden>
-      <span class="mode-options-label">テンプレート:</span>
-      <select id="stamp-template" class="toolbar-inline-select"
-              title="スタンプテンプレート">
-        <option value="default">印</option>
-        <option value="date-numeric-dash">日付 (-8.-5.-9)</option>
-        <option value="date-numeric-fw">日付 (-8．-5．-9)</option>
-        <option value="date-kanji-dash">日付 (令和-8年-5月-9日)</option>
-      </select>
-      <span class="mode-options-label">色:</span>
-      <select id="stamp-color" class="toolbar-inline-select" title="スタンプの色">
-        <option value="#cc0000">朱</option>
-        <option value="#000000">黒</option>
-        <option value="#1f4ea1">青</option>
-      </select>
-      <button id="stamp-add-image" title="PNG / JPEG ファイルを印影画像として登録">画像追加…</button>
+      <span class="mode-options-label">スタンプ:</span>
+      <div id="stamp-preset-palette" class="stamp-preset-palette"></div>
+      <button id="stamp-mgr-open">スタンプ管理…</button>
     </div>
     <div class="mode-options" data-mode="redaction" hidden>
       <span class="mode-options-label">色:</span>

@@ -652,6 +652,10 @@ button.toggled {
 .stamp-ghost.stamp-ghost-rect::before {
   border: 2px solid currentColor;
 }
+/* No-frame variant — no ::before border, just the centered text. */
+.stamp-ghost.stamp-ghost-none::before {
+  border: none;
+}
 
 /* Overlay accepts pointer events (it sits inside an .overlay-layer with
  * pointer-events: none, so this is what makes the overlay clickable). */
@@ -1173,6 +1177,19 @@ button.toggled {
   gap: 2px;
 }
 .stamp-reg-fieldset legend { font-weight: bold; font-size: 11px; }
+/* 98.css strips `appearance` from inputs and replaces them with custom
+ * pseudo-element art — that breaks our register dialog checkboxes /
+ * radios because we don't follow the exact 98.css HTML pattern. Force
+ * native rendering inside register windows so they actually show. */
+.stamp-reg-window input[type="checkbox"],
+.stamp-reg-window input[type="radio"] {
+  appearance: auto !important;
+  -webkit-appearance: auto !important;
+  width: 13px !important;
+  height: 13px !important;
+  margin: 0 4px 0 0 !important;
+  vertical-align: middle;
+}
 .stamp-reg-row {
   display: flex;
   align-items: center;
@@ -1199,6 +1216,46 @@ button.toggled {
   margin-top: 10px;
 }
 .dialog-buttons button { min-width: 75px; }
+
+/* Stamp preset palette in the mode-options bar — replaces the prior
+ * <select>. Each registered stamp is a clickable button with a tiny
+ * preview canvas + label. The active preset gets `is-active`. */
+.stamp-preset-palette {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  max-width: 480px;
+}
+.stamp-preset-empty {
+  color: #666;
+  font-size: 11px;
+  font-style: italic;
+}
+.stamp-preset-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px;
+  font-size: 11px;
+  height: 26px;
+}
+.stamp-preset-btn.is-active {
+  outline: 1px dotted #000080;
+  outline-offset: -3px;
+  background: #d8e0ff;
+}
+.stamp-preset-thumb {
+  display: block;
+  background: #ffffff;
+  border: 1px solid #808080;
+}
+.stamp-preset-label {
+  max-width: 110px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* Recent PDFs dialog */
 .recent-window {

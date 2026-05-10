@@ -577,6 +577,24 @@ export function listStampPresets(db) {
 }
 
 export function addStampPreset(db, p) {
+  // Upsert: if `p.id` matches an existing row, update it in place
+  // (preserves sort_order so the palette layout doesn't jump on edit).
+  if (p.id) {
+    const existing = db.prepare("SELECT id FROM stamp_presets WHERE id = ?").get(p.id);
+    if (existing) {
+      db.prepare(
+        `UPDATE stamp_presets
+           SET kind = ?, label = ?, color = ?, frame = ?, font_size = ?,
+               text = ?, asset_id = ?, width = ?, height = ?
+         WHERE id = ?`,
+      ).run(
+        p.kind, p.label, p.color ?? "#cc0000", p.frame ?? "rect",
+        p.fontSize ?? 13, p.text ?? null, p.assetId ?? null,
+        p.width ?? 80, p.height ?? 80, p.id,
+      );
+      return p.id;
+    }
+  }
   const id = p.id ??
     globalThis.crypto?.randomUUID?.() ??
     `sp-${Date.now()}-${Math.random().toString(16).slice(2)}`;

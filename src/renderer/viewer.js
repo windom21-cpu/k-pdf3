@@ -596,12 +596,28 @@ export class Viewer {
         el.textContent = props.text ?? "";
       } else {
         // Stamp text rotates with the paper. The frame (::before) stays
-        // in the outer rect — only the centered character spins.
+        // in the outer rect — only the centered character / phrase
+        // spins. Size the inner element to the PRE-rotation rect so
+        // text doesn't get squeezed into the rotated narrow outer box
+        // (the "縦書き-looking" bug — previously the inner span was
+        // unsized and inherited el's narrow width, wrapping characters
+        // one-per-line before rotating).
         el.textContent = "";
         const inner = document.createElement("span");
-        inner.style.display = "inline-block";
+        const isVert = rot === 90 || rot === 270;
+        const naturalW = (isVert ? ov.h : ov.w) * z;
+        const naturalH = (isVert ? ov.w : ov.h) * z;
+        inner.style.position = "absolute";
+        inner.style.left = "50%";
+        inner.style.top = "50%";
+        inner.style.width = `${naturalW}px`;
+        inner.style.height = `${naturalH}px`;
+        inner.style.display = "flex";
+        inner.style.alignItems = "center";
+        inner.style.justifyContent = "center";
         inner.style.transformOrigin = "center center";
-        inner.style.transform = `rotate(${rot}deg)`;
+        inner.style.transform = `translate(-50%, -50%) rotate(${rot}deg)`;
+        inner.style.whiteSpace = "nowrap";
         inner.textContent = props.text ?? "";
         el.appendChild(inner);
       }

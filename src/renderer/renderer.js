@@ -48,8 +48,6 @@ const textSizeSel = $("text-size");
 const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
 const btnModeCallout = $("btn-mode-callout");
-const stampTemplateSel = $("stamp-template");
-const stampColorSel = $("stamp-color");
 const wsStatus = $("ws-status");
 const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
@@ -515,75 +513,50 @@ function placeText(pageNo, x, y) {
   }
 }
 
-/** Build the stamp properties for the currently-selected template.
- *  Date templates use the legal-practice "leading dash = 令和" form
- *  per HANDOVER §17.5 / §18.3 (e.g. -8.-5.-9 = 令和8年5月9日 stamp).
- *  Image templates have option value "img:<assetId>".
+/** Active preset id — drives currentStampPreset(). null when nothing
+ *  is registered yet. Persisted across sessions via localStorage. */
+const STAMP_ACTIVE_PRESET_KEY = "kpdf3.activeStampPresetId";
+let _activeStampPresetId = localStorage.getItem(STAMP_ACTIVE_PRESET_KEY) || null;
+
+function setActiveStampPreset(id) {
+  _activeStampPresetId = id;
+  if (id) localStorage.setItem(STAMP_ACTIVE_PRESET_KEY, id);
+  else localStorage.removeItem(STAMP_ACTIVE_PRESET_KEY);
+  refreshStampPaletteActive();
+  updateStampGhostPreset();
+}
+
+/** Build the stamp properties for the currently-active preset
+ *  (ADR-0019). Date kind computes today's date at placement time.
+ *  Returns null when no preset is active (placeStamp aborts so the
+ *  click is a no-op rather than a fallback 印 that surprises the user).
  */
 function currentStampPreset() {
-  const tmpl = stampTemplateSel?.value || "default";
-  const color = stampColorSel?.value || "#cc0000";
-  // User-registered preset (ADR-0019) — full properties pulled from
-  // the cache; date kind renders today's date at placement time.
-  if (tmpl.startsWith("preset:")) {
-    const id = tmpl.slice(7);
-    const p = _stampPresetCache.get(id);
-    if (p) {
-      const base = {
-        w: p.width,
-        h: p.height,
-        frame: p.frame,
-        fontSize: p.fontSize,
-        color: p.color,
-        label: p.label,
-      };
-      if (p.kind === "date") return { ...base, text: renderDateText(p.text) };
-      if (p.kind === "text") return { ...base, text: p.text ?? "" };
-      if (p.kind === "image") return { ...base, kind: "image", assetId: p.assetId, text: "" };
-    }
-    // Unknown preset id — fall through to default.
-  }
-  if (tmpl.startsWith("img:")) {
-    const assetId = tmpl.slice(4);
-    const meta = _imageAssetCache.get(assetId);
-    return {
-      text: "",
-      w: 80,
-      h: 80,
-      frame: "none",
-      fontSize: 14,
-      color,
-      kind: "image",
-      assetId,
-      label: meta?.label ?? "",
-    };
-  }
-  if (tmpl === "date-numeric-dash") {
-    const d = new Date();
-    const reiwa = d.getFullYear() - 2018; // 令和元年 = 2019
-    const text = `-${reiwa}.-${d.getMonth() + 1}.-${d.getDate()}`;
-    return { text, w: 100, h: 40, frame: "rect", fontSize: 13, color };
-  }
-  if (tmpl === "date-numeric-fw") {
-    // ASCII digits with a FULL-WIDTH 「．」separator (digits stay
-    // half-width per the user's spec — only the period is wider).
-    const d = new Date();
-    const reiwa = d.getFullYear() - 2018;
-    const text = `-${reiwa}．-${d.getMonth() + 1}．-${d.getDate()}`;
-    return { text, w: 105, h: 40, frame: "rect", fontSize: 13, color };
-  }
-  if (tmpl === "date-kanji-dash") {
-    const d = new Date();
-    const reiwa = d.getFullYear() - 2018;
-    const text = `令和-${reiwa}年-${d.getMonth() + 1}月-${d.getDate()}日`;
-    return { text, w: 140, h: 40, frame: "rect", fontSize: 13, color };
-  }
-  // default 印 — the original round seal.
-  return { text: "印", w: 60, h: 60, frame: "circle", fontSize: 14, color };
+  const id = _activeStampPresetId;
+  if (!id) return null;
+  const p = _stampPresetCache.get(id);
+  if (!p) return null;
+  const base = {
+    w: p.width,
+    h: p.height,
+    frame: p.frame,
+    fontSize: p.fontSize,
+    color: p.color,
+    label: p.label,
+  };
+  if (p.kind === "date") return { ...base, text: renderDateText(p.text) };
+  if (p.kind === "text") return { ...base, text: p.text ?? "" };
+  if (p.kind === "image") return { ...base, kind: "image", assetId: p.assetId, text: "" };
+  return null;
 }
 
 function placeStamp(pageNo, x, y) {
   const preset = currentStampPreset();
+  if (!preset) {
+    // No preset selected — point the user at the manager.
+    wsStatus.textContent = "スタンプが未登録です。「スタンプ管理…」で登録してください";
+    return;
+  }
   const W = preset.w;
   const H = preset.h;
   const properties = {
@@ -920,7 +893,8 @@ function refreshModeOptionsBar() {
 const _stampPresetCache = new Map(); // id → preset row
 
 async function refreshStampPresetCacheAndSelect() {
-  if (!stampTemplateSel) return;
+  // Pull the canonical list and rebuild the renderer-side cache + the
+  // palette UI in the mode-options bar.
   let list = [];
   try {
     if (isOpen) list = (await kpdf3.listStampPresets()) ?? [];
@@ -929,17 +903,112 @@ async function refreshStampPresetCacheAndSelect() {
   }
   _stampPresetCache.clear();
   for (const p of list) _stampPresetCache.set(p.id, p);
-  // Strip any prior preset options.
-  for (const opt of [...stampTemplateSel.querySelectorAll('option[data-preset="1"]')]) {
-    opt.remove();
+  // Auto-select the first preset if the previously-active one is gone
+  // (e.g. user deleted it). Avoids an "active id but currentStampPreset
+  // returns null" gap that would silently disable placement.
+  if (_activeStampPresetId && !_stampPresetCache.has(_activeStampPresetId)) {
+    _activeStampPresetId = null;
   }
-  for (const p of list) {
-    const opt = document.createElement("option");
-    opt.value = `preset:${p.id}`;
-    opt.dataset.preset = "1";
-    const kindLabel = p.kind === "date" ? "日付" : p.kind === "text" ? "文字" : "画像";
-    opt.textContent = `${kindLabel}: ${p.label}`;
-    stampTemplateSel.appendChild(opt);
+  if (!_activeStampPresetId && list.length > 0) {
+    _activeStampPresetId = list[0].id;
+    localStorage.setItem(STAMP_ACTIVE_PRESET_KEY, _activeStampPresetId);
+  }
+  rebuildStampPalette();
+}
+
+/** Render a small thumbnail of a preset onto the given canvas. */
+function paintPresetThumb(canvas, p) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  if (p.kind === "image" && p.assetId) {
+    // Async: load asset, paint when ready (palette refreshes
+    // happen rarely, so this is OK).
+    _stampGhostAssetUrl(p.assetId).then((url) => {
+      if (!url) return;
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min((W - 4) / img.width, (H - 4) / img.height);
+        const w = img.width * scale, h = img.height * scale;
+        ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+        if (p.frame === "rect") {
+          ctx.strokeStyle = p.color;
+          ctx.strokeRect((W - w) / 2, (H - h) / 2, w, h);
+        }
+      };
+      img.src = url;
+    });
+    return;
+  }
+  // Text-bearing thumb.
+  const text = p.kind === "date" ? renderDateText(p.text) : (p.text ?? "");
+  ctx.fillStyle = p.color;
+  ctx.strokeStyle = p.color;
+  ctx.lineWidth = 1;
+  // Auto-fit font.
+  const targetH = H - 8;
+  let fs = Math.min(targetH, p.fontSize ?? 14);
+  ctx.font = `bold ${fs}px "MS UI Gothic", sans-serif`;
+  let tw = ctx.measureText(text).width;
+  if (tw > W - 6) {
+    fs = Math.max(6, fs * ((W - 6) / tw));
+    ctx.font = `bold ${fs}px "MS UI Gothic", sans-serif`;
+    tw = ctx.measureText(text).width;
+  }
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  if (p.frame === "rect") {
+    ctx.strokeRect(2, 2, W - 4, H - 4);
+  } else if (p.frame === "circle") {
+    ctx.beginPath();
+    ctx.ellipse(W / 2, H / 2, W / 2 - 2, H / 2 - 2, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.fillText(text, W / 2, H / 2);
+}
+
+function rebuildStampPalette() {
+  const palette = $("stamp-preset-palette");
+  if (!palette) return;
+  palette.innerHTML = "";
+  if (_stampPresetCache.size === 0) {
+    const empty = document.createElement("div");
+    empty.className = "stamp-preset-empty";
+    empty.textContent = "未登録です。「スタンプ管理…」から登録してください";
+    palette.appendChild(empty);
+    return;
+  }
+  for (const p of _stampPresetCache.values()) {
+    const btn = document.createElement("button");
+    btn.className = "stamp-preset-btn";
+    btn.dataset.presetId = p.id;
+    if (p.id === _activeStampPresetId) btn.classList.add("is-active");
+    const thumb = document.createElement("canvas");
+    thumb.className = "stamp-preset-thumb";
+    thumb.width = 40;
+    thumb.height = 22;
+    paintPresetThumb(thumb, p);
+    btn.appendChild(thumb);
+    const lbl = document.createElement("span");
+    lbl.className = "stamp-preset-label";
+    lbl.textContent = p.label;
+    btn.appendChild(lbl);
+    btn.title = `${p.kind === "date" ? "日付" : p.kind === "text" ? "文字" : "画像"}: ${p.label}`;
+    btn.addEventListener("click", () => {
+      setActiveStampPreset(p.id);
+      if (placementMode !== "stamp") setPlacementMode("stamp");
+    });
+    palette.appendChild(btn);
+  }
+}
+
+function refreshStampPaletteActive() {
+  const palette = $("stamp-preset-palette");
+  if (!palette) return;
+  for (const btn of palette.querySelectorAll(".stamp-preset-btn")) {
+    btn.classList.toggle("is-active", btn.dataset.presetId === _activeStampPresetId);
   }
 }
 
@@ -994,12 +1063,18 @@ async function populateStampMgrList() {
     const useBtn = document.createElement("button");
     useBtn.textContent = "使う";
     useBtn.addEventListener("click", () => {
-      if (stampTemplateSel) stampTemplateSel.value = `preset:${p.id}`;
+      setActiveStampPreset(p.id);
       setPlacementMode("stamp");
-      updateStampGhostPreset();
       closeStampManagerDialog();
     });
     li.appendChild(useBtn);
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "編集";
+    editBtn.addEventListener("click", () => {
+      closeStampManagerDialog();
+      openStampRegisterForEdit(p);
+    });
+    li.appendChild(editBtn);
     const delBtn = document.createElement("button");
     delBtn.textContent = "削除";
     delBtn.addEventListener("click", async () => {
@@ -1091,14 +1166,28 @@ const stampRegDateColor = $("stamp-reg-date-color");
 const stampRegDateFrame = $("stamp-reg-date-frame");
 const stampRegDateLabel = $("stamp-reg-date-label");
 const stampRegDatePreview = $("stamp-reg-date-preview");
-function openStampRegisterDate() {
-  // Reset to defaults.
-  document.querySelector('input[name="stamp-date-format"][value="date-numeric-dash"]').checked = true;
-  stampRegDateColor.value = "#cc0000";
-  stampRegDateFrame.checked = true;
-  stampRegDateLabel.value = "";
+// id of the preset currently being edited (vs. created); null on create.
+let _editingPresetId = null;
+
+function openStampRegisterDate(prefill = null) {
+  _editingPresetId = prefill?.id ?? null;
+  const fmt = prefill?.text ?? "date-numeric-dash";
+  const radio = document.querySelector(`input[name="stamp-date-format"][value="${fmt}"]`);
+  if (radio) radio.checked = true;
+  else document.querySelector('input[name="stamp-date-format"][value="date-numeric-dash"]').checked = true;
+  stampRegDateColor.value = prefill?.color ?? "#cc0000";
+  stampRegDateFrame.checked = prefill ? prefill.frame !== "none" : true;
+  stampRegDateLabel.value = prefill?.label ?? "";
   stampRegDateDialog.hidden = false;
   paintStampRegDatePreview();
+}
+
+/** Open the matching register dialog for an existing preset, prefilled
+ *  with its current values. Used by the スタンプ管理 list's 編集 btn. */
+function openStampRegisterForEdit(p) {
+  if (p.kind === "date") openStampRegisterDate(p);
+  else if (p.kind === "text") openStampRegisterText(p);
+  else if (p.kind === "image") openStampRegisterImage(p);
 }
 function closeStampRegisterDate() { stampRegDateDialog.hidden = true; }
 function getDateRegFormatKey() {
@@ -1129,6 +1218,7 @@ $("stamp-reg-date-ok")?.addEventListener("click", async () => {
   };
   const label = stampRegDateLabel.value.trim() || formatLabels[formatKey] || "日付";
   await kpdf3.addStampPreset({
+    id: _editingPresetId, // null on create, existing id on edit (upsert)
     kind: "date",
     label,
     color: stampRegDateColor.value,
@@ -1138,8 +1228,12 @@ $("stamp-reg-date-ok")?.addEventListener("click", async () => {
     width: formatKey === "date-kanji-dash" ? 140 : 105,
     height: 40,
   });
+  _editingPresetId = null;
   closeStampRegisterDate();
   await populateStampMgrList();
+  // Reopen manager so the user sees the updated entry without a 2-step
+  // (otherwise they'd have to re-open the menu).
+  openStampManagerDialog();
 });
 
 // ---- テキストスタンプ register dialog ----------------------------------
@@ -1151,12 +1245,13 @@ const stampRegTextColor = $("stamp-reg-text-color");
 const stampRegTextFrame = $("stamp-reg-text-frame");
 const stampRegTextLabel = $("stamp-reg-text-label");
 const stampRegTextPreview = $("stamp-reg-text-preview");
-function openStampRegisterText() {
-  stampRegTextText.value = "";
-  stampRegTextFontSize.value = "14";
-  stampRegTextColor.value = "#cc0000";
-  stampRegTextFrame.checked = true;
-  stampRegTextLabel.value = "";
+function openStampRegisterText(prefill = null) {
+  _editingPresetId = prefill?.id ?? null;
+  stampRegTextText.value = prefill?.text ?? "";
+  stampRegTextFontSize.value = String(prefill?.fontSize ?? 14);
+  stampRegTextColor.value = prefill?.color ?? "#cc0000";
+  stampRegTextFrame.checked = prefill ? prefill.frame !== "none" : true;
+  stampRegTextLabel.value = prefill?.label ?? "";
   stampRegTextDialog.hidden = false;
   paintStampRegTextPreview();
   setTimeout(() => stampRegTextText.focus(), 0);
@@ -1184,6 +1279,7 @@ $("stamp-reg-text-ok")?.addEventListener("click", async () => {
   }
   const fontSize = Math.max(6, Math.min(72, Number(stampRegTextFontSize.value) || 14));
   await kpdf3.addStampPreset({
+    id: _editingPresetId,
     kind: "text",
     label: stampRegTextLabel.value.trim() || text,
     color: stampRegTextColor.value,
@@ -1194,8 +1290,10 @@ $("stamp-reg-text-ok")?.addEventListener("click", async () => {
     width: Math.max(60, text.length * fontSize * 0.85),
     height: Math.max(20, fontSize * 1.6),
   });
+  _editingPresetId = null;
   closeStampRegisterText();
   await populateStampMgrList();
+  openStampManagerDialog();
 });
 
 // ---- 画像スタンプ register dialog --------------------------------------
@@ -1210,14 +1308,39 @@ const stampRegImageLabel = $("stamp-reg-image-label");
 const stampRegImagePreview = $("stamp-reg-image-preview");
 const stampRegImageOk = $("stamp-reg-image-ok");
 let _stampRegImageState = null; // { path, mime, bitmap, naturalW, naturalH, label }
-function openStampRegisterImage() {
+async function openStampRegisterImage(prefill = null) {
+  _editingPresetId = prefill?.id ?? null;
   _stampRegImageState = null;
   stampRegImageName.textContent = "(未選択)";
-  stampRegImageW.value = "80";
-  stampRegImageH.value = "80";
-  stampRegImageFrame.checked = false;
-  stampRegImageLabel.value = "";
-  stampRegImageOk.disabled = true;
+  stampRegImageW.value = String(prefill?.width ?? 80);
+  stampRegImageH.value = String(prefill?.height ?? 80);
+  stampRegImageFrame.checked = prefill ? prefill.frame !== "none" : false;
+  stampRegImageLabel.value = prefill?.label ?? "";
+  stampRegImageOk.disabled = !prefill?.assetId;
+  // If editing, fetch the existing asset bitmap for the preview.
+  if (prefill?.assetId) {
+    try {
+      const data = await kpdf3.getAsset(prefill.assetId);
+      if (data?.blob) {
+        const u8 = data.blob instanceof Uint8Array
+          ? data.blob
+          : new Uint8Array(data.blob.buffer ?? data.blob);
+        const blob = new Blob([u8], { type: data.mime || "image/png" });
+        const bitmap = await createImageBitmap(blob);
+        _stampRegImageState = {
+          assetId: prefill.assetId,
+          mime: data.mime,
+          bitmap,
+          naturalW: bitmap.width,
+          naturalH: bitmap.height,
+          label: data.label ?? "",
+        };
+        stampRegImageName.textContent = data.label ?? "(登録済み画像)";
+      }
+    } catch (err) {
+      console.error("[stamp-img] prefill load failed", err);
+    }
+  }
   paintStampRegImagePreview();
   stampRegImageDialog.hidden = false;
 }
@@ -1288,6 +1411,7 @@ stampRegImageOk?.addEventListener("click", async () => {
   const w = Math.max(10, Math.min(400, Number(stampRegImageW.value) || 80));
   const h = Math.max(10, Math.min(400, Number(stampRegImageH.value) || 80));
   await kpdf3.addStampPreset({
+    id: _editingPresetId,
     kind: "image",
     label: stampRegImageLabel.value.trim() || _stampRegImageState.label || "image",
     color: "#cc0000",
@@ -1297,59 +1421,14 @@ stampRegImageOk?.addEventListener("click", async () => {
     width: w,
     height: h,
   });
+  _editingPresetId = null;
   closeStampRegisterImage();
   await populateStampMgrList();
+  openStampManagerDialog();
 });
 
-// ---- Image stamp assets (ADR-0017) -------------------------------------
-// Cached metadata of registered image assets so the stamp-template
-// select can list them without an IPC round-trip on every render.
-const _imageAssetCache = new Map(); // id → { id, mime, label }
-
-async function refreshAssetCacheAndTemplateSel() {
-  if (!stampTemplateSel) return;
-  let assets = [];
-  try {
-    if (isOpen) assets = (await kpdf3.listAssets()) ?? [];
-  } catch (err) {
-    console.error("[stamp-image] list assets failed", err);
-  }
-  _imageAssetCache.clear();
-  for (const a of assets) _imageAssetCache.set(a.id, a);
-  // Strip any prior image options.
-  for (const opt of [...stampTemplateSel.querySelectorAll('option[data-image="1"]')]) {
-    opt.remove();
-  }
-  // Append one option per asset, label fallback = first 8 chars of id.
-  for (const a of assets) {
-    const opt = document.createElement("option");
-    opt.value = `img:${a.id}`;
-    opt.dataset.image = "1";
-    opt.textContent = `画像: ${a.label || a.id.slice(0, 8)}`;
-    stampTemplateSel.appendChild(opt);
-  }
-}
-
-async function actionAddImageStamp() {
-  if (!isOpen) return;
-  const path = await showFileBrowser({
-    mode: "open",
-    title: "印影画像を選択",
-    filterDefault: "image",
-  });
-  if (!path) return;
-  try {
-    const r = await kpdf3.addAssetFromFile({ path });
-    await refreshAssetCacheAndTemplateSel();
-    stampTemplateSel.value = `img:${r.id}`;
-    if (placementMode !== "stamp") setPlacementMode("stamp");
-    updateStampGhostPreset();
-    wsStatus.textContent = `画像スタンプを登録: ${path}`;
-  } catch (err) {
-    console.error("[stamp-image] register failed", err);
-    wsStatus.textContent = `画像登録失敗: ${err.message ?? err}`;
-  }
-}
+// (Old "image stamp via toolbar select" pathway removed — the スタンプ
+// 管理 → 画像スタンプ register dialog is now the sole entry point.)
 
 // ---- Stamp drag ghost (preview that follows the cursor) ---------------
 let stampGhostEl = null;
@@ -1370,7 +1449,14 @@ function updateStampGhostPreset() {
   const preset = currentStampPreset();
   // Reset content + classes
   stampGhostEl.textContent = "";
-  stampGhostEl.classList.remove("stamp-ghost-circle", "stamp-ghost-rect", "stamp-ghost-image");
+  stampGhostEl.classList.remove(
+    "stamp-ghost-circle", "stamp-ghost-rect", "stamp-ghost-none", "stamp-ghost-image",
+  );
+  if (!preset) {
+    // No active preset — hide the ghost; placement is a no-op anyway.
+    stampGhostEl.hidden = true;
+    return;
+  }
   if (preset.kind === "image" && preset.assetId) {
     stampGhostEl.classList.add("stamp-ghost-image");
     const img = document.createElement("img");
@@ -1388,9 +1474,15 @@ function updateStampGhostPreset() {
   }
   stampGhostEl.textContent = preset.text;
   stampGhostEl.style.color = preset.color;
-  stampGhostEl.classList.add(
-    preset.frame === "circle" ? "stamp-ghost-circle" : "stamp-ghost-rect",
-  );
+  // Frame class — explicit "none" branch so frame:none stamps don't
+  // get a misleading rectangle outline in the ghost preview.
+  if (preset.frame === "circle") {
+    stampGhostEl.classList.add("stamp-ghost-circle");
+  } else if (preset.frame === "rect") {
+    stampGhostEl.classList.add("stamp-ghost-rect");
+  } else {
+    stampGhostEl.classList.add("stamp-ghost-none");
+  }
 }
 
 // Reuse viewer's blob-URL cache for the ghost (so we don't double-fetch).
@@ -1414,6 +1506,7 @@ async function _stampGhostAssetUrl(assetId) {
 function updateStampGhostSize() {
   if (!stampGhostEl) return;
   const preset = currentStampPreset();
+  if (!preset) return;
   const z = viewer.zoom;
   stampGhostEl.style.width = `${preset.w * z}px`;
   stampGhostEl.style.height = `${preset.h * z}px`;
@@ -1423,6 +1516,7 @@ function updateStampGhostSize() {
 function moveStampGhost(clientX, clientY) {
   const el = ensureStampGhost();
   const preset = currentStampPreset();
+  if (!preset) return;
   const z = viewer.zoom;
   el.style.left = `${clientX - (preset.w * z) / 2}px`;
   el.style.top = `${clientY - (preset.h * z) / 2}px`;
@@ -1471,8 +1565,8 @@ function setOpen(open) {
   if (btnModeMarker) btnModeMarker.disabled = !open;
   if (markerColorSel) markerColorSel.disabled = !open;
   if (btnModeCallout) btnModeCallout.disabled = !open;
-  if (stampTemplateSel) stampTemplateSel.disabled = !open;
-  if (stampColorSel) stampColorSel.disabled = !open;
+  // (stampTemplateSel / stampColorSel removed — palette buttons are
+  // managed by rebuildStampPalette + the mode-options bar visibility.)
   if (!open) {
     setPlacementMode("none");
     setSplitMode(false);
@@ -1672,7 +1766,6 @@ async function refreshViewer() {
   viewer.load(pages);
   refreshBookmarks();
   rebuildThumbs(pages);
-  refreshAssetCacheAndTemplateSel();
   refreshStampPresetCacheAndSelect();
   refreshDirtyIndicator();
 }
@@ -4645,31 +4738,8 @@ if (btnModeCallout) {
 // Stamp template / color: picking either auto-switches into stamp mode
 // so the user lands directly in "place this stamp" (mirrors the
 // redaction-color UX). Persisted to localStorage.
-const STAMP_TEMPLATE_KEY = "kpdf3.stampTemplate";
-const STAMP_COLOR_KEY = "kpdf3.stampColor";
-if (stampTemplateSel) {
-  const saved = localStorage.getItem(STAMP_TEMPLATE_KEY);
-  if (saved && [...stampTemplateSel.options].some((o) => o.value === saved)) {
-    stampTemplateSel.value = saved;
-  }
-  stampTemplateSel.addEventListener("change", () => {
-    localStorage.setItem(STAMP_TEMPLATE_KEY, stampTemplateSel.value);
-    if (isOpen && placementMode !== "stamp") setPlacementMode("stamp");
-    updateStampGhostPreset();
-  });
-}
-$("stamp-add-image")?.addEventListener("click", actionAddImageStamp);
-if (stampColorSel) {
-  const saved = localStorage.getItem(STAMP_COLOR_KEY);
-  if (saved && [...stampColorSel.options].some((o) => o.value === saved)) {
-    stampColorSel.value = saved;
-  }
-  stampColorSel.addEventListener("change", () => {
-    localStorage.setItem(STAMP_COLOR_KEY, stampColorSel.value);
-    if (isOpen && placementMode !== "stamp") setPlacementMode("stamp");
-    updateStampGhostPreset();
-  });
-}
+// Mode-options bar's "スタンプ管理…" button → opens the manager dialog.
+$("stamp-mgr-open")?.addEventListener("click", () => openStampManagerDialog());
 btnRotateLeft.addEventListener("click", actionRotateLeft);
 btnRotateRight.addEventListener("click", actionRotateRight);
 
