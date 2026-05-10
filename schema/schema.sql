@@ -78,7 +78,9 @@ CREATE INDEX idx_inserted_pages_slot ON inserted_pages(after_page_no, order_in_s
 -- ===================================================================
 CREATE TABLE overlays (
     id          TEXT PRIMARY KEY,                     -- UUID v4
-    page_no     INTEGER NOT NULL REFERENCES pages(page_no) ON DELETE CASCADE,
+    -- page_no は元 PDF ページ (正) または 挿入ページ id の負数。
+    -- inserted_pages とのまたがり整合性は app 層で保証 (workspace).
+    page_no     INTEGER NOT NULL,
     type        TEXT NOT NULL CHECK(type IN (
                     'text', 'stamp', 'image', 'redaction',
                     'line', 'rect', 'signature', 'page_number'

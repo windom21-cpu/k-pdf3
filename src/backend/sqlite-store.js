@@ -60,8 +60,67 @@ export function openWorkspace(filePath, opts = {}) {
     migrateExportsSchema(db);
     migratePagesIsDeleted(db);
     migrateInsertedPagesTable(db);
+    migrateOverlaysDropPageFk(db);
   }
   return { db, isNew };
+}
+
+/**
+ * Drop the `overlays.page_no → pages(page_no)` foreign key. Inserted
+ * (synthetic) pages live in `inserted_pages` and use negative page_no
+ * to discriminate; the original FK rejected those at save time with
+ * "FOREIGN KEY constraint failed". Cross-table integrity is now
+ * guaranteed at the app layer (Workspace.getPages merges both).
+ *
+ * SQLite has no DROP CONSTRAINT, so we rebuild the table. Idempotent
+ * — checks for the old FK before doing anything. The `overlays_spatial`
+ * rtree gets reset because rowids are reassigned during the rebuild;
+ * the next saveOverlays() will repopulate it (saveOverlays already
+ * does a full rebuild on every Ctrl+S, so no data is lost).
+ */
+function migrateOverlaysDropPageFk(db) {
+  const fks = db.pragma("foreign_key_list(overlays)");
+  if (!fks.some((f) => f.table === "pages")) return; // already migrated
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE overlays_new (
+        id          TEXT PRIMARY KEY,
+        page_no     INTEGER NOT NULL,
+        type        TEXT NOT NULL CHECK(type IN (
+                        'text', 'stamp', 'image', 'redaction',
+                        'line', 'rect', 'signature', 'page_number'
+                    )),
+        x           REAL NOT NULL,
+        y           REAL NOT NULL,
+        w           REAL NOT NULL,
+        h           REAL NOT NULL,
+        z_order     INTEGER NOT NULL DEFAULT 0,
+        properties  TEXT NOT NULL,
+        asset_id    TEXT REFERENCES assets(id),
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO overlays_new
+        (id, page_no, type, x, y, w, h, z_order,
+         properties, asset_id, created_at, updated_at)
+        SELECT id, page_no, type, x, y, w, h, z_order,
+               properties, asset_id, created_at, updated_at
+          FROM overlays;
+      DROP TABLE overlays;
+      ALTER TABLE overlays_new RENAME TO overlays;
+      CREATE INDEX idx_overlays_page ON overlays(page_no, z_order);
+      CREATE INDEX idx_overlays_type ON overlays(type);
+      DELETE FROM overlays_spatial;
+      COMMIT;
+    `);
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
 }
 
 /** Add the `inserted_pages` table to old workspaces (idempotent).
