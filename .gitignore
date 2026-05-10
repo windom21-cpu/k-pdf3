@@ -32,3 +32,6 @@ spike/*.pdf
 
 # OS
 .Trash-*
+
+# Claude Code per-project settings
+.claude/
