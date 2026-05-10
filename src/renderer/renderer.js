@@ -661,6 +661,7 @@ function refreshMenuState() {
     "zoom-in": isOpen && z < ZOOM_STEPS[ZOOM_STEPS.length - 1],
     "zoom-out": isOpen && z > ZOOM_STEPS[0],
     "zoom-fit": isOpen,
+    "zoom-fit-page": isOpen,
     "zoom-100": isOpen && Math.abs(z - 1.0) > 1e-6,
     "page-prev":
       isOpen &&
@@ -2221,6 +2222,8 @@ zoomSelect.addEventListener("change", () => {
   const v = zoomSelect.value;
   if (v === "fit") {
     actionZoomFit();
+  } else if (v === "fit-page") {
+    actionZoomFitPage();
   } else {
     const num = parseFloat(v);
     if (Number.isFinite(num)) applyZoom(num);
@@ -2250,15 +2253,35 @@ function actionZoom100() {
 
 function actionZoomFit() {
   if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return;
+  // Iterate by *position* — pageNo is sparse after deletions, so a
+  // 1..count() loop would feed deleted-/inserted-page numbers into
+  // getCanonicalSize and throw RangeError, silently aborting.
   let maxCanonW = 0;
-  for (let p = 1; p <= viewer.registry.count(); p++) {
-    const sz = viewer.registry.getCanonicalSize(p);
+  for (let i = 0; i < viewer.registry.count(); i++) {
+    const pageNo = viewer.registry.pageNoAtPos(i);
+    const sz = viewer.registry.getCanonicalSize(pageNo);
     if (sz.w > maxCanonW) maxCanonW = sz.w;
   }
   // 32 px breathing room left + right
   const targetWidth = viewerContainer.clientWidth - 32;
   if (targetWidth <= 0 || maxCanonW <= 0) return;
   applyZoom(targetWidth / maxCanonW);
+}
+
+/** Fit the CURRENT page entirely (both width and height) into the viewport. */
+function actionZoomFitPage() {
+  if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return;
+  const pageNo = viewer.currentPage || viewer.registry.pageNoAtPos(0);
+  let sz;
+  try {
+    sz = viewer.registry.getCanonicalSize(pageNo);
+  } catch {
+    return;
+  }
+  const targetW = viewerContainer.clientWidth - 32;
+  const targetH = viewerContainer.clientHeight - 32;
+  if (targetW <= 0 || targetH <= 0 || sz.w <= 0 || sz.h <= 0) return;
+  applyZoom(Math.min(targetW / sz.w, targetH / sz.h));
 }
 
 function actionPagePrev() {
@@ -2874,6 +2897,7 @@ const menuBar = new MenuBar({
     "zoom-out": actionZoomOut,
     "zoom-100": actionZoom100,
     "zoom-fit": actionZoomFit,
+    "zoom-fit-page": actionZoomFitPage,
     "page-prev": actionPagePrev,
     "page-next": actionPageNext,
     "page-goto": actionPageGoto,
@@ -3156,6 +3180,7 @@ const MENU_HINTS = {
   "zoom-in": "表示を拡大します (Ctrl++)",
   "zoom-out": "表示を縮小します (Ctrl+-)",
   "zoom-fit": "ページがウィンドウに収まる倍率にします",
+  "zoom-fit-page": "1 ページ全体がウィンドウに収まる倍率にします",
   "zoom-100": "表示を 100% に戻します (Ctrl+0)",
   "page-prev": "前のページへ移動します (PageUp)",
   "page-next": "次のページへ移動します (PageDown)",

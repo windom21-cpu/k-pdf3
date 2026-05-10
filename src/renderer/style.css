@@ -523,6 +523,12 @@ button.toggled {
 /* Stamp placement ghost — follows the cursor in stamp mode so the user
  * can see where the seal will land before clicking. Same visual as
  * overlay-stamp but pinned to viewport coords and pointer-transparent. */
+.stamp-ghost[hidden] {
+  /* Class-level `display: flex` below would otherwise out-specify the
+   * default UA `[hidden]` rule and the ghost would stay visible (ie.
+   * appear "burned in" while scrolling). */
+  display: none !important;
+}
 .stamp-ghost {
   position: fixed;
   pointer-events: none;

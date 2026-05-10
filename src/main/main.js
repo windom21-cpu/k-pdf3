@@ -116,6 +116,22 @@ function createMainWindow() {
   };
   mainWindow.on("maximize", broadcastMax);
   mainWindow.on("unmaximize", broadcastMax);
+  // frame:false + Menu.setApplicationMenu(null) means no default
+  // accelerators — wire reload / DevTools at the main process level so
+  // they always fire regardless of renderer focus or Wayland quirks.
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const k = input.key;
+    if (k === "F5" || ((input.control || input.meta) && k.toLowerCase() === "r")) {
+      event.preventDefault();
+      mainWindow.webContents.reload();
+    } else if (k === "F12") {
+      event.preventDefault();
+      const wc = mainWindow.webContents;
+      if (wc.isDevToolsOpened()) wc.closeDevTools();
+      else wc.openDevTools({ mode: "detach" });
+    }
+  });
   mainWindow.on("closed", () => {
     disposeActiveDoc();
     if (activeWorkspace) {

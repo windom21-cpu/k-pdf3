@@ -1000,6 +1000,9 @@ export class Viewer {
       // overlay paints on top.
       const placeholder = div.querySelector(":scope > .page-placeholder");
       if (placeholder) placeholder.remove();
+      // Defensive: drop any prior canvas that wasn't tracked in
+      // canvasEls (race between concurrent rebuilds → double image).
+      for (const c of div.querySelectorAll(":scope > canvas")) c.remove();
       const overlayLayer = div.querySelector(":scope > .overlay-layer");
       if (overlayLayer) div.insertBefore(canvas, overlayLayer);
       else div.appendChild(canvas);
