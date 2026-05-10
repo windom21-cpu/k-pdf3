@@ -48,6 +48,8 @@ const textSizeSel = $("text-size");
 const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
 const btnModeCallout = $("btn-mode-callout");
+const stampTemplateSel = $("stamp-template");
+const stampColorSel = $("stamp-color");
 const wsStatus = $("ws-status");
 const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
@@ -483,10 +485,30 @@ function placeText(pageNo, x, y) {
   }
 }
 
+/** Build the stamp properties for the currently-selected template. */
+function currentStampPreset() {
+  const tmpl = stampTemplateSel?.value || "default";
+  const color = stampColorSel?.value || "#cc0000";
+  if (tmpl === "date-numeric") {
+    const d = new Date();
+    const reiwa = d.getFullYear() - 2018; // 令和元年 = 2019
+    const text = `${reiwa}.${d.getMonth() + 1}.${d.getDate()}`;
+    return { text, w: 90, h: 40, frame: "rect", fontSize: 13, color };
+  }
+  if (tmpl === "date-kanji") {
+    const d = new Date();
+    const reiwa = d.getFullYear() - 2018;
+    const text = `令和${reiwa}年${d.getMonth() + 1}月${d.getDate()}日`;
+    return { text, w: 130, h: 40, frame: "rect", fontSize: 13, color };
+  }
+  // default 印 — the original round seal.
+  return { text: "印", w: 60, h: 60, frame: "circle", fontSize: 14, color };
+}
+
 function placeStamp(pageNo, x, y) {
-  // Default 60×60-PDF-point round red seal centred on click.
-  const W = 60;
-  const H = 60;
+  const preset = currentStampPreset();
+  const W = preset.w;
+  const H = preset.h;
   const cmd = new AddOverlayCommand(projectStore, {
     pageNo,
     type: "stamp",
@@ -497,10 +519,10 @@ function placeStamp(pageNo, x, y) {
     zOrder: 0,
     properties: {
       kind: "text-frame",
-      text: "印",
-      color: "#cc0000",
-      frame: "circle",
-      fontSize: 14,
+      text: preset.text,
+      color: preset.color,
+      frame: preset.frame,
+      fontSize: preset.fontSize,
       rotation: 0,
     },
   });
@@ -679,36 +701,46 @@ function setPlacementMode(mode) {
 }
 
 // ---- Stamp drag ghost (preview that follows the cursor) ---------------
-const STAMP_W = 60;          // PDF points (matches placeStamp default)
-const STAMP_H = 60;
-const STAMP_FONT = 14;
 let stampGhostEl = null;
 
 function ensureStampGhost() {
   if (stampGhostEl) return stampGhostEl;
   const el = document.createElement("div");
   el.className = "stamp-ghost stamp-ghost-circle";
-  el.textContent = "印";
-  el.style.color = "#cc0000";
   el.hidden = true;
   document.body.appendChild(el);
   stampGhostEl = el;
+  updateStampGhostPreset();
   return el;
+}
+
+function updateStampGhostPreset() {
+  if (!stampGhostEl) return;
+  const preset = currentStampPreset();
+  stampGhostEl.textContent = preset.text;
+  stampGhostEl.style.color = preset.color;
+  // Frame class
+  stampGhostEl.classList.remove("stamp-ghost-circle", "stamp-ghost-rect");
+  stampGhostEl.classList.add(
+    preset.frame === "circle" ? "stamp-ghost-circle" : "stamp-ghost-rect",
+  );
 }
 
 function updateStampGhostSize() {
   if (!stampGhostEl) return;
+  const preset = currentStampPreset();
   const z = viewer.zoom;
-  stampGhostEl.style.width = `${STAMP_W * z}px`;
-  stampGhostEl.style.height = `${STAMP_H * z}px`;
-  stampGhostEl.style.fontSize = `${STAMP_FONT * z}px`;
+  stampGhostEl.style.width = `${preset.w * z}px`;
+  stampGhostEl.style.height = `${preset.h * z}px`;
+  stampGhostEl.style.fontSize = `${preset.fontSize * z}px`;
 }
 
 function moveStampGhost(clientX, clientY) {
   const el = ensureStampGhost();
+  const preset = currentStampPreset();
   const z = viewer.zoom;
-  el.style.left = `${clientX - (STAMP_W * z) / 2}px`;
-  el.style.top = `${clientY - (STAMP_H * z) / 2}px`;
+  el.style.left = `${clientX - (preset.w * z) / 2}px`;
+  el.style.top = `${clientY - (preset.h * z) / 2}px`;
 }
 
 function onViewerMouseMoveForStampGhost(e) {
@@ -754,6 +786,8 @@ function setOpen(open) {
   if (btnModeMarker) btnModeMarker.disabled = !open;
   if (markerColorSel) markerColorSel.disabled = !open;
   if (btnModeCallout) btnModeCallout.disabled = !open;
+  if (stampTemplateSel) stampTemplateSel.disabled = !open;
+  if (stampColorSel) stampColorSel.disabled = !open;
   if (!open) {
     setPlacementMode("none");
     setSplitMode(false);
@@ -3628,6 +3662,34 @@ if (btnModeCallout) {
   btnModeCallout.addEventListener("click", () =>
     setPlacementMode(placementMode === "callout" ? "none" : "callout"),
   );
+}
+
+// Stamp template / color: picking either auto-switches into stamp mode
+// so the user lands directly in "place this stamp" (mirrors the
+// redaction-color UX). Persisted to localStorage.
+const STAMP_TEMPLATE_KEY = "kpdf3.stampTemplate";
+const STAMP_COLOR_KEY = "kpdf3.stampColor";
+if (stampTemplateSel) {
+  const saved = localStorage.getItem(STAMP_TEMPLATE_KEY);
+  if (saved && [...stampTemplateSel.options].some((o) => o.value === saved)) {
+    stampTemplateSel.value = saved;
+  }
+  stampTemplateSel.addEventListener("change", () => {
+    localStorage.setItem(STAMP_TEMPLATE_KEY, stampTemplateSel.value);
+    if (isOpen && placementMode !== "stamp") setPlacementMode("stamp");
+    updateStampGhostPreset();
+  });
+}
+if (stampColorSel) {
+  const saved = localStorage.getItem(STAMP_COLOR_KEY);
+  if (saved && [...stampColorSel.options].some((o) => o.value === saved)) {
+    stampColorSel.value = saved;
+  }
+  stampColorSel.addEventListener("change", () => {
+    localStorage.setItem(STAMP_COLOR_KEY, stampColorSel.value);
+    if (isOpen && placementMode !== "stamp") setPlacementMode("stamp");
+    updateStampGhostPreset();
+  });
 }
 btnRotateLeft.addEventListener("click", actionRotateLeft);
 btnRotateRight.addEventListener("click", actionRotateRight);
