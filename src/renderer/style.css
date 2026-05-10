@@ -112,7 +112,10 @@ body {
   pointer-events: none; /* don't steal drag from the title bar */
 }
 
-/* ---- Tab bar (ADR-0015) ---- */
+/* ---- Tab bar (ADR-0015) ----
+ * Now lives inside main-content (right of the sidebar) so it spans
+ * only the viewer area and the sidebar's top edge meets the toolbar
+ * directly. */
 .tab-bar {
   flex: 0 0 auto;
   display: flex;
@@ -428,9 +431,15 @@ button.toggled {
   order: 0;
 }
 .sidebar { order: 1; }
-.viewer-container { order: 3; }
-.split-view { order: 4; }
+.main-content { order: 3; }
 .sidebar-toggle.is-open { order: 2; }
+.main-content {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
 .sidebar-toggle-arrow::before {
   content: "▶";
   font-size: 11px;
@@ -525,15 +534,19 @@ button.toggled {
 .bookmark-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 6px 6px;
+  gap: 3px;
+  padding: 2px 4px 3px;
   border-bottom: 1px solid #808080;
 }
 .bookmark-toolbar button {
-  min-width: 24px;
-  height: 22px;
-  padding: 0 6px;
-  font-size: 12px;
+  min-width: 18px;
+  height: 9px;
+  padding: 0 3px;
+  font-size: 10px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .bookmark-hint {
   margin-left: auto;
@@ -930,10 +943,13 @@ button.toggled {
 .overlay-close-btn:hover {
   background: #cc0000;
 }
-/* While inline-editing the overlay, hide the × so Delete in the text
- * doesn't get confused with "delete this overlay". The button comes
- * back automatically as soon as the editing class is removed. */
-.overlay.editing > .overlay-close-btn {
+/* While inline-editing free TEXT or callout overlays, hide × so Delete
+ * in the text doesn't get confused with "delete this overlay". For
+ * STAMP overlays (date / text-frame), the inline-edit path is mostly
+ * a quirk of the click handler — users still expect a visible close
+ * button to remove the stamp. Keep × visible for stamps. */
+.overlay-text.editing > .overlay-close-btn,
+.overlay-callout.editing > .overlay-close-btn {
   display: none;
 }
 
@@ -1160,7 +1176,7 @@ button.toggled {
   display: none !important;
 }
 .main-area.split-mode > #sidebar,
-.main-area.split-mode > #viewer-container {
+.main-area.split-mode #viewer-container {
   display: none;
 }
 .split-view-header {
@@ -1258,6 +1274,14 @@ button.toggled {
 .split-thumbs-row > .thumb-insert-gap-vertical:first-child {
   margin-left: -18px;
 }
+/* Thumb + its trailing +gap glued together so flex-wrap can't break
+ * the row between them. Without this the +gap was sometimes pushed to
+ * the start of the next visual row and threw off thumb alignment. */
+.split-thumb-cell {
+  display: flex;
+  align-items: flex-start;
+  flex: 0 0 auto;
+}
 .split-thumb {
   display: flex;
   flex-direction: column;
@@ -1296,26 +1320,38 @@ button.toggled {
   color: #444;
 }
 .split-inner-sep {
-  width: 10px;
+  width: 14px;
   margin: 4px 0;
   cursor: pointer;
   position: relative;
+  /* align-self: stretch so the bar matches the thumb height even though
+   * the parent row uses align-items: flex-start (see .split-thumbs-row).
+   * Without this the sep collapses to height 0 and the user can't see
+   * or click the divider. */
+  align-self: stretch;
   display: flex;
-  align-items: stretch;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 .split-inner-sep::after {
   content: "";
-  position: absolute;
-  top: 6px;
-  bottom: 6px;
-  left: 4px;
-  width: 2px;
-  background: #d0d0d0;
+  width: 3px;
+  height: 80%;
+  background: repeating-linear-gradient(
+    to bottom,
+    #888 0,
+    #888 4px,
+    transparent 4px,
+    transparent 7px
+  );
+}
+.split-inner-sep:hover {
+  background: rgba(204, 0, 0, 0.08);
 }
 .split-inner-sep:hover::after {
   background: #cc0000;
-  width: 3px;
-  left: 3px;
+  width: 4px;
 }
 .split-active-mark {
   text-align: center;
@@ -1753,27 +1789,31 @@ button.toggled {
   gap: 6px;
 }
 
-/* "Insert blank" gap markers between thumbs (sidebar + split-save). */
+/* "Insert blank" gap markers between thumbs (sidebar + split-save).
+ * Default: a thin separator line, no glyph — matches "区切り線に＋"
+ * UX intent. The + glyph only fades in on hover/focus so the row
+ * stays visually clean. */
 .thumb-insert-gap {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 14px;
-  margin: 2px 0;
+  height: 8px;
+  margin: 0;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.1s;
   font-size: 11px;
-  color: #000080;
+  color: transparent;
   border-top: 1px dashed transparent;
   border-bottom: 1px dashed transparent;
   user-select: none;
+  transition: color 0.1s, background 0.1s, border-color 0.1s;
 }
 .thumb-list:hover .thumb-insert-gap,
-.split-thumbs-row:hover .thumb-insert-gap,
+.split-thumbs-row:hover .thumb-insert-gap {
+  color: #888;
+}
 .thumb-insert-gap:hover,
 .thumb-insert-gap:focus {
-  opacity: 1;
+  color: #000080;
   border-top-color: #000080;
   border-bottom-color: #000080;
   background: #d8e0ff;

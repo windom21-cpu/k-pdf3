@@ -30,6 +30,15 @@ import {
   touchWorkspace,
   workspacePathFor,
 } from "./workspace-registry.js";
+import {
+  listStampPresetsGlobal,
+  addStampPresetGlobal,
+  removeStampPresetGlobal,
+  getStampAssetGlobal,
+  addStampAssetFromFileGlobal,
+  migrateFromWorkspaceIfEmpty as migrateStampPresetsToGlobalIfEmpty,
+  closeStampStore,
+} from "./global-stamp-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -306,6 +315,7 @@ app.on("before-quit", () => {
   activeSourcePdfPath = null;
   activeTabId = null;
   closeRegistry();
+  closeStampStore();
   if (printWindow && !printWindow.isDestroyed()) {
     try { printWindow.destroy(); } catch { /* ignore */ }
     printWindow = null;
@@ -724,6 +734,17 @@ ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath, tabId = null) => {
   });
   activateTab(targetTabId);
 
+  // First-run migration of workspace-local stamp presets to the
+  // global stamps.db. Idempotent — only fires when the global store
+  // is empty AND the just-opened workspace has presets to copy. Runs
+  // every open so β testers who registered presets in any of several
+  // workspaces under the old design get the first one's set surfaced.
+  try {
+    migrateStampPresetsToGlobalIfEmpty(workspace);
+  } catch (err) {
+    console.warn("[stamp-presets] global migration failed (non-fatal):", err);
+  }
+
   return {
     tabId: targetTabId,
     pdfPath,
@@ -806,8 +827,17 @@ ipcMain.handle("kpdf3:add-asset", async (_, { mime, blob, width, height, label }
 });
 
 ipcMain.handle("kpdf3:get-asset", async (_, id) => {
-  if (!activeWorkspace) return null;
-  const r = activeWorkspace.getAsset(id);
+  // Workspace first; fall back to the global stamp store so image
+  // stamps (now stored globally — see global-stamp-store.js) render
+  // even when the active workspace's `assets` table is empty.
+  let r = activeWorkspace ? activeWorkspace.getAsset(id) : null;
+  if (!r) {
+    try {
+      r = getStampAssetGlobal(id);
+    } catch {
+      r = null;
+    }
+  }
   if (!r) return null;
   return { ...r, blob: r.blob instanceof Uint8Array ? r.blob : new Uint8Array(r.blob) };
 });
@@ -818,49 +848,38 @@ ipcMain.handle("kpdf3:remove-asset", async (_, id) => {
   return { ok: true };
 });
 
-// ---- Stamp presets (ADR-0019 MVP) ---------------------------------
+// ---- Stamp presets (ADR-0019 MVP, global since β bug-fix pass) -----
+//
+// Presets and their image bytes live in <userData>/stamps.db so a
+// stamp registered against one PDF appears for every other PDF the
+// user opens. Workspace-side stamp_presets remains as legacy data;
+// migrateFromWorkspaceIfEmpty pulls it into the global store on the
+// first open after upgrade.
 
 ipcMain.handle("kpdf3:list-stamp-presets", async () => {
-  if (!activeWorkspace) return [];
-  return activeWorkspace.listStampPresets();
+  return listStampPresetsGlobal();
 });
 
 ipcMain.handle("kpdf3:add-stamp-preset", async (_, preset) => {
-  if (!activeWorkspace) throw new Error("No active workspace");
-  const id = activeWorkspace.addStampPreset(preset ?? {});
+  const id = addStampPresetGlobal(preset ?? {});
   return { id };
 });
 
 ipcMain.handle("kpdf3:remove-stamp-preset", async (_, id) => {
-  if (!activeWorkspace) throw new Error("No active workspace");
-  activeWorkspace.removeStampPreset(id);
+  removeStampPresetGlobal(id);
   return { ok: true };
 });
 
 /**
- * Read a local file (PNG/JPG) and register it as a workspace asset.
- * Used by the image-stamp registration UI which only knows the file
- * path. Returns { id, width, height, mime, label }.
+ * Read a local file (PNG/JPG) and register it as a stamp asset in the
+ * global store. Used by the image-stamp registration UI which only
+ * knows the file path. Returns { id, mime, label }.
  */
 ipcMain.handle("kpdf3:add-asset-from-file", async (_, { path: filePath, label }) => {
-  if (!activeWorkspace) throw new Error("No active workspace");
   if (!filePath) throw new Error("path missing");
-  const buf = readFileSync(filePath);
-  // Sniff mime from extension. Image stamps support PNG / JPEG.
-  const ext = filePath.toLowerCase().split(".").pop();
-  const mime =
-    ext === "png" ? "image/png" :
-    ext === "jpg" || ext === "jpeg" ? "image/jpeg" :
-    "application/octet-stream";
-  // Decode dimensions via the renderer's createImageBitmap path is
-  // expensive to do from main; defer width/height to first render
-  // (renderer can backfill via update-asset-dims if useful).
-  const id = activeWorkspace.addAsset({
-    mime,
-    blob: new Uint8Array(buf),
-    label: label ?? filePath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? null,
-  });
-  return { id, mime };
+  const fallbackLabel =
+    label ?? filePath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? null;
+  return addStampAssetFromFileGlobal(filePath, fallbackLabel);
 });
 
 ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {

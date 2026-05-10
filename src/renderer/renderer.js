@@ -1200,6 +1200,13 @@ function reapplySelectionDom() {
       e.stopPropagation();
       const id = selectedOverlayId;
       if (!id) return;
+      // If this overlay is being inline-edited, abort the edit BEFORE
+      // firing the remove. Otherwise viewer._renderPageOverlays keeps
+      // the editing DOM around (preservedEditing branch), which makes
+      // the × click look like nothing happened until the contentEditable
+      // blurs by some unrelated action. (β2 bug: 日付スタンプの × が
+      // 効かない / 遅延)
+      viewer.exitTextEdit();
       setSelectedOverlay(null);
       history.execute(new RemoveOverlayCommand(projectStore, id));
     });
@@ -1575,10 +1582,38 @@ async function refreshStampPresetCacheAndSelect() {
   rebuildStampPalette();
 }
 
+/** Set up `canvas` for HiDPI drawing at the given CSS pixel size. The
+ *  pixel buffer becomes (cssW * dpr, cssH * dpr), CSS keeps it sized
+ *  at (cssW, cssH), the context is pre-scaled so subsequent draw calls
+ *  work in CSS units, and we cache the logical (CSS) dims on dataset
+ *  so the paint helpers below can read them via canvasLogicalSize().
+ *  Call this BEFORE paintPresetThumb / paintStampPreview. */
+function setupHiDPICanvas(canvas, cssW, cssH) {
+  const dpr = Math.min(globalThis.devicePixelRatio || 1, 3);
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = `${cssW}px`;
+  canvas.style.height = `${cssH}px`;
+  canvas.dataset.cssW = String(cssW);
+  canvas.dataset.cssH = String(cssH);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+/** Read the logical (CSS pixel) drawing size from a canvas, falling
+ *  back to its raw attribute size for canvases that haven't been
+ *  through setupHiDPICanvas. */
+function canvasLogicalSize(canvas) {
+  const w = parseFloat(canvas.dataset.cssW);
+  const h = parseFloat(canvas.dataset.cssH);
+  if (Number.isFinite(w) && Number.isFinite(h)) return { W: w, H: h };
+  return { W: canvas.width, H: canvas.height };
+}
+
 /** Render a small thumbnail of a preset onto the given canvas. */
 function paintPresetThumb(canvas, p) {
   const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height;
+  const { W, H } = canvasLogicalSize(canvas);
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, W, H);
@@ -1646,8 +1681,10 @@ function rebuildStampPalette() {
     if (p.id === _activeStampPresetId) btn.classList.add("is-active");
     const thumb = document.createElement("canvas");
     thumb.className = "stamp-preset-thumb";
-    thumb.width = 40;
-    thumb.height = 22;
+    // Larger preview + HiDPI buffer so the tiny date / 印 stamps in
+    // the floating palette read clearly. devicePixelRatio scales the
+    // pixel buffer; CSS keeps the visual size constant.
+    setupHiDPICanvas(thumb, 84, 32);
     paintPresetThumb(thumb, p);
     btn.appendChild(thumb);
     const lbl = document.createElement("span");
@@ -1869,9 +1906,8 @@ function tintCanvasInPlace(ctx, hex) {
 
 function paintStampPreview(canvas, props) {
   const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const W = canvas.width;
-  const H = canvas.height;
+  const { W, H } = canvasLogicalSize(canvas);
+  ctx.clearRect(0, 0, W, H);
   // Centered; preview canvas is small so we draw at a fixed scale.
   const pad = 4;
   const innerW = W - pad * 2;
@@ -1954,6 +1990,7 @@ const stampRegDateFrame = $("stamp-reg-date-frame");
 const stampRegDateLabel = $("stamp-reg-date-label");
 const stampRegDateFontSize = $("stamp-reg-date-fontsize");
 const stampRegDatePreview = $("stamp-reg-date-preview");
+if (stampRegDatePreview) setupHiDPICanvas(stampRegDatePreview, 180, 60);
 // id of the preset currently being edited (vs. created); null on create.
 let _editingPresetId = null;
 
@@ -2050,6 +2087,7 @@ const stampRegTextColor = $("stamp-reg-text-color");
 const stampRegTextFrame = $("stamp-reg-text-frame");
 const stampRegTextLabel = $("stamp-reg-text-label");
 const stampRegTextPreview = $("stamp-reg-text-preview");
+if (stampRegTextPreview) setupHiDPICanvas(stampRegTextPreview, 180, 60);
 function openStampRegisterText(prefill = null) {
   _editingPresetId = prefill?.id ?? null;
   stampRegTextText.value = prefill?.text ?? "";
@@ -2112,6 +2150,7 @@ const stampRegImageFrame = $("stamp-reg-image-frame");
 const stampRegImageColor = $("stamp-reg-image-color");
 const stampRegImageLabel = $("stamp-reg-image-label");
 const stampRegImagePreview = $("stamp-reg-image-preview");
+if (stampRegImagePreview) setupHiDPICanvas(stampRegImagePreview, 180, 120);
 const stampRegImageOk = $("stamp-reg-image-ok");
 let _stampRegImageState = null; // { path, mime, bitmap, naturalW, naturalH, label }
 async function openStampRegisterImage(prefill = null) {
@@ -2421,6 +2460,7 @@ function setOpen(open) {
   refreshSidebarToggle();
   refreshZoomSelect();
   refreshSearchEnabled();
+  updateTabBarOffset();
   // Mirror onto the active tab so the tab bar's dirty mark + close
   // confirmation reflect reality.
   const tab = getActiveTab();
@@ -2876,6 +2916,31 @@ async function openPdfPath(pdfPath) {
       tab.activeSourceName = fname;
     }
     setOpen(true);
+    // Force the sidebar open on the サムネイル tab when a PDF loads.
+    // Without this, opening a fresh file inherits the prior tab state
+    // (often しおり, or sidebar.hidden=true from setOpen(false)), which
+    // hides the thumbs the user expects to see immediately.
+    if (sidebar) sidebar.hidden = false;
+    switchSidebarTab("thumbs");
+    refreshSidebarToggle();
+    updateTabBarOffset();
+    // Auto-import the source PDF's /Outlines into the workspace's
+    // editable bookmarks the first time we see this PDF. Once any
+    // workspace bookmark exists (from this auto-import or a manual
+    // edit) we never re-import — that would duplicate or trample the
+    // user's edits. β tester explicitly asked for the manual 取込
+    // button to be removed in favour of "当然に取り込んで".
+    try {
+      const existing = await kpdf3.listBookmarks();
+      if (!Array.isArray(existing) || existing.length === 0) {
+        const outline = await kpdf3.getOutline();
+        if (Array.isArray(outline) && outline.length > 0) {
+          await actionImportOutlines();
+        }
+      }
+    } catch (err) {
+      console.warn("[bookmark] auto-import failed:", err);
+    }
     await refreshViewer();
     renderTabBar();
   } catch (err) {
@@ -3654,15 +3719,14 @@ function rebuildSplitUI(pages) {
       // Visual position passed in 1-indexed across the WHOLE document
       // so split-save labels match the sidebar / page-indicator
       // numbering even when the part doesn't start at page 1.
+      // Glue each thumbnail and its trailing +gap into one indivisible
+      // cell. flex-wrap can break BETWEEN cells but never inside, so
+      // a thumb never gets stranded with its + gap on the next row.
+      // (Without this the user reported "２行目以降の左側に＋が来る".)
+      const cell = document.createElement("div");
+      cell.className = "split-thumb-cell";
       const thumb = createThumbElement(pages[i], i + 1);
-      row.appendChild(thumb);
-      // Trailing insert gap — anchored to this source page, or to the
-      // synthetic's slot anchor + (orderInSlot+1) when this thumb is
-      // a synthetic. Without orderInSlot a click on the gap right
-      // after a mid-slot synthetic clobbered the slot ordering, which
-      // is the "末尾の挿入で挙動がおかしくなる" bug — last-tail clicks
-      // re-anchored to the wrong slot position. Mirrors the sidebar
-      // rebuildThumbs logic.
+      cell.appendChild(thumb);
       let anchor;
       let orderInSlot = null;
       if (pages[i].isSynthetic) {
@@ -3671,7 +3735,8 @@ function rebuildSplitUI(pages) {
       } else {
         anchor = pages[i].pageNo;
       }
-      row.appendChild(makeSplitInsertGap(anchor, orderInSlot));
+      cell.appendChild(makeSplitInsertGap(anchor, orderInSlot));
+      row.appendChild(cell);
       if (i < part.end) {
         // Inner separator — click to split here.
         const sep = document.createElement("div");
@@ -4665,15 +4730,11 @@ function selectBookmark(id) {
 function refreshBookmarkToolbarState() {
   const addBtn = $("bookmark-add");
   const rmBtn = $("bookmark-remove");
-  const impBtn = $("bookmark-import");
   const indentBtn = $("bookmark-indent");
   const outdentBtn = $("bookmark-outdent");
   if (addBtn) addBtn.disabled = !isOpen;
   if (rmBtn) rmBtn.disabled = !isOpen || !selectedBookmarkId || bookmarkSource !== "workspace";
-  // Import only useful when source-PDF /Outlines exist AND workspace
-  // is empty (otherwise there'd be duplicate entries; user can − the
-  // existing workspace ones first if they really want to re-import).
-  if (impBtn) impBtn.disabled = !isOpen || bookmarkSource !== "outline";
+  // Import is now triggered automatically on first open (openPdfPath).
   const sel = selectedBookmarkId
     ? workspaceBookmarksCache.find((b) => b.id === selectedBookmarkId)
     : null;
@@ -4827,12 +4888,6 @@ bookmarkTree.addEventListener("keydown", (e) => {
  *  toolbar disabled state when workspace bookmarks already exist. */
 async function actionImportOutlines() {
   if (!isOpen) return;
-  const ok = await customConfirm({
-    title: "しおりの取り込み",
-    message: "元 PDF のしおりを workspace に取り込みます。\n以後は編集できるようになります。",
-    okLabel: "取り込む",
-  });
-  if (!ok) return;
   const outline = await kpdf3.getOutline();
   if (!Array.isArray(outline) || outline.length === 0) {
     wsStatus.textContent = "取り込めるしおりがありません";
@@ -4868,13 +4923,15 @@ async function actionImportOutlines() {
     wsStatus.textContent = `取り込み失敗: ${err.message ?? err}`;
   }
 }
-$("bookmark-import")?.addEventListener("click", actionImportOutlines);
+// (bookmark-import button removed — outline is auto-imported on first
+// open in openPdfPath. actionImportOutlines is still invoked from there.)
 
 function actionToggleBookmarks() {
   if (!isOpen) return;
   sidebar.hidden = !sidebar.hidden;
   refreshSidebarToggle();
   refreshMenuState();
+  updateTabBarOffset();
   // Trigger thumb rendering for items now visible.
   if (!sidebar.hidden && currentSidebarTab === "thumbs") {
     requestVisibleThumbRenders();
@@ -5390,7 +5447,7 @@ function makeInsertGap(afterPageNo, orderInSlot = null) {
   gap.className = "thumb-insert-gap";
   gap.tabIndex = 0;
   gap.title = `クリック=白紙挿入 / PDF をドロップ=外部 PDF 挿入 (afterPageNo=${afterPageNo}${orderInSlot != null ? `, order=${orderInSlot}` : ""})`;
-  gap.textContent = "＋ 白紙 / PDF をドロップ";
+  gap.textContent = "＋";
   gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo, orderInSlot));
   gap.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
@@ -6081,6 +6138,12 @@ const SIDEBAR_MAX = 600;
   }
 })();
 
+/** No-op kept for callers; the tab-bar now lives inside main-content
+ *  (right of the sidebar) so its offset is handled purely by flex
+ *  layout. Removing this helper would mean editing every call-site;
+ *  it's cheaper to leave a stub here. */
+function updateTabBarOffset() { /* no-op */ }
+
 let splitterDragStartX = 0;
 let splitterDragStartW = 0;
 sidebarSplitter.addEventListener("pointerdown", (e) => {
@@ -6095,6 +6158,7 @@ sidebarSplitter.addEventListener("pointermove", (e) => {
   const dx = e.clientX - splitterDragStartX;
   const w = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, splitterDragStartW + dx));
   sidebar.style.flexBasis = `${w}px`;
+  updateTabBarOffset();
 });
 sidebarSplitter.addEventListener("pointerup", (e) => {
   if (sidebarSplitter.hasPointerCapture(e.pointerId)) {

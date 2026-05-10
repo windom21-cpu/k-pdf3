@@ -608,16 +608,8 @@
     </div>
   </div>
 
-  <!-- Tab bar (ADR-0015) — sits below the toolbar so the buttons row
-       (open / save / mode toggles / zoom / search) stays the visual
-       primary, and the tabs read as a per-document strip just above
-       the page area. The + button on the right opens a new tab via
-       the file picker; the × on each tab closes it (with dirty
-       confirmation). -->
-  <div class="tab-bar" id="tab-bar">
-    <div class="tab-list" id="tab-list"></div>
-    <button class="tab-add" id="tab-add" title="新しいタブで PDF を開く (Ctrl+T)">+</button>
-  </div>
+  <!-- (Tab bar moved inside main-area > main-content so the sidebar's
+       top edge meets the toolbar directly. See below.) -->
 
   <!-- Mode options bar — appears below the main toolbar when a
        placement mode (text / stamp / redaction / marker / callout)
@@ -693,37 +685,46 @@
             <button id="bookmark-remove" disabled title="選択中のしおりを削除">−</button>
             <button id="bookmark-outdent" disabled title="選択中のしおりを上の階層へ (Shift+Tab)">←</button>
             <button id="bookmark-indent" disabled title="選択中のしおりを直前のしおりの下にぶら下げる (Tab)">→</button>
-            <button id="bookmark-import" disabled title="元 PDF のしおりを取り込んで編集可能にする">取込</button>
             <span class="bookmark-hint" id="bookmark-source-label"></span>
           </div>
           <ul id="bookmark-tree" class="bookmark-tree"></ul>
         </div>
       </div>
     </aside>
-    <main id="viewer-container" class="viewer-container">
-      <!-- Page DOM is built dynamically by viewer.js -->
-    </main>
-    <section id="split-view" class="split-view" hidden>
-      <header class="split-view-header">
-        <h2>分割保存</h2>
-        <p class="split-help">
-          区切り線（｜）クリックで分割／点線（— ▼ —）クリックで結合。各パートに名前を付けて保存。
-        </p>
-        <div class="split-controls">
-          <label for="thumb-size">サムネサイズ:</label>
-          <input type="range" id="thumb-size" min="40" max="320" value="200" />
-          <span id="thumb-size-display" class="thumb-size-display">200px</span>
-          <span class="toolbar-sep"></span>
-          <input type="checkbox" id="date-prefix-toggle" />
-          <label for="date-prefix-toggle">日付 (<span id="date-prefix-preview">260509</span>) を頭に付ける</label>
-        </div>
-      </header>
-      <div id="split-flow" class="split-flow"></div>
-      <footer class="split-view-footer">
-        <button id="split-confirm" class="default">フォルダを選んで保存</button>
-        <button id="split-cancel">通常表示に戻る</button>
-      </footer>
-    </section>
+    <!-- main-content wraps tab-bar + viewer + split-view in a column so
+         the tab strip sits *above the viewer* without eating into the
+         sidebar's vertical space. The sidebar's top now meets the
+         toolbar directly. -->
+    <div id="main-content" class="main-content">
+      <div class="tab-bar" id="tab-bar">
+        <div class="tab-list" id="tab-list"></div>
+        <button class="tab-add" id="tab-add" title="新しいタブで PDF を開く (Ctrl+T)">+</button>
+      </div>
+      <main id="viewer-container" class="viewer-container">
+        <!-- Page DOM is built dynamically by viewer.js -->
+      </main>
+      <section id="split-view" class="split-view" hidden>
+        <header class="split-view-header">
+          <h2>分割保存</h2>
+          <p class="split-help">
+            区切り線（｜）クリックで分割／点線（— ▼ —）クリックで結合。各パートに名前を付けて保存。
+          </p>
+          <div class="split-controls">
+            <label for="thumb-size">サムネサイズ:</label>
+            <input type="range" id="thumb-size" min="40" max="320" value="200" />
+            <span id="thumb-size-display" class="thumb-size-display">200px</span>
+            <span class="toolbar-sep"></span>
+            <input type="checkbox" id="date-prefix-toggle" />
+            <label for="date-prefix-toggle">日付 (<span id="date-prefix-preview">260509</span>) を頭に付ける</label>
+          </div>
+        </header>
+        <div id="split-flow" class="split-flow"></div>
+        <footer class="split-view-footer">
+          <button id="split-confirm" class="default">フォルダを選んで保存</button>
+          <button id="split-cancel">通常表示に戻る</button>
+        </footer>
+      </section>
+    </div>
   </div>
 
   <div class="status-bar">
