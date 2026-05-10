@@ -38,6 +38,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 app.commandLine.appendSwitch("font-render-hinting", "none");
 app.commandLine.appendSwitch("disable-font-subpixel-positioning");
 
+// Force xwayland on Wayland sessions — native Wayland delivery for
+// keyboard events / globalShortcut is unreliable on GNOME (user
+// reproed F5 / Ctrl+R / F12 not firing). xwayland gives the same
+// behaviour as classic X11 where every key event reaches the window.
+if (process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland") {
+  app.commandLine.appendSwitch("ozone-platform-hint", "x11");
+}
+
 /**
  * Path of a legacy sidecar `.kpdf3` next to the PDF (the ADR-0006 layout).
  * Used only by the migration step in `kpdf3:open-pdf-file`.

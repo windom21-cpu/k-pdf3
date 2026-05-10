@@ -13,7 +13,11 @@ import {
   UpdateOverlayCommand,
   RemoveOverlayCommand,
 } from "../domain/commands.js";
-import { composePagesForExport, composeSinglePageCanvas } from "./exporter.js";
+import {
+  composePagesForExport,
+  composeSinglePageCanvas,
+  compositePage,
+} from "./exporter.js";
 import {
   TEXT_FONT_DEFAULT_ID,
   TEXT_FONT_DEFAULT_SIZE,
@@ -753,10 +757,43 @@ function refreshMenuState() {
 }
 
 history.subscribe(() => refreshMenuState());
-projectStore.subscribe(() => {
+projectStore.subscribe((event) => {
   refreshDirtyIndicator();
   refreshMenuState();
+  // Invalidate thumb caches for pages whose overlays changed so the
+  // sidebar / split-save thumbs reflect the latest content (stamps,
+  // marks, text).
+  if (!event) return;
+  if (event.kind === "reset") {
+    for (const pageNo of thumbCache.keys()) invalidateSidebarThumb(pageNo);
+    splitState.thumbCache.clear();
+    return;
+  }
+  if (Array.isArray(event.pages)) {
+    for (const pageNo of event.pages) {
+      invalidateSidebarThumb(pageNo);
+      splitState.thumbCache.delete(pageNo);
+    }
+  }
 });
+
+/** Drop the cached canvas + DOM for a sidebar thumb so the next
+ *  visibility check re-renders. */
+function invalidateSidebarThumb(pageNo) {
+  if (!thumbCache.has(pageNo)) return;
+  thumbCache.delete(pageNo);
+  if (!thumbList) return;
+  const item = thumbList.querySelector(`.thumb-item[data-page-no="${pageNo}"]`);
+  if (!item) return;
+  const oldCanvas = item.querySelector(".thumb-img");
+  if (oldCanvas) {
+    const ph = document.createElement("div");
+    ph.className = "thumb-placeholder";
+    oldCanvas.replaceWith(ph);
+  }
+  // Trigger a fresh render if visible.
+  requestVisibleThumbRenders();
+}
 
 // Refresh menu state when the page indicator changes (page-prev / page-next
 // availability depends on currentPage). Done by chaining the existing
@@ -1693,15 +1730,10 @@ async function generateAllThumbnails(pages, onProgress) {
       } else {
         result = await kpdf3.renderPage(pageNo, { zoom: 0.25 });
       }
-      const canvas = document.createElement("canvas");
-      canvas.width = result.width;
-      canvas.height = result.height;
-      const ctx = canvas.getContext("2d");
-      const pixels =
-        result.pixels instanceof Uint8ClampedArray
-          ? result.pixels
-          : new Uint8ClampedArray(result.pixels.buffer ?? result.pixels);
-      ctx.putImageData(new ImageData(pixels, result.width, result.height), 0, 0);
+      // compositePage handles userRotation + overlays so the split-save
+      // thumb matches what the page actually looks like (stamps / marks
+      // visible, rotated pages displayed in their rotated orientation).
+      const canvas = compositePage(row, result, projectStore, 0.25);
       splitState.thumbCache.set(pageNo, canvas);
     } catch (err) {
       console.error(`[split] thumb ${pageNo} failed:`, err);
@@ -2206,6 +2238,10 @@ async function rotatePageBy(pageNo, delta) {
   if (!isOpen || !pageNo) return;
   const row = viewer._pages?.find((p) => p.pageNo === pageNo);
   if (!row) return;
+  // Drop split-state thumb cache for this page so the next split-save
+  // view re-renders with the new rotation. Sidebar thumbs are wiped by
+  // rebuildThumbs further below, so they don't need explicit clearing.
+  splitState?.thumbCache?.delete(pageNo);
 
   // Old canonical W/H BEFORE the rotation, accounting for both the
   // intrinsic /Rotate and the previous userRotation.
@@ -2822,25 +2858,18 @@ function clearThumbs() {
 async function renderThumb(pageNo, itemEl) {
   inFlightThumbs.add(pageNo);
   try {
+    const row = viewer._pages?.find((p) => p.pageNo === pageNo);
+    if (!row) return;
     let result;
     if (pageNo < 0) {
-      // Synthetic — find the row in the viewer's known pages
-      const row = viewer._pages?.find((p) => p.pageNo === pageNo);
-      if (!row) return;
       result = renderSyntheticPagePixels(row, THUMB_ZOOM);
     } else {
       result = await kpdf3.renderPage(pageNo, { zoom: THUMB_ZOOM });
     }
-    const pixels =
-      result.pixels instanceof Uint8ClampedArray
-        ? result.pixels
-        : new Uint8ClampedArray(result.pixels.buffer ?? result.pixels);
-    const imageData = new ImageData(pixels, result.width, result.height);
-    const canvas = document.createElement("canvas");
-    canvas.width = result.width;
-    canvas.height = result.height;
+    // compositePage handles userRotation + overlays — sidebar thumbs
+    // now visually match the page (with stamps/marks/text on top).
+    const canvas = compositePage(row, result, projectStore, THUMB_ZOOM);
     canvas.className = "thumb-img";
-    canvas.getContext("2d").putImageData(imageData, 0, 0);
     const ph = itemEl.querySelector(".thumb-placeholder");
     if (ph) ph.replaceWith(canvas);
     thumbCache.set(pageNo, canvas);

@@ -100,22 +100,27 @@ export async function composeSinglePageCanvas(pageRow, renderPage, projectStore,
 }
 
 export function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOOM) {
+  // mupdf returns the PDF at intrinsic /Rotate dims only — userRotation
+  // is applied here so thumbs / export both match the rotated viewer.
+  const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
+  const swap = userRot === 90 || userRot === 270;
+
   const canvas = document.createElement("canvas");
-  canvas.width = renderResult.width;
-  canvas.height = renderResult.height;
+  canvas.width = swap ? renderResult.height : renderResult.width;
+  canvas.height = swap ? renderResult.width : renderResult.height;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("compositePage: 2d context unavailable");
 
-  // PDF page itself.
+  // PDF page itself — bounce through an offscreen canvas when rotation
+  // is non-zero (putImageData ignores ctx transforms).
   const pixels =
     renderResult.pixels instanceof Uint8ClampedArray
       ? renderResult.pixels
       : new Uint8ClampedArray(renderResult.pixels.buffer ?? renderResult.pixels);
+  let imageData;
   if (renderResult.channels === 4) {
-    const imageData = new ImageData(pixels, renderResult.width, renderResult.height);
-    ctx.putImageData(imageData, 0, 0);
+    imageData = new ImageData(pixels, renderResult.width, renderResult.height);
   } else {
-    // RGB → RGBA upgrade
     const rgba = new Uint8ClampedArray(renderResult.width * renderResult.height * 4);
     for (let p = 0, q = 0; p < pixels.length; p += 3, q += 4) {
       rgba[q] = pixels[p];
@@ -123,10 +128,25 @@ export function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOO
       rgba[q + 2] = pixels[p + 2];
       rgba[q + 3] = 255;
     }
-    ctx.putImageData(new ImageData(rgba, renderResult.width, renderResult.height), 0, 0);
+    imageData = new ImageData(rgba, renderResult.width, renderResult.height);
+  }
+  if (userRot === 0) {
+    ctx.putImageData(imageData, 0, 0);
+  } else {
+    const tmp = document.createElement("canvas");
+    tmp.width = renderResult.width;
+    tmp.height = renderResult.height;
+    tmp.getContext("2d").putImageData(imageData, 0, 0);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((userRot * Math.PI) / 180);
+    ctx.drawImage(tmp, -renderResult.width / 2, -renderResult.height / 2);
+    ctx.restore();
   }
 
-  // Overlays in zOrder.
+  // Overlays in zOrder. ov.x / ov.y are already in the post-userRotation
+  // canonical frame, so drawing on the rotated canvas at (x*zoom, y*zoom)
+  // lands them where the user expects.
   const overlays = projectStore.getPageOverlays(row.pageNo);
   for (const ov of overlays) {
     drawOverlay(ctx, ov, zoom);
