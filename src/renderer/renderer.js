@@ -21,6 +21,7 @@ import {
 import {
   TEXT_FONT_DEFAULT_ID,
   TEXT_FONT_DEFAULT_SIZE,
+  getTextFontStack,
 } from "./fonts.js";
 
 const { kpdf3 } = window;
@@ -662,11 +663,47 @@ function handleTextEditCommit(id, newText) {
   if (!isOpen) return;
   const ov = projectStore.get(id);
   if (!ov) return;
+  // Callouts auto-fit to the entered text — the user wanted the box to
+  // grow with the font size / character count instead of staying at the
+  // initial drag-defined dimensions.
+  let sizePatch = {};
+  if (ov.type === "rect" && ov.properties?.kind === "callout") {
+    const m = measureCalloutSize(
+      newText,
+      ov.properties.fontSize ?? 12,
+      getTextFontStack(ov.properties.fontId),
+    );
+    sizePatch = { w: m.w, h: m.h };
+  }
   history.execute(
     new UpdateOverlayCommand(projectStore, id, {
+      ...sizePatch,
       properties: { ...ov.properties, text: newText },
     }),
   );
+}
+
+/** Measure the natural size of a callout's text in canonical points,
+ *  given the font size and CSS font-family stack. Multiple lines (\n)
+ *  contribute height; the widest line wins for width. Adds a small
+ *  inner padding so the text doesn't touch the box outline. */
+function measureCalloutSize(text, fontSize, fontFamily) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  ctx.font = `${fontSize}px ${fontFamily}`;
+  const lines = (text ?? "").split(/\r?\n/);
+  let maxWidth = 0;
+  for (const line of lines) {
+    const w = ctx.measureText(line).width;
+    if (w > maxWidth) maxWidth = w;
+  }
+  const padX = 8;
+  const padY = 4;
+  const lineHeight = fontSize * 1.2;
+  return {
+    w: Math.max(40, Math.ceil(maxWidth + padX * 2)),
+    h: Math.max(fontSize, Math.ceil(lineHeight * Math.max(1, lines.length) + padY * 2)),
+  };
 }
 
 function handleOverlayDragEnd(id, newX, newY) {

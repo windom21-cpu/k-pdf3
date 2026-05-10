@@ -1071,7 +1071,23 @@ export class Viewer {
       el.contentEditable = "false";
       el.classList.remove("editing");
       this._editingId = null;
-      const after = el.textContent ?? "";
+      // Read text without SVG / × close-button content. The arrow svg
+      // and overlay-close-btn live as siblings of the user text inside
+      // the contentEditable box; el.textContent would concatenate the
+      // close button's "×" into the saved string ("foo" → "foo×").
+      const after = (() => {
+        const clone = el.cloneNode(true);
+        for (const child of [...clone.children]) {
+          if (
+            child.classList?.contains("callout-arrow") ||
+            child.classList?.contains("overlay-close-btn") ||
+            child.tagName?.toLowerCase() === "svg"
+          ) {
+            child.remove();
+          }
+        }
+        return clone.textContent ?? "";
+      })();
       if (!commit) {
         // Restore original text without losing the arrow / × siblings.
         const arrow2 = el.querySelector(":scope > .callout-arrow");
