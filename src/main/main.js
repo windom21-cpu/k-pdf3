@@ -874,6 +874,14 @@ ipcMain.handle("kpdf3:set-page-deleted", async (_, pageNo, deleted) => {
   return { ok: true };
 });
 
+ipcMain.handle("kpdf3:set-page-rotation", async (_, pageNo, userRotation) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.setPageUserRotation(pageNo, userRotation);
+  // Refresh activePages so render-page returns the rotated dimensions.
+  reopenActiveDoc();
+  return { ok: true };
+});
+
 ipcMain.handle("kpdf3:add-inserted-page", async (_, opts) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   const syntheticPageNo = activeWorkspace.addInsertedPage(opts ?? {});

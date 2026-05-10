@@ -288,6 +288,21 @@ export function setPageDeleted(db, pageNo, deleted) {
   ).run(deleted ? 1 : 0, pageNo);
 }
 
+/**
+ * Set the per-page user_rotation (0 / 90 / 180 / 270). Composed with the
+ * PDF's intrinsic /Rotate (`pages.rotation`) at render / export time via
+ * `coord.effectiveRotation`. Source PDF bytes are not touched.
+ */
+export function setPageUserRotation(db, pageNo, userRotation) {
+  const r = ((Math.round(userRotation) % 360) + 360) % 360;
+  if (![0, 90, 180, 270].includes(r)) {
+    throw new RangeError(`Invalid userRotation: ${userRotation}`);
+  }
+  db.prepare(
+    "UPDATE pages SET user_rotation = ? WHERE page_no = ?",
+  ).run(r, pageNo);
+}
+
 // ---- Overlays ------------------------------------------------------------
 
 /**

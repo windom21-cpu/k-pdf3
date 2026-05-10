@@ -20,6 +20,7 @@ import {
   setExport,
   listExports,
   setPageDeleted,
+  setPageUserRotation,
   listInsertedPages,
   addInsertedPage,
   removeInsertedPage,
@@ -172,6 +173,11 @@ export class Workspace {
   /** Mark / unmark a SOURCE page as deleted at the workspace level. */
   setPageDeleted(pageNo, deleted) {
     setPageDeleted(this.db, pageNo, deleted);
+  }
+
+  /** Set the user-applied rotation (0/90/180/270) for a SOURCE page. */
+  setPageUserRotation(pageNo, userRotation) {
+    setPageUserRotation(this.db, pageNo, userRotation);
   }
 
   /** Add a blank / text page. Returns the synthetic pageNo (negative). */

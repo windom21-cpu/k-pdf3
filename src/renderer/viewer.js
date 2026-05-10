@@ -874,13 +874,40 @@ export class Viewer {
           : new Uint8ClampedArray(result.pixels.buffer ?? result.pixels);
       const imageData = new ImageData(pixels, result.width, result.height);
 
+      // mupdf renders at the page's intrinsic /Rotate dimensions only;
+      // userRotation must be applied here so the canvas matches the
+      // page-registry slot (which uses canonical, post-userRotation dims).
+      const row = this._pages?.find((p) => p.pageNo === pageNo);
+      const userRot = ((row?.userRotation ?? 0) % 360 + 360) % 360;
+
       const canvas = document.createElement("canvas");
-      canvas.width = result.width;
-      canvas.height = result.height;
+      if (userRot === 90 || userRot === 270) {
+        canvas.width = result.height;
+        canvas.height = result.width;
+      } else {
+        canvas.width = result.width;
+        canvas.height = result.height;
+      }
       canvas.style.width = "100%";
       canvas.style.height = "100%";
       canvas.style.display = "block";
-      canvas.getContext("2d").putImageData(imageData, 0, 0);
+      const ctx = canvas.getContext("2d");
+      if (userRot === 0) {
+        ctx.putImageData(imageData, 0, 0);
+      } else {
+        // putImageData ignores transforms — bounce through an offscreen
+        // canvas that holds the unrotated pixels, then drawImage with the
+        // rotation applied around the final canvas's center.
+        const tmp = document.createElement("canvas");
+        tmp.width = result.width;
+        tmp.height = result.height;
+        tmp.getContext("2d").putImageData(imageData, 0, 0);
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.rotate((userRot * Math.PI) / 180);
+        ctx.drawImage(tmp, -result.width / 2, -result.height / 2);
+        ctx.restore();
+      }
 
       // Replace ONLY the placeholder; keep the overlay layer if it's
       // already there. Insert the canvas before .overlay-layer so the

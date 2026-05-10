@@ -43,6 +43,8 @@ const thumbList = $("thumb-list");
 const mainArea = $("main-area");
 const splitView = $("split-view");
 const btnSplit = $("btn-split");
+const btnRotateLeft = $("btn-rotate-left");
+const btnRotateRight = $("btn-rotate-right");
 const busyModal = $("busy-modal");
 const busyTitle = $("busy-title");
 const busyMessage = $("busy-message");
@@ -387,6 +389,8 @@ function setOpen(open) {
   btnModeStamp.disabled = !open;
   btnModeRedaction.disabled = !open;
   btnSplit.disabled = !open;
+  btnRotateLeft.disabled = !open;
+  btnRotateRight.disabled = !open;
   if (!open) {
     setPlacementMode("none");
     setSplitMode(false);
@@ -1903,6 +1907,38 @@ function actionRedo() {
   history.redo();
 }
 
+/**
+ * Rotate the current page by ±90°. Source page (positive pageNo) only —
+ * synthetic inserted pages are skipped (they are always portrait blanks).
+ * The new userRotation is persisted to DB; main reopens activePages so
+ * subsequent renders see the new dimensions; the viewer reloads to pick
+ * up the post-rotation slot size.
+ */
+async function rotateCurrentPage(delta) {
+  if (!isOpen) return;
+  const pageNo = viewer.currentPage;
+  if (!pageNo || pageNo < 0) {
+    // Synthetic pages can't rotate (always portrait blanks for now).
+    if (pageNo < 0) wsStatus.textContent = "挿入ページは回転できません";
+    return;
+  }
+  const row = viewer._pages?.find((p) => p.pageNo === pageNo);
+  if (!row) return;
+  const next = (((row.userRotation ?? 0) + delta) % 360 + 360) % 360;
+  try {
+    await kpdf3.setPageRotation(pageNo, next);
+    await refreshViewer();
+    // Keep the user looking at the same page after the rebuild.
+    viewer.scrollToPage(pageNo);
+    wsStatus.textContent = `p.${pageNo} を ${next}° 回転`;
+  } catch (err) {
+    console.error("[rotate] failed", err);
+    wsStatus.textContent = `回転失敗: ${err.message ?? err}`;
+  }
+}
+function actionRotateLeft() { return rotateCurrentPage(-90); }
+function actionRotateRight() { return rotateCurrentPage(+90); }
+
 function applyZoom(z) {
   viewer.setZoom(z);
   refreshMenuState();
@@ -2805,8 +2841,8 @@ const STATUS_HINTS = {
   "btn-mode-redaction": "墨消し範囲を配置するモードに切り替えます",
   "btn-mode-marker": "マーカー機能 — 将来対応",
   "btn-split": "PDF をパートごとに分割保存します",
-  "btn-rotate-left": "左に 90° 回転 — 将来対応",
-  "btn-rotate-right": "右に 90° 回転 — 将来対応",
+  "btn-rotate-left": "現在のページを左に 90° 回転します",
+  "btn-rotate-right": "現在のページを右に 90° 回転します",
   "zoom-select": "表示倍率を選びます",
   "win-minimize": "ウィンドウを最小化します",
   "win-maximize": "ウィンドウを最大化／復元します",
@@ -2963,6 +2999,8 @@ btnModeStamp.addEventListener("click", () =>
 btnModeRedaction.addEventListener("click", () =>
   setPlacementMode(placementMode === "redaction" ? "none" : "redaction"),
 );
+btnRotateLeft.addEventListener("click", actionRotateLeft);
+btnRotateRight.addEventListener("click", actionRotateRight);
 
 // ---- Initial state ----------------------------------------------------
 setOpen(false);
