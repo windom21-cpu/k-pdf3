@@ -11,6 +11,7 @@ import Database from "better-sqlite3";
 import { readFileSync, existsSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { randomUUID, createHash as createHashAsset } from "node:crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -515,8 +516,6 @@ export function setPageUserRotation(db, pageNo, userRotation) {
 
 // ---- Assets (image stamps + future signature / image overlays) ---------
 
-import { createHash as createHashAsset } from "node:crypto";
-
 /** List all assets (without the heavy `blob` column). */
 export function listAssets(db) {
   return db
@@ -536,8 +535,7 @@ export function addAsset(db, { mime, blob, width = null, height = null, label = 
     if (label) db.prepare("UPDATE assets SET label = ? WHERE id = ?").run(label, existing.id);
     return existing.id;
   }
-  const id =
-    globalThis.crypto?.randomUUID?.() ?? `asset-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const id = randomUUID();
   db.prepare(
     `INSERT INTO assets (id, hash, mime, blob, width, height, label)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -577,33 +575,24 @@ export function listStampPresets(db) {
 }
 
 export function addStampPreset(db, p) {
-  // Upsert: if `p.id` matches an existing row, update it in place
-  // (preserves sort_order so the palette layout doesn't jump on edit).
-  if (p.id) {
-    const existing = db.prepare("SELECT id FROM stamp_presets WHERE id = ?").get(p.id);
-    if (existing) {
-      db.prepare(
-        `UPDATE stamp_presets
-           SET kind = ?, label = ?, color = ?, frame = ?, font_size = ?,
-               text = ?, asset_id = ?, width = ?, height = ?
-         WHERE id = ?`,
-      ).run(
-        p.kind, p.label, p.color ?? "#cc0000", p.frame ?? "rect",
-        p.fontSize ?? 13, p.text ?? null, p.assetId ?? null,
-        p.width ?? 80, p.height ?? 80, p.id,
-      );
-      return p.id;
-    }
+  // Single-statement upsert via INSERT OR REPLACE so we can't lose to a
+  // race / stale lookup. sort_order is preserved on existing rows so
+  // the palette layout doesn't jump when the user edits a preset.
+  const id = p.id ?? randomUUID();
+  const existing = db
+    .prepare("SELECT sort_order AS sortOrder FROM stamp_presets WHERE id = ?")
+    .get(id);
+  let sortOrder;
+  if (existing) {
+    sortOrder = existing.sortOrder;
+  } else {
+    const next = db
+      .prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM stamp_presets")
+      .get();
+    sortOrder = next?.n ?? 0;
   }
-  const id = p.id ??
-    globalThis.crypto?.randomUUID?.() ??
-    `sp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const next = db
-    .prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM stamp_presets")
-    .get();
-  const sortOrder = next?.n ?? 0;
   db.prepare(
-    `INSERT INTO stamp_presets
+    `INSERT OR REPLACE INTO stamp_presets
        (id, kind, label, color, frame, font_size, text, asset_id, width, height, sort_order)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
