@@ -2277,6 +2277,9 @@ async function rotatePageBy(pageNo, delta) {
     await refreshViewer();
     // Keep the user looking at the same page after the rebuild.
     viewer.scrollToPage(pageNo);
+    // If the split view is open, rebuild it too so the rotated page
+    // appears in the split-save thumbnails.
+    if (isSplitMode) await refreshSplitView();
     wsStatus.textContent = `p.${pageNo} を ${next}° 回転`;
   } catch (err) {
     console.error("[rotate] failed", err);
@@ -2299,11 +2302,26 @@ function applyZoom(z) {
 function refreshZoomSelect() {
   if (!zoomSelect) return;
   const z = viewer.zoom;
+  // Strip any prior dynamic "current %" entry so we don't accumulate them.
+  for (const opt of [...zoomSelect.querySelectorAll("option[data-dynamic]")]) {
+    opt.remove();
+  }
   const match = [...zoomSelect.options].find((opt) => {
     const v = parseFloat(opt.value);
     return Number.isFinite(v) && Math.abs(v - z) < 1e-3;
   });
-  zoomSelect.value = match ? match.value : "";
+  if (match) {
+    zoomSelect.value = match.value;
+    return;
+  }
+  // No preset matches — inject a dynamic option showing the actual
+  // percentage so the dropdown isn't blank after fit / Ctrl+wheel zoom.
+  const opt = document.createElement("option");
+  opt.value = String(z);
+  opt.dataset.dynamic = "1";
+  opt.textContent = `${Math.round(z * 100)}%`;
+  zoomSelect.insertBefore(opt, zoomSelect.firstChild);
+  zoomSelect.value = String(z);
 }
 
 zoomSelect.addEventListener("change", () => {
@@ -2341,19 +2359,20 @@ function actionZoom100() {
 
 function actionZoomFit() {
   if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return;
-  // Iterate by *position* — pageNo is sparse after deletions, so a
-  // 1..count() loop would feed deleted-/inserted-page numbers into
-  // getCanonicalSize and throw RangeError, silently aborting.
-  let maxCanonW = 0;
-  for (let i = 0; i < viewer.registry.count(); i++) {
-    const pageNo = viewer.registry.pageNoAtPos(i);
-    const sz = viewer.registry.getCanonicalSize(pageNo);
-    if (sz.w > maxCanonW) maxCanonW = sz.w;
+  // Fit the CURRENT page's width to the viewport — typical PDF-app
+  // semantics. Earlier "max width across all pages" gave undersized
+  // pages whenever any page in the document was rotated landscape.
+  const pageNo = viewer.currentPage || viewer.registry.pageNoAtPos(0);
+  let sz;
+  try {
+    sz = viewer.registry.getCanonicalSize(pageNo);
+  } catch {
+    return;
   }
   // 32 px breathing room left + right
   const targetWidth = viewerContainer.clientWidth - 32;
-  if (targetWidth <= 0 || maxCanonW <= 0) return;
-  applyZoom(targetWidth / maxCanonW);
+  if (targetWidth <= 0 || sz.w <= 0) return;
+  applyZoom(targetWidth / sz.w);
 }
 
 /** Fit the CURRENT page entirely (both width and height) into the viewport. */
@@ -2944,6 +2963,14 @@ async function actionAbout() {
 }
 
 aboutCloseBtn.addEventListener("click", hideAboutDialog);
+$("about-reload")?.addEventListener("click", () => {
+  hideAboutDialog();
+  location.reload();
+});
+$("about-devtools")?.addEventListener("click", () => {
+  hideAboutDialog();
+  kpdf3.toggleDevTools?.();
+});
 aboutDialog.addEventListener("click", (e) => {
   if (e.target === aboutDialog) hideAboutDialog();
 });

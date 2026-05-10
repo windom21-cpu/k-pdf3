@@ -6,8 +6,8 @@
   "main": "src/main/main.js",
   "type": "module",
   "scripts": {
-    "start": "electron . --no-sandbox",
-    "dev": "electronmon . --no-sandbox",
+    "start": "electron . --no-sandbox --ozone-platform-hint=x11",
+    "dev": "electronmon . --no-sandbox --ozone-platform-hint=x11",
     "spike": "node spike/mupdf-layout.mjs",
     "test:coord": "node test/coord.test.mjs",
     "test:m1": "electron --no-sandbox test/electron-runner.cjs",
