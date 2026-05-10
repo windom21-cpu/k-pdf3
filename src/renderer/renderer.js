@@ -657,6 +657,42 @@ function dispatchThumbCtx(target) {
   if (action === "rotate-right") rotatePageBy(pageNo, +90);
   else if (action === "rotate-left") rotatePageBy(pageNo, -90);
   else if (action === "rotate-180") rotatePageBy(pageNo, 180);
+  else if (action === "save-page") actionSaveSinglePage(pageNo);
+}
+
+/** Extract a single page (with overlays + rotation) to a new PDF. */
+async function actionSaveSinglePage(pageNo) {
+  if (!isOpen || !pageNo) return;
+  const row = viewer._pages?.find((p) => p.pageNo === pageNo);
+  if (!row) return;
+  const defaults = await kpdf3.getExportDefaults();
+  const baseName = (defaults.defaultName || "page").replace(/\.[^.]+$/, "");
+  const tag = pageNo > 0 ? `p${pageNo}` : `inserted${-pageNo}`;
+  const initialName = `${baseName}_${tag}.pdf`;
+  const savePath = await showFileBrowser({
+    mode: "save",
+    title: `ページ ${pageNo > 0 ? pageNo : "挿入"} を PDF として保存`,
+    initialName,
+    defaultDir: defaults.sourceDir,
+  });
+  if (!savePath) return;
+  showBusy("保存", `ページを書き出し中...`, 50);
+  try {
+    const composed = await composePagesForExport({
+      pages: [row],
+      projectStore,
+      renderPage: kpdf3.renderPage,
+      renderSyntheticPage: renderSyntheticPagePixels,
+      onProgress: () => {},
+    });
+    const result = await kpdf3.exportPdfRasterized({ savePath, pages: composed });
+    hideBusy();
+    wsStatus.textContent = `${savePath} に保存しました（rev ${(result?.revisionId ?? "").slice(0, 8)}）`;
+  } catch (err) {
+    hideBusy();
+    console.error("[save-page] failed", err);
+    wsStatus.textContent = `保存失敗: ${err.message ?? err}`;
+  }
 }
 ctxThumb.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
