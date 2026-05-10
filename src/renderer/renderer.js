@@ -125,12 +125,11 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
     startMarkerDrag(pageNo, x, y, evt, div);
   } else if (placementMode === "callout") {
     startCalloutDrag(pageNo, x, y, evt, div);
-  } else {
-    // No placement mode active and the click hit empty page area
-    // (overlay clicks stop propagation in viewer) — clear any
-    // selected overlay so Delete won't accidentally remove it.
-    setSelectedOverlay(null);
   }
+  // Clicks on empty page area no longer deselect — that fired even
+  // when the user "exited" inline edit by clicking outside, leaving
+  // them with no obvious way to keep an overlay selected for Delete.
+  // Escape now clears selection (handled in the global keydown).
 }
 
 /**
@@ -332,15 +331,28 @@ function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
   div.addEventListener("pointercancel", onCancel);
 }
 
-// ---- Callout (吹き出し) — text box + arrow line (§17.7) ----------------
-function placeCallout(pageNo, x, y, w, h) {
-  if (w < 20 || h < 15) return; // ignore micro drags
+// ---- Callout (吹き出し) — arrow line + text at the end (§17.7) ---------
+//
+// Placement flow: pointerdown lands the ARROW TIP, drag streams a
+// preview line to the cursor, pointerup drops the TEXT anchor at the
+// release point. The overlay's (x, y, w, h) is the text box; arrowDx/
+// Dy are stored as the tip's offset from the box top-left (so a
+// negative dx puts the tip above-left of the text).
+
+/**
+ * @param {number} pageNo
+ * @param {number} x       text box top-left X (canonical pt)
+ * @param {number} y       text box top-left Y
+ * @param {number} w       text box width
+ * @param {number} h       text box height
+ * @param {number} arrowDx tip X offset from box top-left (signed)
+ * @param {number} arrowDy tip Y offset from box top-left (signed)
+ */
+function placeCallout(pageNo, x, y, w, h, arrowDx, arrowDy) {
   const fontSize = currentTextFontSize();
-  // Default arrow tip: 30pt below-left of the box. User can drag the
-  // tip later (handle wired in viewer for kind='callout').
   const cmd = new AddOverlayCommand(projectStore, {
     pageNo,
-    type: "rect", // 'rect' is in the schema CHECK; kind='callout' discriminates
+    type: "rect", // schema CHECK already includes 'rect'; kind='callout' discriminates
     x,
     y,
     w,
@@ -348,13 +360,13 @@ function placeCallout(pageNo, x, y, w, h) {
     zOrder: 30,
     properties: {
       kind: "callout",
-      text: "吹き出し",
+      text: "テキスト",
       fontSize,
       color: "#000000",
       fontId: currentTextFontId(),
       rotation: 0,
-      arrowDx: -30,
-      arrowDy: h + 25,
+      arrowDx,
+      arrowDy,
     },
   });
   history.execute(cmd);
@@ -365,22 +377,42 @@ function placeCallout(pageNo, x, y, w, h) {
 }
 
 function startCalloutDrag(pageNo, startX, startY, downEvt, div) {
+  // Box-side default geometry (single line, fontSize × 6 wide).
+  const fontSize = currentTextFontSize();
+  const W = Math.max(60, fontSize * 6);
+  const H = Math.max(fontSize, Math.round(fontSize * 1.2));
+
   if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
-    placeCallout(pageNo, startX, startY, 120, 40);
+    // Fallback: drop a default callout offset from the click point.
+    placeCallout(pageNo, startX + 30, startY + 20, W, H, -30, -20);
     return;
   }
   const pointerId = downEvt.pointerId;
   const z = viewer.zoom;
-  const preview = document.createElement("div");
-  preview.className = "callout-preview";
-  preview.style.left = `${startX * z}px`;
-  preview.style.top = `${startY * z}px`;
-  preview.style.width = "0px";
-  preview.style.height = "0px";
-  div.appendChild(preview);
 
-  let curX = startX;
-  let curY = startY;
+  // Live SVG line from tip → cursor.
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("callout-drag-preview");
+  svg.style.position = "absolute";
+  svg.style.left = "0";
+  svg.style.top = "0";
+  svg.style.width = "100%";
+  svg.style.height = "100%";
+  svg.style.pointerEvents = "none";
+  svg.style.overflow = "visible";
+  svg.style.zIndex = "999";
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", String(startX * z));
+  line.setAttribute("y1", String(startY * z));
+  line.setAttribute("x2", String(startX * z));
+  line.setAttribute("y2", String(startY * z));
+  line.setAttribute("stroke", "#cc0000");
+  line.setAttribute("stroke-width", "1.5");
+  line.setAttribute("stroke-dasharray", "4 3");
+  svg.appendChild(line);
+  div.appendChild(svg);
+
+  let curX = startX, curY = startY;
   try { div.setPointerCapture(pointerId); } catch { /* ignore */ }
 
   function onMove(e) {
@@ -388,14 +420,8 @@ function startCalloutDrag(pageNo, startX, startY, downEvt, div) {
     const rect = div.getBoundingClientRect();
     curX = (e.clientX - rect.left) / z;
     curY = (e.clientY - rect.top) / z;
-    const x = Math.min(startX, curX);
-    const y = Math.min(startY, curY);
-    const w = Math.abs(curX - startX);
-    const h = Math.abs(curY - startY);
-    preview.style.left = `${x * z}px`;
-    preview.style.top = `${y * z}px`;
-    preview.style.width = `${w * z}px`;
-    preview.style.height = `${h * z}px`;
+    line.setAttribute("x2", String(curX * z));
+    line.setAttribute("y2", String(curY * z));
   }
 
   function cleanup() {
@@ -403,22 +429,25 @@ function startCalloutDrag(pageNo, startX, startY, downEvt, div) {
     div.removeEventListener("pointerup", onUp);
     div.removeEventListener("pointercancel", onCancel);
     try { div.releasePointerCapture(pointerId); } catch { /* ignore */ }
-    preview.remove();
+    svg.remove();
   }
 
   function onUp(e) {
     if (e.pointerId !== pointerId) return;
     cleanup();
-    const x = Math.min(startX, curX);
-    const y = Math.min(startY, curY);
-    const w = Math.abs(curX - startX);
-    const h = Math.abs(curY - startY);
-    if (w < 5 && h < 5) {
-      // Click without drag — drop a default-sized callout centered on click
-      placeCallout(pageNo, startX - 60, startY - 20, 120, 40);
+    const dragDist = Math.hypot(curX - startX, curY - startY);
+    let textX, textY;
+    if (dragDist < 8) {
+      // Click without meaningful drag — default text 40 pt right of tip.
+      textX = startX + 40;
+      textY = startY - H / 2;
     } else {
-      placeCallout(pageNo, x, y, w, h);
+      textX = curX;
+      textY = curY - H / 2; // align text vertical center with release point
     }
+    const arrowDx = startX - textX;
+    const arrowDy = startY - textY;
+    placeCallout(pageNo, textX, textY, W, H, arrowDx, arrowDy);
   }
 
   function onCancel(e) {
@@ -678,7 +707,18 @@ document.addEventListener("pointerdown", (ev) => {
   hideOverlayContextMenu();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") hideOverlayContextMenu();
+  if (e.key === "Escape") {
+    hideOverlayContextMenu();
+    // Also drop overlay selection — but only if no inline-edit /
+    // dialog is active (those have their own Escape handlers).
+    const target = e.target;
+    const inEdit =
+      target instanceof HTMLElement &&
+      (target.isContentEditable ||
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA");
+    if (!inEdit && selectedOverlayId) setSelectedOverlay(null);
+  }
 });
 
 // ---- Thumb context menu (sidebar + split-save thumbs) -----------------
@@ -959,7 +999,7 @@ function refreshMenuState() {
     "mode-marker": isOpen,
     "mode-callout": isOpen,
     // Future tools — kept disabled until M6 (placeholder slots)
-    "stamp-manager": false,
+    "stamp-manager": isOpen,
     "font-settings": false,
     // Still M5+ stubs (clipboard)
     cut: false,
@@ -2844,8 +2884,15 @@ async function actionAddBookmark() {
   if (!isOpen) return;
   const pageNo = viewer.currentPage;
   if (!pageNo) return;
+  const fallback = `ページ ${pageNo > 0 ? pageNo : "挿入"}`;
+  const entered = await showRangePrompt({
+    title: "しおりを追加",
+    message: `ページ ${pageNo > 0 ? pageNo : "挿入"} のしおり名を入力（空欄で「${fallback}」）`,
+    value: "",
+  });
+  if (entered === null) return; // user cancelled
   const id = (crypto?.randomUUID?.() ?? `bm-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-  const title = `ページ ${pageNo > 0 ? pageNo : "挿入"}`;
+  const title = entered.trim() || fallback;
   try {
     await kpdf3.addBookmark({ id, title, pageNo });
     await refreshBookmarks();
@@ -2977,21 +3024,33 @@ function rebuildThumbs(pages) {
       const ordered = getOrderedThumbPageNos(thumbList, ".thumb-item");
       handleThumbSelectionClick(sidebarThumbSelection, ordered, i, e);
       item.focus();
-      if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !row.isSynthetic) {
+      // Synthetic pages have negative pageNo but still live in the
+      // viewer's layout / scrollToPage map, so they can be scrolled to
+      // exactly like source pages.
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
         viewer.scrollToPage(i);
       }
     });
     item.addEventListener("dblclick", () => {
-      if (!row.isSynthetic) viewer.scrollToPage(i);
+      viewer.scrollToPage(i);
     });
     attachThumbContextMenu(item, i);
     thumbList.appendChild(item);
     obs.observe(item);
 
-    // Gap after this row — anchored to the prior source page in document
-    // order (so insertions stay in the right slot regardless of how many
-    // synthetic rows precede them in the same slot).
-    if (!row.isSynthetic) {
+    // Gap after this row.
+    // - Source page: anchor afterPageNo = source page number, no
+    //   orderInSlot → append to slot (after any existing synthetics
+    //   already in this slot).
+    // - Synthetic page: anchor afterPageNo = its slot's source page
+    //   (syntheticAfterPageNo), orderInSlot = its order + 1, so the
+    //   new blank lands right after this synthetic and bumps any
+    //   following synthetics in the same slot down by one.
+    if (row.isSynthetic) {
+      thumbList.appendChild(
+        makeInsertGap(row.syntheticAfterPageNo ?? 0, (row.syntheticOrderInSlot ?? 0) + 1),
+      );
+    } else {
       thumbList.appendChild(makeInsertGap(i));
     }
   }
@@ -3000,7 +3059,9 @@ function rebuildThumbs(pages) {
 
 /** Wire drop-on-gap so dragging a PDF onto an insert gap inserts that
  *  PDF's pages here. stopPropagation prevents the global drop handler
- *  (which opens a fresh PDF) from firing too. */
+ *  (which opens a fresh PDF) from firing too.
+ *  TODO: pass orderInSlot through to addInsertedPdfPages once main supports it.
+ */
 function attachInsertGapDrop(gap, afterPageNo) {
   gap.addEventListener("dragover", (e) => {
     if (!e.dataTransfer) return;
@@ -3039,34 +3100,34 @@ function attachInsertGapDrop(gap, afterPageNo) {
   });
 }
 
-function makeInsertGap(afterPageNo) {
+function makeInsertGap(afterPageNo, orderInSlot = null) {
   const gap = document.createElement("div");
   gap.className = "thumb-insert-gap";
   gap.tabIndex = 0;
-  gap.title = `クリック=白紙挿入 / PDF をドロップ=外部 PDF 挿入 (afterPageNo=${afterPageNo})`;
+  gap.title = `クリック=白紙挿入 / PDF をドロップ=外部 PDF 挿入 (afterPageNo=${afterPageNo}${orderInSlot != null ? `, order=${orderInSlot}` : ""})`;
   gap.textContent = "＋ 白紙 / PDF をドロップ";
-  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo));
+  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo, orderInSlot));
   gap.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      promptAndInsertBlank(afterPageNo);
+      promptAndInsertBlank(afterPageNo, orderInSlot);
     }
   });
   attachInsertGapDrop(gap, afterPageNo);
   return gap;
 }
 
-function makeSplitInsertGap(afterPageNo) {
+function makeSplitInsertGap(afterPageNo, orderInSlot = null) {
   const gap = document.createElement("div");
   gap.className = "thumb-insert-gap thumb-insert-gap-vertical";
   gap.tabIndex = 0;
   gap.title = `クリック=白紙挿入 / PDF をドロップ=外部 PDF 挿入 (afterPageNo=${afterPageNo})`;
   gap.textContent = "＋";
-  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo));
+  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo, orderInSlot));
   gap.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      promptAndInsertBlank(afterPageNo);
+      promptAndInsertBlank(afterPageNo, orderInSlot);
     }
   });
   attachInsertGapDrop(gap, afterPageNo);
@@ -3199,13 +3260,14 @@ insertTextEl.addEventListener("keydown", (e) => {
   }
 });
 
-async function promptAndInsertBlank(afterPageNo) {
+async function promptAndInsertBlank(afterPageNo, orderInSlot = null) {
   const r = await showInsertDialog({ afterPageNo });
   if (!r) return;
   try {
     await kpdf3.addInsertedPage({
       afterPageNo,
       text: r.text || null,
+      orderInSlot,
     });
     wsStatus.textContent =
       afterPageNo === 0
@@ -3462,6 +3524,21 @@ const menuBar = new MenuBar({
       setPlacementMode(placementMode === "marker" ? "none" : "marker"),
     "mode-callout": () =>
       setPlacementMode(placementMode === "callout" ? "none" : "callout"),
+    "stamp-manager": () => {
+      // Full preset-management dialog is ADR-0019 territory; for the
+      // MVP we just point the user at the existing toolbar select.
+      customConfirm({
+        title: "スタンプ管理",
+        message:
+          "印影のテンプレートと色は、ツールバーの「印影」ボタン横の\n" +
+          "ドロップダウンで切り替えられます。\n\n" +
+          "テンプレートの追加・編集ダイアログは M6 後半で対応予定（ADR-0019）。",
+        okLabel: "印影モードへ",
+        cancelLabel: "閉じる",
+      }).then((ok) => {
+        if (ok && isOpen) setPlacementMode("stamp");
+      });
+    },
     "quality-standard": () => setRenderQuality("standard"),
     "quality-high": () => setRenderQuality("high"),
     "quality-max": () => setRenderQuality("max"),
@@ -3777,7 +3854,7 @@ const MENU_HINTS = {
   "quality-standard": "PDF 表示解像度: 標準 (軽量)",
   "quality-high": "PDF 表示解像度: 高 (推奨)",
   "quality-max": "PDF 表示解像度: 最高 (重め)",
-  "stamp-manager": "スタンプ管理 — 将来対応",
+  "stamp-manager": "印影テンプレート（toolbar select）— フル UI は M6 後半",
   "font-settings": "フォント設定 — 将来対応",
   about: "K-PDF3 のバージョン情報",
 };

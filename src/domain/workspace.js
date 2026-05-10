@@ -160,6 +160,10 @@ export class Workspace {
           syntheticHasImage: r.hasImage === 1,
           syntheticImageW: r.imageW ?? null,
           syntheticImageH: r.imageH ?? null,
+          // Slot anchor + order — exposed so the renderer can build
+          // gaps between synthetic pages in the same slot.
+          syntheticAfterPageNo: r.afterPageNo,
+          syntheticOrderInSlot: r.orderInSlot,
           cropW: r.width,
           cropH: r.height,
           mediaW: r.width,
@@ -198,9 +202,11 @@ export class Workspace {
     }
   }
 
-  /** Add a blank / text page. Returns the synthetic pageNo (negative). */
-  addInsertedPage({ afterPageNo, text = null, width = 595, height = 842 }) {
-    const id = addInsertedPage(this.db, { afterPageNo, text, width, height });
+  /** Add a blank / text page. Pass `orderInSlot` to insert between
+   *  existing synthetics in the same slot (subsequent rows shift
+   *  down). Returns the synthetic pageNo (negative). */
+  addInsertedPage({ afterPageNo, text = null, width = 595, height = 842, orderInSlot = null }) {
+    const id = addInsertedPage(this.db, { afterPageNo, text, width, height, orderInSlot });
     return -id;
   }
 

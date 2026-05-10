@@ -422,22 +422,41 @@ export function setInsertedPageUserRotation(db, id, userRotation) {
 }
 
 /** Insert a new blank/text page after a given source page number.
- *  `afterPageNo = 0` → before page 1. Returns the new row's id. */
-export function addInsertedPage(db, { afterPageNo, text = null, width = 595, height = 842 }) {
-  const orderRow = db
-    .prepare(
-      `SELECT COALESCE(MAX(order_in_slot), -1) + 1 AS nextOrder
-       FROM inserted_pages WHERE after_page_no = ?`,
-    )
-    .get(afterPageNo);
-  const nextOrder = orderRow?.nextOrder ?? 0;
+ *  `afterPageNo = 0` → before page 1. If `orderInSlot` is supplied,
+ *  any existing row in the same slot at that order or beyond is
+ *  shifted down by one to make room (so callers can insert between
+ *  two existing synthetic pages). When omitted, the new row is
+ *  appended at the end of the slot. Returns the new row's id. */
+export function addInsertedPage(db, {
+  afterPageNo,
+  text = null,
+  width = 595,
+  height = 842,
+  orderInSlot = null,
+}) {
+  let order;
+  if (typeof orderInSlot === "number" && Number.isFinite(orderInSlot)) {
+    db.prepare(
+      `UPDATE inserted_pages SET order_in_slot = order_in_slot + 1
+       WHERE after_page_no = ? AND order_in_slot >= ?`,
+    ).run(afterPageNo, orderInSlot);
+    order = orderInSlot;
+  } else {
+    const orderRow = db
+      .prepare(
+        `SELECT COALESCE(MAX(order_in_slot), -1) + 1 AS nextOrder
+         FROM inserted_pages WHERE after_page_no = ?`,
+      )
+      .get(afterPageNo);
+    order = orderRow?.nextOrder ?? 0;
+  }
   const info = db
     .prepare(
       `INSERT INTO inserted_pages
          (after_page_no, order_in_slot, text, width, height)
        VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(afterPageNo, nextOrder, text, width, height);
+    .run(afterPageNo, order, text, width, height);
   return Number(info.lastInsertRowid);
 }
 
