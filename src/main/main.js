@@ -12,7 +12,9 @@ import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
@@ -29,6 +31,12 @@ import {
 } from "./workspace-registry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Pixel-grid font rendering: disable hinting + subpixel positioning so
+// MS UI Gothic snaps to whole pixels (closer to the SVG-icon look).
+// MUST be set before app.whenReady().
+app.commandLine.appendSwitch("font-render-hinting", "none");
+app.commandLine.appendSwitch("disable-font-subpixel-positioning");
 
 /**
  * Path of a legacy sidecar `.kpdf3` next to the PDF (the ADR-0006 layout).
@@ -64,7 +72,10 @@ function reopenActiveDoc() {
   const bytes = activeWorkspace.getSourceBytes();
   if (!bytes) return;
   activeDoc = openPdfDocument(bytes);
-  activePages = activeWorkspace.getPages();
+  // Always keep ALL pages here (including deleted) so render-page can
+  // resolve any source-PDF pageNo even when the renderer briefly issues
+  // a stale request for a now-hidden page.
+  activePages = activeWorkspace.getPages({ includeDeleted: true });
 }
 
 function disposeActiveDoc() {
@@ -84,6 +95,7 @@ function createMainWindow() {
     width: 1100,
     height: 820,
     title: "K-PDF3",
+    frame: false,
     webPreferences: {
       preload: join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -92,6 +104,18 @@ function createMainWindow() {
     },
   });
   mainWindow.loadFile(join(__dirname, "..", "renderer", "index.html"));
+  // Notify the renderer when maximize state changes so the
+  // maximize/restore button glyph stays in sync.
+  const broadcastMax = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(
+        "kpdf3:window-state",
+        { maximized: mainWindow.isMaximized() },
+      );
+    }
+  };
+  mainWindow.on("maximize", broadcastMax);
+  mainWindow.on("unmaximize", broadcastMax);
   mainWindow.on("closed", () => {
     disposeActiveDoc();
     if (activeWorkspace) {
@@ -173,6 +197,190 @@ ipcMain.handle("kpdf3:pick-pdf", async () => {
     properties: ["openFile"],
   });
   return r.canceled ? null : r.filePaths[0];
+});
+
+/**
+ * Custom file-browser support: list a directory's entries (folders + files).
+ * Hidden entries (starting with `.`) are excluded. Folders are sorted before
+ * files; both are sorted alphabetically (locale-aware). Returns the resolved
+ * absolute path so the renderer can display it and use it for navigation.
+ */
+ipcMain.handle("kpdf3:list-directory", async (_, dirPath) => {
+  const target = dirPath && dirPath.length > 0 ? dirPath : app.getPath("home");
+  let resolved;
+  try {
+    resolved = join(target);
+    const dirents = await readdir(resolved, { withFileTypes: true });
+    const entries = [];
+    for (const ent of dirents) {
+      if (ent.name.startsWith(".")) continue;
+      const full = join(resolved, ent.name);
+      let st;
+      try {
+        st = await stat(full);
+      } catch {
+        continue;
+      }
+      entries.push({
+        name: ent.name,
+        isDir: ent.isDirectory(),
+        size: st.size,
+        mtimeMs: st.mtimeMs,
+      });
+    }
+    entries.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name, "ja");
+    });
+    const parent = dirname(resolved);
+    return {
+      path: resolved,
+      parent: parent === resolved ? null : parent,
+      entries,
+    };
+  } catch (err) {
+    return {
+      path: resolved ?? target,
+      parent: null,
+      entries: [],
+      error: err?.message ?? String(err),
+    };
+  }
+});
+
+ipcMain.handle("kpdf3:get-default-paths", async () => {
+  const safe = (key) => {
+    try {
+      return app.getPath(key);
+    } catch {
+      return null;
+    }
+  };
+  return {
+    home: safe("home"),
+    desktop: safe("desktop"),
+    documents: safe("documents"),
+    downloads: safe("downloads"),
+  };
+});
+
+/**
+ * Renderer-driven export flow needs the directory of the source PDF
+ * (so the save dialog opens next to it) and the suggested basename.
+ */
+/**
+ * Search the active PDF for `query`. Returns per-page hit counts so the
+ * renderer can display total matches and jump-to-page navigation.
+ * Returns { totalMatches, pages: [{ pageNo, count }] }.
+ */
+ipcMain.handle("kpdf3:search-pdf", async (_, query) => {
+  if (!activeWorkspace || !query || typeof query !== "string") {
+    return { totalMatches: 0, pages: [] };
+  }
+  const bytes = activeWorkspace.getSourceBytes();
+  if (!bytes) return { totalMatches: 0, pages: [] };
+  const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const doc = mupdf.Document.openDocument(buf, "application/pdf");
+  const out = { totalMatches: 0, pages: [] };
+  try {
+    const pageCount = doc.countPages();
+    for (let i = 0; i < pageCount; i++) {
+      const page = doc.loadPage(i);
+      try {
+        let hits = [];
+        try {
+          hits = page.search(query, 200) ?? [];
+        } catch {
+          hits = [];
+        }
+        if (hits.length > 0) {
+          out.pages.push({ pageNo: i + 1, count: hits.length });
+          out.totalMatches += hits.length;
+        }
+      } finally {
+        page.destroy();
+      }
+    }
+  } finally {
+    doc.destroy();
+  }
+  return out;
+});
+
+ipcMain.handle("kpdf3:get-export-defaults", async () => {
+  return {
+    sourceDir: activeSourcePdfPath ? dirname(activeSourcePdfPath) : null,
+    defaultName: defaultExportName(),
+  };
+});
+
+ipcMain.handle("kpdf3:file-exists", async (_, filePath) => {
+  if (!filePath) return false;
+  try {
+    return existsSync(filePath);
+  } catch {
+    return false;
+  }
+});
+
+// ---- Custom Win95-style window controls (frame: false) ---------------
+ipcMain.handle("kpdf3:window-minimize", async () => {
+  if (mainWindow) mainWindow.minimize();
+});
+ipcMain.handle("kpdf3:window-maximize-toggle", async () => {
+  if (!mainWindow) return false;
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  else mainWindow.maximize();
+  return mainWindow.isMaximized();
+});
+ipcMain.handle("kpdf3:window-close", async () => {
+  if (mainWindow) mainWindow.close();
+});
+ipcMain.handle("kpdf3:window-is-maximized", async () => {
+  return mainWindow ? mainWindow.isMaximized() : false;
+});
+
+/**
+ * Open the OS-native printer properties dialog for a given printer.
+ * Implementation is platform-specific:
+ *   - Windows : rundll32 printui.dll,PrintUIEntry /e /n "Name" — printing preferences
+ *   - Linux   : system-config-printer --show "Name", fallback CUPS web UI
+ *   - macOS   : System Preferences > Printers (no per-printer URL exists)
+ * Non-blocking: the spawned process is detached so the app keeps running.
+ */
+ipcMain.handle("kpdf3:printer-properties", async (_, deviceName) => {
+  if (!deviceName) return { ok: false, error: "プリンタ名が指定されていません" };
+  try {
+    if (process.platform === "win32") {
+      const child = spawn(
+        "rundll32.exe",
+        ["printui.dll,PrintUIEntry", "/e", "/n", deviceName],
+        { detached: true, stdio: "ignore" },
+      );
+      child.unref();
+      return { ok: true };
+    }
+    if (process.platform === "linux") {
+      // Try system-config-printer; if missing, fall back to CUPS web UI.
+      const child = spawn("system-config-printer", ["--show", deviceName], {
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+      child.on("error", () => {
+        const url = `http://localhost:631/printers/${encodeURIComponent(deviceName)}`;
+        shell.openExternal(url);
+      });
+      return { ok: true };
+    }
+    if (process.platform === "darwin") {
+      shell.openExternal("x-apple.systempreferences:com.apple.preference.printfax");
+      return { ok: true };
+    }
+    return { ok: false, error: `未対応のプラットフォーム: ${process.platform}` };
+  } catch (err) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
 });
 
 ipcMain.handle("kpdf3:open-workspace", async (_, filePath) => {
@@ -463,6 +671,7 @@ function silentPrintPdf(pdfPath, opts) {
               copies: opts.copies ?? 1,
               printBackground: true,
               color: true,
+              landscape: opts.landscape ?? false,
             },
             (success, errorType) => {
               if (success) {
@@ -578,7 +787,13 @@ ipcMain.handle("kpdf3:list-printers", async () => {
  */
 ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   if (!activeWorkspace) throw new Error("No active workspace");
-  const { source, pages, deviceName, copies = 1 } = payload ?? {};
+  const {
+    source,
+    pages,
+    deviceName,
+    copies = 1,
+    landscape = false,
+  } = payload ?? {};
   if (!deviceName) throw new Error("print-pdf-silent: deviceName missing");
 
   let pdfBytes;
@@ -593,8 +808,8 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
 
   const tempPath = tempPrintPath();
   writeFileSync(tempPath, pdfBytes);
-  await silentPrintPdf(tempPath, { deviceName, copies });
-  return { tempPath, deviceName, copies };
+  await silentPrintPdf(tempPath, { deviceName, copies, landscape });
+  return { tempPath, deviceName, copies, landscape };
 });
 
 /**
@@ -617,9 +832,17 @@ function defaultExportName() {
 }
 
 ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {
+  if (pageNo < 0) {
+    // Synthetic (user-inserted) pages are rendered on the renderer side
+    // (canvas-backed). Main has no canvas API and refuses these.
+    throw new Error(
+      `Page ${pageNo} is synthetic — render on the renderer side`,
+    );
+  }
   if (!activeDoc) throw new Error("No PDF loaded");
-  const row = activePages[pageNo - 1];
-  if (!row) throw new Error(`Page ${pageNo} out of range (have ${activePages.length})`);
+  // Look up by source-PDF pageNo (sparse-safe after page deletions).
+  const row = activePages.find((p) => p.pageNo === pageNo);
+  if (!row) throw new Error(`Page ${pageNo} not found in workspace`);
   return renderPageCanonical(activeDoc, row, {
     zoom: opts?.zoom ?? 1.0,
     alpha: opts?.alpha ?? true,
@@ -628,12 +851,44 @@ ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {
 
 ipcMain.handle("kpdf3:get-source-meta", async () => {
   if (!activeWorkspace) return null;
-  return activeWorkspace.getSourceMeta();
+  const meta = activeWorkspace.getSourceMeta();
+  // The workspace's stored fileName reflects the PDF first imported into
+  // it. With ADR-0007 fingerprint dedupe, byte-copy Save As reuses the
+  // original workspace, so the stored name lags behind the file the user
+  // is actually viewing. Override with the active path's basename so the
+  // title bar / status updates match the user's mental model.
+  if (meta && activeSourcePdfPath) {
+    meta.fileName = basename(activeSourcePdfPath);
+  }
+  return meta;
 });
 
 ipcMain.handle("kpdf3:get-pages", async () => {
   if (!activeWorkspace) return [];
   return activeWorkspace.getPages();
+});
+
+ipcMain.handle("kpdf3:set-page-deleted", async (_, pageNo, deleted) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.setPageDeleted(pageNo, !!deleted);
+  return { ok: true };
+});
+
+ipcMain.handle("kpdf3:add-inserted-page", async (_, opts) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const syntheticPageNo = activeWorkspace.addInsertedPage(opts ?? {});
+  // Refresh activePages so subsequent render-page calls can resolve the new
+  // synthetic row (server-side rendering is not used for synthetics, but
+  // keeping the cache in sync avoids surprises).
+  reopenActiveDoc();
+  return { syntheticPageNo };
+});
+
+ipcMain.handle("kpdf3:remove-inserted-page", async (_, syntheticPageNo) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.removeInsertedPage(syntheticPageNo);
+  reopenActiveDoc();
+  return { ok: true };
 });
 
 ipcMain.handle("kpdf3:get-app-info", async () => {
