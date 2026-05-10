@@ -207,6 +207,19 @@ function drawOverlay(ctx, ov, zoom) {
     return;
   }
 
+  if (ov.type === "line" && (props.kind ?? "marker") === "marker") {
+    // Highlighter marker — semi-transparent fill so the underlying
+    // text remains readable through the marker color.
+    const color = props.color ?? "#ffeb3b";
+    const opacity = typeof props.opacity === "number" ? props.opacity : 0.5;
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, w, h);
+    ctx.restore();
+    return;
+  }
+
   // Other types render as a stroked rect placeholder.
   ctx.strokeStyle = "#888";
   ctx.strokeRect(x, y, w, h);

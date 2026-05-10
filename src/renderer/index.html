@@ -65,7 +65,7 @@
     <div class="menu-item disabled" data-action="mode-text">テキスト</div>
     <div class="menu-item disabled" data-action="mode-stamp">印影</div>
     <div class="menu-item disabled" data-action="mode-redaction">墨消し</div>
-    <div class="menu-item disabled" data-action="mode-marker">マーカー (将来対応)</div>
+    <div class="menu-item disabled" data-action="mode-marker">マーカー</div>
     <div class="menu-separator"></div>
     <div class="menu-item" data-action="quality-standard">表示解像度: 標準</div>
     <div class="menu-item" data-action="quality-high">表示解像度: 高</div>
@@ -369,7 +369,14 @@
       <option value="black">黒</option>
       <option value="white">白</option>
     </select>
-    <button id="btn-mode-marker" disabled title="マーカー (将来対応)">マーカー</button>
+    <button id="btn-mode-marker" disabled title="ドラッグで横方向の半透明マーカーを引きます">マーカー</button>
+    <select id="marker-color" class="toolbar-inline-select" disabled
+            title="マーカーの色">
+      <option value="#ffeb3b">黄</option>
+      <option value="#a5d6a7">緑</option>
+      <option value="#f8bbd0">桃</option>
+      <option value="#90caf9">青</option>
+    </select>
     <span class="toolbar-sep"></span>
     <button id="btn-split" disabled>分割保存</button>
     <span class="toolbar-sep"></span>

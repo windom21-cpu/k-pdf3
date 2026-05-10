@@ -500,6 +500,22 @@ export class Viewer {
       return el;
     }
 
+    // Marker (highlighter) overlays — currently stored as type='line'
+    // with properties.kind='marker' so the existing overlay CHECK
+    // constraint (which lists 'line' but not 'marker') stays valid.
+    if (ov.type === "line" && (ov.properties?.kind ?? "marker") === "marker") {
+      const props = ov.properties ?? {};
+      const color = props.color ?? "#ffeb3b"; // pencil-yellow default
+      const opacity = typeof props.opacity === "number" ? props.opacity : 0.5;
+      el.classList.add("overlay-marker");
+      el.style.background = color;
+      el.style.opacity = String(opacity);
+      el.style.outline = "1px dashed rgba(255, 140, 0, 0.7)";
+      this._attachOverlayPointer(el, ov);
+      this._attachResizeHandles(el, ov);
+      return el;
+    }
+
     // Other overlay types render as a simple frame for M3-3. Image-based
     // stamps land later (asset library lives M3 / M4 per HANDOVER §15.4).
     el.textContent = ov.type;

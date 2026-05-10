@@ -41,6 +41,8 @@ const btnModeRedaction = $("btn-mode-redaction");
 const redactionColorSel = $("redaction-color");
 const textFontSel = $("text-font");
 const textSizeSel = $("text-size");
+const btnModeMarker = $("btn-mode-marker");
+const markerColorSel = $("marker-color");
 const wsStatus = $("ws-status");
 const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
@@ -112,6 +114,8 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
     placeStamp(pageNo, x, y);
   } else if (placementMode === "redaction") {
     startRedactionDrag(pageNo, x, y, evt, div);
+  } else if (placementMode === "marker") {
+    startMarkerDrag(pageNo, x, y, evt, div);
   }
 }
 
@@ -207,6 +211,111 @@ const REDACTION_COLOR_STORAGE_KEY = "kpdf3.redactionColor";
 function currentRedactionColor() {
   const v = redactionColorSel?.value;
   return v === "white" ? "white" : "black";
+}
+
+// ---- Marker (highlighter) — horizontal semi-transparent stripe (§17.6) -----
+const MARKER_THICKNESS_PT = 14;          // ≈ 1 line of 12-pt text
+const MARKER_COLOR_STORAGE_KEY = "kpdf3.markerColor";
+function currentMarkerColor() {
+  return markerColorSel?.value || "#ffeb3b";
+}
+
+function placeMarker(pageNo, x, y, w, h) {
+  if (w < 5) return; // ignore accidental short strokes
+  const cmd = new AddOverlayCommand(projectStore, {
+    pageNo,
+    type: "line", // CHECK constraint covers 'line'; kind='marker' discriminates
+    x,
+    y,
+    w,
+    h,
+    // Markers sit between text overlays and redactions.
+    zOrder: 50,
+    properties: {
+      kind: "marker",
+      color: currentMarkerColor(),
+      opacity: 0.5,
+    },
+  });
+  history.execute(cmd);
+}
+
+/**
+ * Drag-to-define a marker. Y axis is locked to the start point so the
+ * stripe is always horizontal; only the X range varies. Thickness is
+ * fixed at MARKER_THICKNESS_PT — covers a single line of body text. On
+ * release, placeMarker commits a new line/marker overlay.
+ */
+function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
+  if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
+    placeMarker(pageNo, startX - 60, startY - MARKER_THICKNESS_PT / 2, 120, MARKER_THICKNESS_PT);
+    setPlacementMode("none");
+    return;
+  }
+  const pointerId = downEvt.pointerId;
+  const z = viewer.zoom;
+  const yTop = startY - MARKER_THICKNESS_PT / 2;
+  const previewColor = currentMarkerColor();
+  const preview = document.createElement("div");
+  preview.className = "marker-preview";
+  preview.style.background = previewColor;
+  preview.style.opacity = "0.55";
+  preview.style.left = `${startX * z}px`;
+  preview.style.top = `${yTop * z}px`;
+  preview.style.width = "0px";
+  preview.style.height = `${MARKER_THICKNESS_PT * z}px`;
+  div.appendChild(preview);
+
+  let curX = startX;
+  try {
+    div.setPointerCapture(pointerId);
+  } catch {
+    /* ignore */
+  }
+
+  function onMove(e) {
+    if (e.pointerId !== pointerId) return;
+    const rect = div.getBoundingClientRect();
+    curX = (e.clientX - rect.left) / z;
+    const left = Math.min(startX, curX);
+    const width = Math.abs(curX - startX);
+    preview.style.left = `${left * z}px`;
+    preview.style.width = `${width * z}px`;
+  }
+
+  function cleanup() {
+    div.removeEventListener("pointermove", onMove);
+    div.removeEventListener("pointerup", onUp);
+    div.removeEventListener("pointercancel", onCancel);
+    try { div.releasePointerCapture(pointerId); } catch { /* ignore */ }
+    preview.remove();
+  }
+
+  function onUp(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+    const left = Math.min(startX, curX);
+    const width = Math.abs(curX - startX);
+    if (width < 5) {
+      // Quick click — drop a default-width stripe centered on the click.
+      placeMarker(pageNo, startX - 60, yTop, 120, MARKER_THICKNESS_PT);
+    } else {
+      placeMarker(pageNo, left, yTop, width, MARKER_THICKNESS_PT);
+    }
+    // Marker mode is "sticky" — let the user paint several stripes in a
+    // row without re-clicking the toolbar. They Esc / re-click marker to
+    // exit. (Redaction is single-shot; marker is sticky because legal
+    // doc highlighting tends to be done in batches.)
+  }
+
+  function onCancel(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+  }
+
+  div.addEventListener("pointermove", onMove);
+  div.addEventListener("pointerup", onUp);
+  div.addEventListener("pointercancel", onCancel);
 }
 
 function placeRedaction(pageNo, x, y, w, h) {
@@ -401,6 +510,7 @@ function setPlacementMode(mode) {
   btnModeText.classList.toggle("toggled", mode === "text");
   btnModeStamp.classList.toggle("toggled", mode === "stamp");
   btnModeRedaction.classList.toggle("toggled", mode === "redaction");
+  btnModeMarker.classList.toggle("toggled", mode === "marker");
   refreshMenuState();
 }
 
@@ -419,6 +529,8 @@ function setOpen(open) {
   if (redactionColorSel) redactionColorSel.disabled = !open;
   if (textFontSel) textFontSel.disabled = !open;
   if (textSizeSel) textSizeSel.disabled = !open;
+  if (btnModeMarker) btnModeMarker.disabled = !open;
+  if (markerColorSel) markerColorSel.disabled = !open;
   if (!open) {
     setPlacementMode("none");
     setSplitMode(false);
@@ -504,6 +616,7 @@ function refreshMenuState() {
     "mode-text": isOpen,
     "mode-stamp": isOpen,
     "mode-redaction": isOpen,
+    "mode-marker": isOpen,
     // Future tools — kept disabled until M6 (placeholder slots)
     "stamp-manager": false,
     "font-settings": false,
@@ -517,6 +630,7 @@ function refreshMenuState() {
     "mode-text": placementMode === "text",
     "mode-stamp": placementMode === "stamp",
     "mode-redaction": placementMode === "redaction",
+    "mode-marker": placementMode === "marker",
     "quality-standard": q === "standard",
     "quality-high": q === "high",
     "quality-max": q === "max",
@@ -2651,6 +2765,8 @@ const menuBar = new MenuBar({
       setPlacementMode(placementMode === "stamp" ? "none" : "stamp"),
     "mode-redaction": () =>
       setPlacementMode(placementMode === "redaction" ? "none" : "redaction"),
+    "mode-marker": () =>
+      setPlacementMode(placementMode === "marker" ? "none" : "marker"),
     "quality-standard": () => setRenderQuality("standard"),
     "quality-high": () => setRenderQuality("high"),
     "quality-max": () => setRenderQuality("max"),
@@ -2867,7 +2983,7 @@ const STATUS_HINTS = {
   "btn-mode-text": "テキストを配置するモードに切り替えます",
   "btn-mode-stamp": "印影を配置するモードに切り替えます",
   "btn-mode-redaction": "墨消し範囲を配置するモードに切り替えます",
-  "btn-mode-marker": "マーカー機能 — 将来対応",
+  "btn-mode-marker": "ドラッグで横方向の半透明マーカーを引きます",
   "btn-split": "PDF をパートごとに分割保存します",
   "btn-rotate-left": "現在のページを左に 90° 回転します",
   "btn-rotate-right": "現在のページを右に 90° 回転します",
@@ -3027,6 +3143,11 @@ btnModeStamp.addEventListener("click", () =>
 btnModeRedaction.addEventListener("click", () =>
   setPlacementMode(placementMode === "redaction" ? "none" : "redaction"),
 );
+if (btnModeMarker) {
+  btnModeMarker.addEventListener("click", () =>
+    setPlacementMode(placementMode === "marker" ? "none" : "marker"),
+  );
+}
 btnRotateLeft.addEventListener("click", actionRotateLeft);
 btnRotateRight.addEventListener("click", actionRotateRight);
 
@@ -3085,6 +3206,19 @@ if (textSizeSel) {
       setPlacementMode("text");
     }
     applyFontSizeToEditingOverlay();
+  });
+}
+
+if (markerColorSel) {
+  const saved = localStorage.getItem(MARKER_COLOR_STORAGE_KEY);
+  if (saved) {
+    // Only restore if the saved color is still one of the offered options.
+    const found = Array.from(markerColorSel.options).some((o) => o.value === saved);
+    if (found) markerColorSel.value = saved;
+  }
+  markerColorSel.addEventListener("change", () => {
+    localStorage.setItem(MARKER_COLOR_STORAGE_KEY, currentMarkerColor());
+    if (isOpen && placementMode !== "marker") setPlacementMode("marker");
   });
 }
 

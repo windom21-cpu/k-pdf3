@@ -468,6 +468,21 @@ button.toggled {
   background: rgba(255, 255, 255, 0.7);
 }
 
+/* ----- Marker (highlighter) overlays ----- */
+/* Marker stripe — semi-transparent so underlying text shows through. */
+.overlay-marker {
+  /* color / opacity come from inline style. */
+  pointer-events: auto;
+}
+/* Drag preview while defining a new marker. */
+.marker-preview {
+  position: absolute;
+  background: rgba(255, 235, 59, 0.55);
+  outline: 1px dashed rgba(255, 140, 0, 0.7);
+  pointer-events: none;
+  z-index: 999;
+}
+
 /* ----- Stamp overlays (印影) -----
  *
  * The stamp's hit-test region must be a *rectangle* — otherwise CSS
