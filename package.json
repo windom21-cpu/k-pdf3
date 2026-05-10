@@ -40,5 +40,55 @@
   "dependencies": {
     "better-sqlite3": "^12.0.0",
     "mupdf": "^1.27.0"
+  },
+  "build": {
+    "appId": "io.windom21.kpdf3",
+    "productName": "K-PDF3",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "schema/**/*",
+      "package.json",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,*.d.ts,*.map}",
+      "!**/.{idea,git,github}",
+      "!test/**/*",
+      "!spike/**/*",
+      "!docs/**/*",
+      "!HANDOVER.md",
+      "!ROADMAP.md"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/build/**",
+      "node_modules/mupdf/dist/**"
+    ],
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb", "arch": ["x64"] }
+      ],
+      "category": "Office",
+      "synopsis": "PDF Workspace for legal practice",
+      "description": "法律実務向けの PDF Workspace アプリ（K-PDF2 の全面再設計版）"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] }
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    }
   }
 }

@@ -1,0 +1,62 @@
+# Cross-platform release builder — fires on tag push (v*).
+#
+# Each runner builds installers for its native OS via electron-builder
+# and uploads them as workflow artifacts. The maintainer can attach the
+# downloaded artifacts to the GitHub Release manually (or extend the
+# workflow with a release step once code-sign / notarization secrets
+# are in place).
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.2"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: npm run build:linux
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        # Code signing / notarization requires APPLE_ID / APPLE_ID_PASSWORD
+        # secrets — left disabled until certs are available. Unsigned
+        # dmg still installable with right-click → 開く.
+        run: npm run build:mac
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: npm run build:win
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: k-pdf3-${{ matrix.os }}
+          # electron-builder's output dir is "release" per package.json
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.dmg
+            release/*.exe
+            release/*.zip
+          if-no-files-found: warn
+          retention-days: 14

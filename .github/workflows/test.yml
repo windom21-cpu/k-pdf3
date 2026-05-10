@@ -1,0 +1,45 @@
+# CI test workflow — runs on every push / PR.
+#
+# Cross-platform matrix because better-sqlite3 / mupdf are native deps
+# and the test:m1 suite spawns a real Electron main process to exercise
+# them. Linux uses xvfb-run because GitHub Actions runners are headless.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.2"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Linux Electron needs a virtual X server to start at all.
+      - name: Run tests (Linux, xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libgbm1 libasound2t64 libgtk-3-0
+          xvfb-run --auto-servernum npm test
+
+      - name: Run tests (macOS / Windows)
+        if: runner.os != 'Linux'
+        run: npm test
