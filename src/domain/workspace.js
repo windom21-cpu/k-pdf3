@@ -25,6 +25,10 @@ import {
   listInsertedPages,
   addInsertedPage,
   removeInsertedPage,
+  listBookmarks,
+  addBookmark,
+  renameBookmark,
+  removeBookmark,
 } from "../backend/sqlite-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -283,5 +287,26 @@ export class Workspace {
     const bytes = this.getSourceBytes();
     if (!bytes) return [];
     return extractOutline(bytes);
+  }
+
+  // ---- Editable bookmarks (M6, §17.14) ------------------------------
+
+  /** Workspace-side bookmarks (flat list). When non-empty these
+   *  override the source PDF's /Outlines in the renderer UI. */
+  listBookmarks() {
+    return listBookmarks(this.db);
+  }
+
+  /** Add a bookmark; returns the inserted row. */
+  addBookmark({ id, title, pageNo }) {
+    return addBookmark(this.db, { id, title, pageNo });
+  }
+
+  renameBookmark(id, title) {
+    renameBookmark(this.db, id, title);
+  }
+
+  removeBookmark(id) {
+    removeBookmark(this.db, id);
   }
 }

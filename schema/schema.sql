@@ -137,7 +137,9 @@ CREATE TABLE bookmarks (
     id          TEXT PRIMARY KEY,                     -- UUID v4
     parent_id   TEXT REFERENCES bookmarks(id) ON DELETE CASCADE,
     title       TEXT NOT NULL,
-    page_no     INTEGER NOT NULL REFERENCES pages(page_no),
+    -- page_no は元 PDF ページ (正) または 挿入ページ id の負数。
+    -- inserted_pages とのまたがり整合性は app 層で保証 (overlays と同じ規約)。
+    page_no     INTEGER NOT NULL,
     sort_order  INTEGER NOT NULL DEFAULT 0
 );
 

@@ -61,8 +61,43 @@ export function openWorkspace(filePath, opts = {}) {
     migratePagesIsDeleted(db);
     migrateInsertedPagesTable(db);
     migrateOverlaysDropPageFk(db);
+    migrateBookmarksDropPageFk(db);
   }
   return { db, isNew };
+}
+
+/**
+ * Mirror of migrateOverlaysDropPageFk for the `bookmarks` table — the
+ * old schema had `page_no INTEGER NOT NULL REFERENCES pages(page_no)`,
+ * which rejects bookmarks pointing at synthetic (inserted) pages
+ * (negative pageNo). Cross-table integrity stays at the app layer.
+ */
+function migrateBookmarksDropPageFk(db) {
+  const fks = db.pragma("foreign_key_list(bookmarks)");
+  if (!fks.some((f) => f.table === "pages")) return; // already migrated
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE bookmarks_new (
+        id          TEXT PRIMARY KEY,
+        parent_id   TEXT REFERENCES bookmarks_new(id) ON DELETE CASCADE,
+        title       TEXT NOT NULL,
+        page_no     INTEGER NOT NULL,
+        sort_order  INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO bookmarks_new SELECT id, parent_id, title, page_no, sort_order FROM bookmarks;
+      DROP TABLE bookmarks;
+      ALTER TABLE bookmarks_new RENAME TO bookmarks;
+      CREATE INDEX idx_bookmarks_parent ON bookmarks(parent_id, sort_order);
+      COMMIT;
+    `);
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
 }
 
 /**
@@ -385,6 +420,39 @@ export function setPageUserRotation(db, pageNo, userRotation) {
   db.prepare(
     "UPDATE pages SET user_rotation = ? WHERE page_no = ?",
   ).run(r, pageNo);
+}
+
+// ---- Bookmarks (workspace-side editable, ADR-0014 candidate) ------------
+
+export function listBookmarks(db) {
+  return db
+    .prepare(
+      `SELECT id, parent_id AS parentId, title, page_no AS pageNo, sort_order AS sortOrder
+       FROM bookmarks
+       ORDER BY sort_order, rowid`,
+    )
+    .all();
+}
+
+/** Append a bookmark at the end of the flat list. */
+export function addBookmark(db, { id, title, pageNo }) {
+  const next = db
+    .prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM bookmarks")
+    .get();
+  const sortOrder = next?.n ?? 0;
+  db.prepare(
+    `INSERT INTO bookmarks (id, parent_id, title, page_no, sort_order)
+     VALUES (?, NULL, ?, ?, ?)`,
+  ).run(id, title, pageNo, sortOrder);
+  return { id, title, pageNo, sortOrder };
+}
+
+export function renameBookmark(db, id, title) {
+  db.prepare("UPDATE bookmarks SET title = ? WHERE id = ?").run(title, id);
+}
+
+export function removeBookmark(db, id) {
+  db.prepare("DELETE FROM bookmarks WHERE id = ?").run(id);
 }
 
 // ---- Overlays ------------------------------------------------------------

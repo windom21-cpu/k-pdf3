@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld("kpdf3", {
   getSourceMeta:      ()        => ipcRenderer.invoke("kpdf3:get-source-meta"),
   getPages:           ()        => ipcRenderer.invoke("kpdf3:get-pages"),
   getOutline:         ()        => ipcRenderer.invoke("kpdf3:get-outline"),
+  listBookmarks:      ()        => ipcRenderer.invoke("kpdf3:list-bookmarks"),
+  addBookmark:        (opts)    => ipcRenderer.invoke("kpdf3:add-bookmark", opts),
+  renameBookmark:     (opts)    => ipcRenderer.invoke("kpdf3:rename-bookmark", opts),
+  removeBookmark:     (opts)    => ipcRenderer.invoke("kpdf3:remove-bookmark", opts),
   listRecentPdfs:     ()        => ipcRenderer.invoke("kpdf3:list-recent-pdfs"),
   getAppInfo:         ()        => ipcRenderer.invoke("kpdf3:get-app-info"),
   // viewer rendering

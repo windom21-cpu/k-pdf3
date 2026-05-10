@@ -585,6 +585,28 @@ ipcMain.handle("kpdf3:get-outline", async () => {
   return activeWorkspace.getOutline();
 });
 
+ipcMain.handle("kpdf3:list-bookmarks", async () => {
+  if (!activeWorkspace) return [];
+  return activeWorkspace.listBookmarks();
+});
+
+ipcMain.handle("kpdf3:add-bookmark", async (_, { id, title, pageNo }) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  return activeWorkspace.addBookmark({ id, title, pageNo });
+});
+
+ipcMain.handle("kpdf3:rename-bookmark", async (_, { id, title }) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.renameBookmark(id, title);
+  return { ok: true };
+});
+
+ipcMain.handle("kpdf3:remove-bookmark", async (_, { id }) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.removeBookmark(id);
+  return { ok: true };
+});
+
 ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   activeWorkspace.saveOverlays(overlays);

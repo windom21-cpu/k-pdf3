@@ -2608,20 +2608,44 @@ async function actionPageGoto() {
 
 // ---- Bookmarks sidebar (M5-5) ----------------------------------------
 
+// Selected bookmark id (workspace-side bookmarks only). null when the
+// list is showing read-only /Outlines from the source PDF.
+let selectedBookmarkId = null;
+let bookmarkSource = "outline"; // "outline" | "workspace"
+
 async function refreshBookmarks() {
   bookmarkTree.innerHTML = "";
+  selectedBookmarkId = null;
+  refreshBookmarkToolbarState();
   if (!isOpen) return;
+  // Workspace bookmarks override the source PDF /Outlines once any
+  // exist. Empty workspace list → show /Outlines (read-only).
+  const ws = await kpdf3.listBookmarks();
+  const sourceLabel = $("bookmark-source-label");
+  if (Array.isArray(ws) && ws.length > 0) {
+    bookmarkSource = "workspace";
+    if (sourceLabel) sourceLabel.textContent = "(編集可能)";
+    for (const b of ws) {
+      bookmarkTree.appendChild(createWorkspaceBookmarkNode(b));
+    }
+    refreshBookmarkToolbarState();
+    return;
+  }
+  bookmarkSource = "outline";
+  if (sourceLabel) sourceLabel.textContent = "(元 PDF / 編集不可)";
   const outline = await kpdf3.getOutline();
   if (!outline || outline.length === 0) {
     const li = document.createElement("li");
     li.className = "bookmark-empty";
     li.textContent = "(しおりがありません)";
     bookmarkTree.appendChild(li);
+    refreshBookmarkToolbarState();
     return;
   }
   for (const item of outline) {
     bookmarkTree.appendChild(createBookmarkNode(item));
   }
+  refreshBookmarkToolbarState();
 }
 
 function createBookmarkNode(item) {
@@ -2648,6 +2672,111 @@ function createBookmarkNode(item) {
   }
   return li;
 }
+
+/** Workspace-side bookmarks: clickable + selectable + double-click rename. */
+function createWorkspaceBookmarkNode(b) {
+  const li = document.createElement("li");
+  li.className = "bookmark-item is-workspace";
+  li.dataset.bookmarkId = b.id;
+  li.dataset.pageNo = String(b.pageNo);
+  li.title = `${b.title} (p.${b.pageNo})`;
+  li.tabIndex = 0;
+  const label = document.createElement("span");
+  label.className = "bookmark-label";
+  label.textContent = b.title || "(無題)";
+  li.appendChild(label);
+  const pageTag = document.createElement("span");
+  pageTag.className = "bookmark-page-tag";
+  pageTag.textContent = b.pageNo > 0 ? `p.${b.pageNo}` : "挿入";
+  li.appendChild(pageTag);
+  li.addEventListener("click", (e) => {
+    e.stopPropagation();
+    selectBookmark(b.id);
+    if (typeof b.pageNo === "number") viewer.scrollToPage(b.pageNo);
+  });
+  li.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startInlineRenameBookmark(li, b);
+  });
+  return li;
+}
+
+function selectBookmark(id) {
+  selectedBookmarkId = id;
+  for (const el of bookmarkTree.querySelectorAll(".bookmark-item.is-workspace")) {
+    el.classList.toggle("is-selected", el.dataset.bookmarkId === id);
+  }
+  refreshBookmarkToolbarState();
+}
+
+function refreshBookmarkToolbarState() {
+  const addBtn = $("bookmark-add");
+  const rmBtn = $("bookmark-remove");
+  if (addBtn) addBtn.disabled = !isOpen;
+  if (rmBtn) rmBtn.disabled = !isOpen || !selectedBookmarkId || bookmarkSource !== "workspace";
+}
+
+function startInlineRenameBookmark(li, b) {
+  const label = li.querySelector(".bookmark-label");
+  if (!label) return;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = b.title;
+  input.className = "bookmark-rename-input";
+  label.replaceWith(input);
+  input.focus();
+  input.select();
+  let finished = false;
+  const finish = async (commit) => {
+    if (finished) return;
+    finished = true;
+    const next = input.value.trim() || b.title;
+    if (commit && next !== b.title) {
+      try {
+        await kpdf3.renameBookmark({ id: b.id, title: next });
+      } catch (err) {
+        console.error("[bookmark] rename failed", err);
+      }
+    }
+    await refreshBookmarks();
+  };
+  input.addEventListener("blur", () => finish(true));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+}
+
+async function actionAddBookmark() {
+  if (!isOpen) return;
+  const pageNo = viewer.currentPage;
+  if (!pageNo) return;
+  const id = (crypto?.randomUUID?.() ?? `bm-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const title = `ページ ${pageNo > 0 ? pageNo : "挿入"}`;
+  try {
+    await kpdf3.addBookmark({ id, title, pageNo });
+    await refreshBookmarks();
+    selectBookmark(id);
+  } catch (err) {
+    console.error("[bookmark] add failed", err);
+    wsStatus.textContent = `しおり追加失敗: ${err.message ?? err}`;
+  }
+}
+
+async function actionRemoveBookmark() {
+  if (!selectedBookmarkId) return;
+  try {
+    await kpdf3.removeBookmark({ id: selectedBookmarkId });
+    selectedBookmarkId = null;
+    await refreshBookmarks();
+  } catch (err) {
+    console.error("[bookmark] remove failed", err);
+  }
+}
+
+$("bookmark-add")?.addEventListener("click", actionAddBookmark);
+$("bookmark-remove")?.addEventListener("click", actionRemoveBookmark);
 
 function actionToggleBookmarks() {
   if (!isOpen) return;
