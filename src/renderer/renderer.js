@@ -125,6 +125,11 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
     startMarkerDrag(pageNo, x, y, evt, div);
   } else if (placementMode === "callout") {
     startCalloutDrag(pageNo, x, y, evt, div);
+  } else {
+    // No placement mode active and the click hit empty page area
+    // (overlay clicks stop propagation in viewer) — clear any
+    // selected overlay so Delete won't accidentally remove it.
+    setSelectedOverlay(null);
   }
 }
 
@@ -535,7 +540,48 @@ function placeStamp(pageNo, x, y) {
 
 function handleOverlayClick(id) {
   if (!isOpen) return;
+  setSelectedOverlay(id);
+  // For text/stamp/callout this enters inline edit; for redaction /
+  // marker / image overlays it short-circuits inside enterTextEdit so
+  // selection alone is the visible result.
   viewer.enterTextEdit(id);
+}
+
+// ---- Overlay selection — single-overlay model + Delete key ----------
+let selectedOverlayId = null;
+
+function _ovCssEscape(s) {
+  return globalThis.CSS?.escape
+    ? globalThis.CSS.escape(s)
+    : String(s).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function setSelectedOverlay(id) {
+  if (selectedOverlayId === id) return;
+  if (selectedOverlayId) {
+    const prev = viewer.container?.querySelector(
+      `.overlay[data-overlay-id="${_ovCssEscape(selectedOverlayId)}"]`,
+    );
+    prev?.classList.remove("is-selected");
+  }
+  selectedOverlayId = id;
+  reapplySelectionDom();
+}
+
+/** Re-paint the .is-selected class onto the currently-tracked overlay
+ *  element, ignoring any class that may have been left over on stale
+ *  nodes after a re-render. Called after store-update events because
+ *  the viewer rebuilds the overlay layer DOM. */
+function reapplySelectionDom() {
+  if (!viewer.container) return;
+  for (const el of viewer.container.querySelectorAll(".overlay.is-selected")) {
+    el.classList.remove("is-selected");
+  }
+  if (!selectedOverlayId) return;
+  const el = viewer.container.querySelector(
+    `.overlay[data-overlay-id="${_ovCssEscape(selectedOverlayId)}"]`,
+  );
+  el?.classList.add("is-selected");
 }
 
 function handleTextEditCommit(id, newText) {
@@ -941,6 +987,16 @@ projectStore.subscribe((event) => {
   // sidebar / split-save thumbs reflect the latest content (stamps,
   // marks, text).
   if (!event) return;
+  // Drop the selection if its target disappeared.
+  if (event.kind === "remove" && event.overlay?.id === selectedOverlayId) {
+    selectedOverlayId = null; // already gone from DOM, no class to clear
+  } else if (event.kind === "reset") {
+    selectedOverlayId = null;
+  } else if (event.kind === "update" && event.overlay?.id === selectedOverlayId) {
+    // _renderPageOverlays rebuilds the DOM on update — re-apply the
+    // selection class to the freshly-built element on next tick.
+    setTimeout(() => reapplySelectionDom(), 0);
+  }
   if (event.kind === "reset") {
     for (const pageNo of thumbCache.keys()) invalidateSidebarThumb(pageNo);
     splitState.thumbCache.clear();
@@ -3485,14 +3541,26 @@ window.addEventListener(
 
 window.addEventListener("keydown", (e) => {
   if (!isOpen) return;
-  const ctrlOrCmd = e.ctrlKey || e.metaKey;
-  if (!ctrlOrCmd) return;
   const target = e.target;
   const inText =
     target instanceof HTMLElement &&
     (target.isContentEditable ||
       target.tagName === "INPUT" ||
       target.tagName === "TEXTAREA");
+
+  // Delete key on a selected overlay (text / stamp / redaction /
+  // marker / callout) → remove it. Skipped while typing in any
+  // input — Delete there should fall through to native behaviour.
+  if ((e.key === "Delete" || e.key === "Backspace") && selectedOverlayId && !inText) {
+    e.preventDefault();
+    const id = selectedOverlayId;
+    setSelectedOverlay(null);
+    history.execute(new RemoveOverlayCommand(projectStore, id));
+    return;
+  }
+
+  const ctrlOrCmd = e.ctrlKey || e.metaKey;
+  if (!ctrlOrCmd) return;
   const key = e.key.toLowerCase();
 
   if (key === "s" && !e.shiftKey) {

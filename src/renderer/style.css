@@ -643,6 +643,13 @@ button.toggled {
   outline: 2px solid #000080;
 }
 
+/* Selected (clicked but not editing) — Win95 dotted focus ring.
+ * Delete / Backspace key removes a selected overlay. */
+.overlay.is-selected:not(.editing) {
+  outline: 2px dotted #000080;
+  outline-offset: 1px;
+}
+
 /* While a drag gesture is in flight. */
 .overlay.dragging {
   cursor: grabbing;
