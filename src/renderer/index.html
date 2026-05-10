@@ -196,9 +196,12 @@
       <div class="window-body">
         <fieldset class="stamp-reg-fieldset">
           <legend>形式</legend>
-          <label><input type="radio" name="stamp-date-format" value="date-numeric-dash" checked> -8.-5.-9</label>
-          <label><input type="radio" name="stamp-date-format" value="date-numeric-fw"> -8．-5．-9 (ピリオド全角)</label>
-          <label><input type="radio" name="stamp-date-format" value="date-kanji-dash"> 令和-8年-5月-9日</label>
+          <input type="radio" id="stamp-date-fmt-1" name="stamp-date-format" value="date-numeric-dash" checked>
+          <label for="stamp-date-fmt-1">-8.-5.-9</label>
+          <input type="radio" id="stamp-date-fmt-2" name="stamp-date-format" value="date-numeric-fw">
+          <label for="stamp-date-fmt-2">-8．-5．-9 (ピリオド全角)</label>
+          <input type="radio" id="stamp-date-fmt-3" name="stamp-date-format" value="date-kanji-dash">
+          <label for="stamp-date-fmt-3">令和-8年-5月-9日</label>
         </fieldset>
         <div class="stamp-reg-row">
           <label>色:
@@ -208,7 +211,8 @@
               <option value="#1f4ea1">青</option>
             </select>
           </label>
-          <label><input type="checkbox" id="stamp-reg-date-frame" checked> 枠あり</label>
+          <input type="checkbox" id="stamp-reg-date-frame" checked>
+          <label for="stamp-reg-date-frame">枠あり</label>
         </div>
         <div class="stamp-reg-row">
           <label>名前:
@@ -246,7 +250,8 @@
               <option value="#1f4ea1">青</option>
             </select>
           </label>
-          <label><input type="checkbox" id="stamp-reg-text-frame" checked> 枠あり</label>
+          <input type="checkbox" id="stamp-reg-text-frame" checked>
+          <label for="stamp-reg-text-frame">枠あり</label>
         </div>
         <div class="stamp-reg-row">
           <label>名前:
@@ -284,7 +289,8 @@
           <span style="color:#555;font-size:11px">(縦横比固定)</span>
         </div>
         <div class="stamp-reg-row">
-          <label><input type="checkbox" id="stamp-reg-image-frame"> 枠あり</label>
+          <input type="checkbox" id="stamp-reg-image-frame">
+          <label for="stamp-reg-image-frame">枠あり</label>
         </div>
         <div class="stamp-reg-row">
           <label>名前:

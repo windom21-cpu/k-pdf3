@@ -1177,38 +1177,10 @@ button.toggled {
   gap: 2px;
 }
 .stamp-reg-fieldset legend { font-weight: bold; font-size: 11px; }
-/* 98.css hides native checkboxes / radios with `opacity:0;
- * position:fixed` and re-paints them via `+ label::before` siblings.
- * Our register dialogs nest <input> inside <label>, which breaks that
- * pattern — the checkboxes vanish completely. Force native rendering
- * inside register windows. */
-.stamp-reg-window input[type="checkbox"],
-.stamp-reg-window input[type="radio"] {
-  appearance: auto !important;
-  -webkit-appearance: auto !important;
-  opacity: 1 !important;
-  position: static !important;
-  width: 13px !important;
-  height: 13px !important;
-  margin: 0 4px 0 0 !important;
-  background: revert !important;
-  box-shadow: none !important;
-  vertical-align: middle;
-}
-/* Suppress 98.css's pseudo-element artwork that piggy-backs on the
- * adjacent label — without this it would float beside our text label
- * with no associated input. */
-.stamp-reg-window input[type="checkbox"] + label::before,
-.stamp-reg-window input[type="checkbox"] + label::after,
-.stamp-reg-window input[type="radio"] + label::before,
-.stamp-reg-window input[type="radio"] + label::after,
-.stamp-reg-window label > input[type="checkbox"] ~ * ::before,
-.stamp-reg-window label > input[type="radio"] ~ * ::before {
-  content: none !important;
-}
-.stamp-reg-window label {
-  margin-left: 0 !important;
-}
+/* Register dialogs use the 98.css idiomatic input + label pattern
+ * (adjacent siblings, NOT nested label > input) so the Win95
+ * checkbox / radio art draws correctly via 98.css's ::before /
+ * ::after on the label. No additional overrides needed. */
 .stamp-reg-row {
   display: flex;
   align-items: center;
