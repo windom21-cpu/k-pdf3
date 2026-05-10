@@ -24,10 +24,10 @@
     "prebuild:linux": "npm run build:icon",
     "prebuild:win": "npm run build:icon",
     "prebuild:mac": "npm run build:icon",
-    "build": "electron-builder",
-    "build:linux": "electron-builder --linux",
-    "build:win": "electron-builder --win",
-    "build:mac": "electron-builder --mac"
+    "build": "electron-builder --publish=never",
+    "build:linux": "electron-builder --linux --publish=never",
+    "build:win": "electron-builder --win --publish=never",
+    "build:mac": "electron-builder --mac --publish=never"
   },
   "author": {
     "name": "windom21-cpu",

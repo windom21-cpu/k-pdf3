@@ -23,11 +23,16 @@ const VENDOR_DIR = resolve(ROOT, "src/renderer/vendor");
 
 // Pairs: [source under favicon-k3/, destination]. The destination's
 // parent directory is created on demand.
+//
+// We intentionally DO NOT copy favicon.ico — the bundled .ico only
+// embeds 16x16 / 32x32, and electron-builder rejects sub-256
+// favicons for Windows installers. Instead, electron-builder reads
+// build/icon.png (512×512) on the Windows runner and converts it to
+// a properly sized .ico itself. Same applies to macOS .icns.
 const COPIES = [
-  // electron-builder picks these up from `build/` (configured as
+  // electron-builder picks this up from `build/` (configured as
   // `directories.buildResources` in package.json).
   [resolve(SRC_DIR, "favicon-512.png"), resolve(BUILD_DIR, "icon.png")],
-  [resolve(SRC_DIR, "favicon.ico"), resolve(BUILD_DIR, "icon.ico")],
   // Used at runtime by main.js for BrowserWindow's `icon:` option and
   // by the renderer for <link rel="icon">. Lives under src/ so it ends
   // up inside the packaged app (via the "src/**/*" build.files glob).
