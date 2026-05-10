@@ -723,22 +723,34 @@ export class Viewer {
       const textNode = document.createElement("span");
       textNode.className = "callout-text";
       textNode.style.position = "absolute";
-      textNode.style.inset = "0";
       textNode.style.padding = "2px 4px";
       textNode.style.boxSizing = "border-box";
       textNode.style.whiteSpace = "pre-wrap";
       textNode.style.overflow = "hidden";
+      textNode.style.lineHeight = "1.2";
       if (rot !== 0) {
+        // For rotated callouts: position the textNode centered in the
+        // (post-rotation) outer box, sized to the PRE-rotation rect so
+        // the natural text flow is along the unrotated axis. ORDER
+        // MATTERS — set the individual offsets explicitly instead of
+        // using the `inset` shorthand, otherwise it would overwrite
+        // left / top set above.
         const isVert = rot === 90 || rot === 270;
-        textNode.style.left = "50%";
         textNode.style.top = "50%";
-        textNode.style.inset = "auto";
+        textNode.style.left = "50%";
+        textNode.style.right = "auto";
+        textNode.style.bottom = "auto";
         const naturalW = (isVert ? ov.h : ov.w) * z;
         const naturalH = (isVert ? ov.w : ov.h) * z;
         textNode.style.width = `${naturalW}px`;
         textNode.style.height = `${naturalH}px`;
         textNode.style.transformOrigin = "center center";
         textNode.style.transform = `translate(-50%, -50%) rotate(${rot}deg)`;
+      } else {
+        textNode.style.top = "0";
+        textNode.style.left = "0";
+        textNode.style.right = "0";
+        textNode.style.bottom = "0";
       }
       textNode.textContent = props.text ?? "";
       el.appendChild(textNode);

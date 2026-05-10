@@ -697,14 +697,23 @@ function measureCalloutSize(text, fontSize, fontFamily) {
     const w = ctx.measureText(line).width;
     if (w > maxWidth) maxWidth = w;
   }
-  const padX = 8;
-  const padY = 4;
-  const lineHeight = fontSize * 1.2;
+  // Padding tuned to match the renderer's textNode (padding 2px 4px)
+  // + the 1px callout border, so the saved canonical w/h leaves no
+  // visible bottom gap.
+  const padX = CALLOUT_PAD_X;
+  const padY = CALLOUT_PAD_Y;
+  const lineHeight = fontSize * CALLOUT_LINE_HEIGHT;
   return {
     w: Math.max(40, Math.ceil(maxWidth + padX * 2)),
     h: Math.max(fontSize, Math.ceil(lineHeight * Math.max(1, lines.length) + padY * 2)),
   };
 }
+
+// Match renderer-side callout layout: textNode CSS padding 2px 4px,
+// + 1px border on the outer box, + line-height: 1.2.
+const CALLOUT_PAD_X = 5; // 4 (textNode) + 1 (border)
+const CALLOUT_PAD_Y = 3; // 2 (textNode) + 1 (border)
+const CALLOUT_LINE_HEIGHT = 1.2;
 
 function handleOverlayDragEnd(id, newX, newY) {
   if (!isOpen) return;
@@ -752,9 +761,9 @@ function measureCalloutWrappedHeight(text, fontSize, fontFamily, boxW) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   ctx.font = `${fontSize}px ${fontFamily}`;
-  const padX = 8;
-  const padY = 4;
-  const lineHeight = fontSize * 1.2;
+  const padX = CALLOUT_PAD_X;
+  const padY = CALLOUT_PAD_Y;
+  const lineHeight = fontSize * CALLOUT_LINE_HEIGHT;
   const innerW = Math.max(20, boxW - padX * 2);
   // Wrap: hard breaks on \n, otherwise greedy character-by-character
   // fit within innerW.
