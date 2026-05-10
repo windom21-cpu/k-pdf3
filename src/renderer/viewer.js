@@ -274,8 +274,19 @@ export class Viewer {
     }
   }
 
-  setEditMode(on) {
-    this.container.classList.toggle("edit-mode", !!on);
+  /**
+   * Toggle edit-mode classes on the container so CSS can switch the
+   * page cursor per placement mode (text → I-beam, stamp/redaction →
+   * crosshair).
+   * @param {boolean | "none" | "text" | "stamp" | "redaction"} mode
+   */
+  setEditMode(mode) {
+    const isOn = !!mode && mode !== "none";
+    const modeStr = typeof mode === "string" ? mode : (isOn ? "edit" : "none");
+    this.container.classList.toggle("edit-mode", isOn);
+    this.container.classList.toggle("placement-text", modeStr === "text");
+    this.container.classList.toggle("placement-stamp", modeStr === "stamp");
+    this.container.classList.toggle("placement-redaction", modeStr === "redaction");
   }
 
   _subscribeStore() {

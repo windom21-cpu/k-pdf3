@@ -207,13 +207,18 @@ function placeRedaction(pageNo, x, y, w, h) {
 }
 
 function placeText(pageNo, x, y) {
+  const W = 100;
+  const H = 20;
+  // I-beam hot spot is the middle of the cursor — map the click point
+  // to the text box's vertical center so the new text appears around
+  // (rather than below) where the user clicked.
   const cmd = new AddOverlayCommand(projectStore, {
     pageNo,
     type: "text",
     x,
-    y,
-    w: 100,
-    h: 20,
+    y: y - H / 2,
+    w: W,
+    h: H,
     zOrder: 0,
     properties: {
       text: "テキスト",
@@ -365,7 +370,7 @@ document.addEventListener("keydown", (e) => {
  */
 function setPlacementMode(mode) {
   placementMode = mode;
-  viewer.setEditMode(mode !== "none");
+  viewer.setEditMode(mode);
   btnModeText.classList.toggle("toggled", mode === "text");
   btnModeStamp.classList.toggle("toggled", mode === "stamp");
   btnModeRedaction.classList.toggle("toggled", mode === "redaction");
