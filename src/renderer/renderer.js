@@ -729,7 +729,53 @@ function handleOverlayResizeEnd(id, bbox) {
   ) {
     return;
   }
+  // Callouts: respect the user's new width but recompute height from
+  // the wrapped line count so all text stays inside the box even when
+  // the user narrows it (text wraps → more lines → taller).
+  if (ov.type === "rect" && ov.properties?.kind === "callout") {
+    const wrappedH = measureCalloutWrappedHeight(
+      ov.properties.text ?? "",
+      ov.properties.fontSize ?? 12,
+      getTextFontStack(ov.properties.fontId),
+      bbox.w,
+    );
+    bbox = { ...bbox, h: Math.max(bbox.h, wrappedH) };
+  }
   history.execute(new UpdateOverlayCommand(projectStore, id, bbox));
+}
+
+/** Measure the height (canonical pt) needed to fit `text` in a box of
+ *  width `boxW` at the given font, including padding. Honours CJK
+ *  word-wrap via the same character-by-character algorithm the
+ *  exporter uses. */
+function measureCalloutWrappedHeight(text, fontSize, fontFamily, boxW) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  ctx.font = `${fontSize}px ${fontFamily}`;
+  const padX = 8;
+  const padY = 4;
+  const lineHeight = fontSize * 1.2;
+  const innerW = Math.max(20, boxW - padX * 2);
+  // Wrap: hard breaks on \n, otherwise greedy character-by-character
+  // fit within innerW.
+  const paras = (text ?? "").split(/\r?\n/);
+  let lineCount = 0;
+  for (const para of paras) {
+    if (para === "") { lineCount += 1; continue; }
+    const chars = [...para]; // codepoint-safe
+    let line = "";
+    for (const c of chars) {
+      const next = line + c;
+      if (ctx.measureText(next).width <= innerW) {
+        line = next;
+      } else {
+        if (line) lineCount += 1;
+        line = c;
+      }
+    }
+    if (line) lineCount += 1;
+  }
+  return Math.max(fontSize, Math.ceil(lineHeight * Math.max(1, lineCount) + padY * 2));
 }
 
 // ---- Overlay context menu (right-click) ------------------------------
@@ -3239,6 +3285,20 @@ function transformRectForRotation(ov, delta, W_old, H_old) {
   return { x: ov.x, y: ov.y, w: ov.w, h: ov.h };
 }
 
+/** Transform a callout arrow tip offset (relative to box top-left) by
+ *  the page rotation delta. Derived from the rect rotation formula:
+ *  the tip is at (x + arrowDx, y + arrowDy) in the OLD canonical frame;
+ *  rotate that point and the new box origin to find the new offset.
+ *  w_old / h_old are the overlay's pre-rotation rect dims.
+ */
+function transformArrowForRotation(arrowDx, arrowDy, delta, w_old, h_old) {
+  const d = (((delta % 360) + 360) % 360);
+  if (d === 90)  return { arrowDx: h_old - arrowDy, arrowDy: arrowDx };
+  if (d === 180) return { arrowDx: w_old - arrowDx, arrowDy: h_old - arrowDy };
+  if (d === 270) return { arrowDx: arrowDy, arrowDy: w_old - arrowDx };
+  return { arrowDx, arrowDy };
+}
+
 async function rotatePageBy(pageNo, delta) {
   if (!isOpen || !pageNo) return;
   const row = viewer._pages?.find((p) => p.pageNo === pageNo);
@@ -3270,9 +3330,23 @@ async function rotatePageBy(pageNo, delta) {
     const t = transformRectForRotation(ov, delta, W_old, H_old);
     const props = ov.properties ?? {};
     const newRot = (((props.rotation ?? 0) + dContent) % 360 + 360) % 360;
+    // Callout arrow tip: needs to rotate with the box. arrowDx / Dy
+    // are stored relative to the box top-left, so rotating the page
+    // changes that vector too — use the overlay's PRE-rotation w/h.
+    let arrowPatch = {};
+    if (ov.type === "rect" && props.kind === "callout") {
+      const a = transformArrowForRotation(
+        props.arrowDx ?? 0,
+        props.arrowDy ?? 0,
+        delta,
+        ov.w,
+        ov.h,
+      );
+      arrowPatch = { arrowDx: a.arrowDx, arrowDy: a.arrowDy };
+    }
     projectStore.update(ov.id, {
       ...t,
-      properties: { ...props, rotation: newRot },
+      properties: { ...props, ...arrowPatch, rotation: newRot },
     });
   }
 
