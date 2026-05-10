@@ -536,11 +536,13 @@ async function refreshViewer() {
   refreshDirtyIndicator();
 }
 
-function confirmDiscardIfDirty() {
+async function confirmDiscardIfDirty() {
   if (!isWorkspaceDirty()) return true;
-  return window.confirm(
-    "未保存の変更があります。\n変更を破棄して続行しますか？",
-  );
+  return customConfirm({
+    title: "未保存の変更",
+    message: "未保存の変更があります。\n変更を破棄して続行しますか？",
+    okLabel: "破棄して続行",
+  });
 }
 
 // ---- Custom prompt dialog (Electron disables window.prompt) ---------
@@ -621,6 +623,58 @@ gotoCancelBtn.addEventListener("click", () => settleGoto(null));
 gotoDialog.addEventListener("click", (e) => {
   if (e.target === gotoDialog) settleGoto(null);
 });
+
+// ---- Custom confirm dialog (98-style, replaces window.confirm) -------
+const confirmDialog = $("confirm-dialog");
+const confirmTitle = $("confirm-title");
+const confirmMessageEl = $("confirm-message");
+const confirmOkBtn = $("confirm-ok");
+const confirmCancelBtn = $("confirm-cancel");
+/** @type {((value: boolean) => void) | null} */
+let confirmDialogResolve = null;
+
+/**
+ * Win95-style confirm replacement. Returns a Promise<boolean>.
+ * Esc / background-click / cancel button → false.
+ * Enter / OK button → true.
+ */
+function customConfirm({
+  title = "確認",
+  message,
+  okLabel = "OK",
+  cancelLabel = "キャンセル",
+} = {}) {
+  confirmTitle.textContent = title;
+  confirmMessageEl.textContent = message ?? "";
+  confirmOkBtn.textContent = okLabel;
+  confirmCancelBtn.textContent = cancelLabel;
+  confirmDialog.hidden = false;
+  setTimeout(() => confirmOkBtn.focus(), 0);
+  return new Promise((resolve) => {
+    confirmDialogResolve = resolve;
+  });
+}
+function settleConfirm(value) {
+  confirmDialog.hidden = true;
+  if (confirmDialogResolve) {
+    confirmDialogResolve(value);
+    confirmDialogResolve = null;
+  }
+}
+confirmOkBtn.addEventListener("click", () => settleConfirm(true));
+confirmCancelBtn.addEventListener("click", () => settleConfirm(false));
+confirmDialog.addEventListener("click", (e) => {
+  if (e.target === confirmDialog) settleConfirm(false);
+});
+confirmDialog.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    settleConfirm(false);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    settleConfirm(true);
+  }
+});
 gotoInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
@@ -641,7 +695,7 @@ function hideRecentDialog() {
 }
 
 async function actionShowRecent() {
-  if (!confirmDiscardIfDirty()) return;
+  if (!(await confirmDiscardIfDirty())) return;
   const recents = await kpdf3.listRecentPdfs();
   recentList.innerHTML = "";
   if (!recents || recents.length === 0) {
@@ -900,7 +954,11 @@ async function handleFileBrowserConfirm() {
     // Auto-append .pdf if missing
     if (!/\.[a-zA-Z0-9]+$/.test(target)) target += ".pdf";
     if (await kpdf3.fileExists(target)) {
-      const ok = window.confirm(`${target}\nは既に存在します。上書きしますか？`);
+      const ok = await customConfirm({
+        title: "上書きの確認",
+        message: `${target}\nは既に存在します。上書きしますか？`,
+        okLabel: "上書き",
+      });
       if (!ok) return;
     }
     fileBrowserConfirm(target);
@@ -1008,14 +1066,14 @@ openDialog.addEventListener("keydown", (e) => {
 });
 
 async function actionOpen() {
-  if (!confirmDiscardIfDirty()) return;
+  if (!(await confirmDiscardIfDirty())) return;
   const path = await showFileBrowser({ mode: "open" });
   if (!path) return;
   await openPdfPath(path);
 }
 
 async function actionClose() {
-  if (!confirmDiscardIfDirty()) return;
+  if (!(await confirmDiscardIfDirty())) return;
   await kpdf3.closeWorkspace();
   projectStore.reset([]);
   pendingDeletedPages.clear();
@@ -2328,11 +2386,14 @@ async function deleteSelectedPages(state = sidebarThumbSelection) {
   const labels = all
     .map((n) => (n > 0 ? `p.${n}` : "挿入ページ"))
     .join(", ");
-  const ok = window.confirm(
-    all.length === 1
-      ? `${labels} を削除しますか？\n\n※ 元 PDF は変更されません。\n挿入ページは即時削除、元ページは Ctrl+S で確定。`
-      : `${all.length} ページを削除しますか？\n(${labels})\n\n※ 元 PDF は変更されません。\n挿入ページは即時削除、元ページは Ctrl+S で確定。`,
-  );
+  const ok = await customConfirm({
+    title: "ページ削除の確認",
+    message:
+      all.length === 1
+        ? `${labels} を削除しますか？\n\n※ 元 PDF は変更されません。\n挿入ページは即時削除、元ページは Ctrl+S で確定。`
+        : `${all.length} ページを削除しますか？\n(${labels})\n\n※ 元 PDF は変更されません。\n挿入ページは即時削除、元ページは Ctrl+S で確定。`,
+    okLabel: "削除",
+  });
   if (!ok) return;
   // Synthetic pages: remove immediately from DB (no pending state).
   for (const n of syntheticDeletes) {
@@ -2832,7 +2893,7 @@ document.addEventListener("drop", async (e) => {
     wsStatus.textContent = "PDF ファイルを指定してください";
     return;
   }
-  if (!confirmDiscardIfDirty()) return;
+  if (!(await confirmDiscardIfDirty())) return;
   await openPdfPath(path);
 });
 

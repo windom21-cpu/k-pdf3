@@ -920,6 +920,11 @@ button.toggled {
   min-width: 75px;
 }
 
+/* Confirm dialog — multi-line messages preserve "\n". */
+.confirm-message {
+  white-space: pre-line;
+}
+
 /* Recent PDFs dialog */
 .recent-window {
   width: 480px;

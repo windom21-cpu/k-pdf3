@@ -139,6 +139,22 @@
     </div>
   </div>
 
+  <!-- Confirm dialog (98-style replacement for window.confirm) -->
+  <div class="busy-modal" id="confirm-dialog" hidden>
+    <div class="window range-window">
+      <div class="title-bar">
+        <div class="title-bar-text" id="confirm-title">確認</div>
+      </div>
+      <div class="window-body">
+        <p class="range-message confirm-message" id="confirm-message"></p>
+        <div class="range-buttons">
+          <button id="confirm-ok" class="default">OK</button>
+          <button id="confirm-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Recent PDFs dialog (M5-7) -->
   <div class="busy-modal" id="recent-dialog" hidden>
     <div class="window recent-window">
