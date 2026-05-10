@@ -129,7 +129,13 @@ function createMainWindow() {
   // before-input-event was unreliable on Wayland in testing. Each
   // shortcut is unregistered on blur so it doesn't fire while another
   // app is in the foreground.
-  const reloadFn  = () => { if (mainWindow) mainWindow.webContents.reload(); };
+  // Ask the renderer to reload itself — the renderer runs a dirty-check
+  // confirm dialog and disarms the beforeunload listener before calling
+  // location.reload(). A direct webContents.reload() would be silently
+  // blocked by the beforeunload guard.
+  const reloadFn = () => {
+    if (mainWindow) mainWindow.webContents.send("kpdf3:reload-request");
+  };
   const devtoolsFn = () => {
     if (!mainWindow) return;
     const wc = mainWindow.webContents;

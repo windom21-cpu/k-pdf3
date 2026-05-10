@@ -2996,7 +2996,7 @@ async function actionAbout() {
 aboutCloseBtn.addEventListener("click", hideAboutDialog);
 $("about-reload")?.addEventListener("click", () => {
   hideAboutDialog();
-  location.reload();
+  reloadRenderer();
 });
 $("about-devtools")?.addEventListener("click", () => {
   hideAboutDialog();
@@ -3113,7 +3113,7 @@ window.addEventListener(
       if (inText) return; // don't hijack reload if user is typing
       e.preventDefault();
       e.stopPropagation();
-      location.reload();
+      reloadRenderer();
       return;
     }
     // F12 → toggle DevTools (main process gets the request via IPC).
@@ -3454,12 +3454,41 @@ window.addEventListener("keydown", (e) => {
 });
 
 // Warn before reloading / closing the window if there are unsaved changes.
+// Skipped during an explicit `reloadRenderer()` so the dirty-check doesn't
+// silently swallow F5 / Ctrl+R / About → リロード button — the dialog is
+// shown there manually instead.
+let _reloadingRenderer = false;
 window.addEventListener("beforeunload", (e) => {
+  if (_reloadingRenderer) return;
   if (projectStore.isDirty()) {
     e.preventDefault();
     e.returnValue = "";
   }
 });
+
+/**
+ * Reload the renderer with a dirty-check first. The default
+ * beforeunload prevention silently kills location.reload() in
+ * Electron (no native dialog with frame:false), so an explicit
+ * customConfirm replaces it. After confirmation, _reloadingRenderer
+ * is flipped so the beforeunload listener no-ops on the way out.
+ */
+async function reloadRenderer() {
+  if (projectStore.isDirty()) {
+    const ok = await customConfirm({
+      title: "未保存の変更",
+      message: "未保存の変更があります。\n破棄してリロードしますか？",
+      okLabel: "破棄してリロード",
+    });
+    if (!ok) return;
+  }
+  _reloadingRenderer = true;
+  location.reload();
+}
+
+// main process kicks reloads via this IPC (globalShortcut handler) so
+// they go through the same dirty-check + beforeunload-bypass path.
+kpdf3.onReloadRequest?.(() => reloadRenderer());
 
 // ---- Toolbar buttons --------------------------------------------------
 btnOpen.addEventListener("click", actionOpen);
