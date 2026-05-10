@@ -12,7 +12,7 @@
 // PDF (matches workspace.getPages() returning visible pages, which is
 // what was passed to mupdf at assembly time).
 
-import { PDFDocument, PDFName, PDFString, PDFArray } from "pdf-lib";
+import { PDFDocument, PDFName, PDFHexString, PDFArray } from "pdf-lib";
 
 /**
  * @param {Uint8Array | Buffer} pdfBytes
@@ -49,8 +49,13 @@ export async function addFlatOutlinesToPdf(pdfBytes, bookmarks, pageOrder) {
     const dest = PDFArray.withContext(ctx);
     dest.push(pageRef);
     dest.push(PDFName.of("Fit"));
+    // PDFHexString.fromText encodes as UTF-16BE with BOM — required
+    // for CJK / non-ASCII titles to render correctly in Adobe / Preview
+    // / Edge. Plain PDFString.of() emits a literal `(...)` whose
+    // interpretation falls back to PDFDocEncoding for non-ASCII →
+    // garbled in legal-doc workflows.
     const dict = ctx.obj({
-      Title: PDFString.of(b.title ?? ""),
+      Title: PDFHexString.fromText(b.title ?? ""),
       Parent: rootRef,
     });
     dict.set(PDFName.of("Dest"), dest);

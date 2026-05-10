@@ -515,21 +515,33 @@ function placeText(pageNo, x, y) {
   }
 }
 
-/** Build the stamp properties for the currently-selected template. */
+/** Build the stamp properties for the currently-selected template.
+ *  Date templates use the legal-practice "leading dash = 令和" form
+ *  per HANDOVER §17.5 / §18.3 (e.g. -8.-5.-9 = 令和8年5月9日 stamp).
+ */
 function currentStampPreset() {
   const tmpl = stampTemplateSel?.value || "default";
   const color = stampColorSel?.value || "#cc0000";
-  if (tmpl === "date-numeric") {
+  if (tmpl === "date-numeric-dash") {
     const d = new Date();
     const reiwa = d.getFullYear() - 2018; // 令和元年 = 2019
-    const text = `${reiwa}.${d.getMonth() + 1}.${d.getDate()}`;
-    return { text, w: 90, h: 40, frame: "rect", fontSize: 13, color };
+    const text = `-${reiwa}.-${d.getMonth() + 1}.-${d.getDate()}`;
+    return { text, w: 100, h: 40, frame: "rect", fontSize: 13, color };
   }
-  if (tmpl === "date-kanji") {
+  if (tmpl === "date-numeric-fw") {
+    // Full-width digits + 「．」 separator. Matches the look of seal-
+    // engraved date stamps where everything is full-width.
     const d = new Date();
     const reiwa = d.getFullYear() - 2018;
-    const text = `令和${reiwa}年${d.getMonth() + 1}月${d.getDate()}日`;
-    return { text, w: 130, h: 40, frame: "rect", fontSize: 13, color };
+    const fw = (n) => String(n).replace(/\d/g, (c) => String.fromCharCode(0xff10 + Number(c)));
+    const text = `-${fw(reiwa)}．-${fw(d.getMonth() + 1)}．-${fw(d.getDate())}`;
+    return { text, w: 110, h: 40, frame: "rect", fontSize: 13, color };
+  }
+  if (tmpl === "date-kanji-dash") {
+    const d = new Date();
+    const reiwa = d.getFullYear() - 2018;
+    const text = `令和-${reiwa}年-${d.getMonth() + 1}月-${d.getDate()}日`;
+    return { text, w: 140, h: 40, frame: "rect", fontSize: 13, color };
   }
   // default 印 — the original round seal.
   return { text: "印", w: 60, h: 60, frame: "circle", fontSize: 14, color };
@@ -609,27 +621,25 @@ function reapplySelectionDom() {
   );
   if (!el) return;
   el.classList.add("is-selected");
-  // Inject a × close button as a child so the click reliably hits a
-  // dedicated DOM node (CSS pseudo-elements don't take pointer events).
-  // Skipped while the overlay is being inline-edited — there the user
-  // wants Delete/Backspace to act on the text, not on the overlay.
-  if (!el.classList.contains("editing")) {
-    if (!el.querySelector(":scope > .overlay-close-btn")) {
-      const btn = document.createElement("span");
-      btn.className = "overlay-close-btn";
-      btn.textContent = "×";
-      btn.title = "選択中の overlay を削除";
-      btn.addEventListener("pointerdown", (e) => e.stopPropagation());
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const id = selectedOverlayId;
-        if (!id) return;
-        setSelectedOverlay(null);
-        history.execute(new RemoveOverlayCommand(projectStore, id));
-      });
-      el.appendChild(btn);
-    }
+  // Always inject the × button when selected — CSS hides it while
+  // .editing is on the parent (so Delete in inline edit acts on text,
+  // not on the overlay). When editing ends, the editing class is
+  // removed and the × becomes visible again automatically.
+  if (!el.querySelector(":scope > .overlay-close-btn")) {
+    const btn = document.createElement("span");
+    btn.className = "overlay-close-btn";
+    btn.textContent = "×";
+    btn.title = "選択中の overlay を削除";
+    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = selectedOverlayId;
+      if (!id) return;
+      setSelectedOverlay(null);
+      history.execute(new RemoveOverlayCommand(projectStore, id));
+    });
+    el.appendChild(btn);
   }
 }
 
@@ -840,6 +850,23 @@ function setPlacementMode(mode) {
   if (btnModeCallout) btnModeCallout.classList.toggle("toggled", mode === "callout");
   syncStampGhostMode();
   refreshMenuState();
+  refreshModeOptionsBar();
+}
+
+/** Toggle the mode-options bar + the per-mode child visible to match
+ *  the current placementMode. text and callout share the same options
+ *  row (font + size). When mode is "none", the bar collapses entirely. */
+function refreshModeOptionsBar() {
+  const bar = $("mode-options-bar");
+  if (!bar) return;
+  // text + callout share the "text" options panel.
+  const which =
+    placementMode === "callout" ? "text" :
+    placementMode === "none" ? null : placementMode;
+  bar.hidden = which === null;
+  for (const opt of bar.querySelectorAll(".mode-options")) {
+    opt.hidden = opt.dataset.mode !== which;
+  }
 }
 
 // ---- Stamp drag ghost (preview that follows the cursor) ---------------

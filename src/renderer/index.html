@@ -358,50 +358,9 @@
     <button id="btn-print" disabled title="印刷 (Ctrl+P)">印刷</button>
     <span class="toolbar-sep"></span>
     <button id="btn-mode-text" disabled>テキスト</button>
-    <select id="text-font" class="toolbar-inline-select" disabled
-            title="テキストモードのフォント (新規配置 / 編集中の overlay)">
-      <option value="mincho">明朝</option>
-      <option value="gothic">ゴシック</option>
-      <option value="serif">Serif</option>
-      <option value="sans">Sans</option>
-    </select>
-    <select id="text-size" class="toolbar-inline-select" disabled
-            title="テキストサイズ (pt) — 配置時のデフォルト">
-      <option value="8">8</option>
-      <option value="10">10</option>
-      <option value="12" selected>12</option>
-      <option value="14">14</option>
-      <option value="18">18</option>
-      <option value="24">24</option>
-      <option value="36">36</option>
-    </select>
-    <button id="btn-mode-stamp" disabled>印影</button>
-    <select id="stamp-template" class="toolbar-inline-select" disabled
-            title="印影テンプレート（印 / 日付）">
-      <option value="default">印</option>
-      <option value="date-numeric">日付 (8.5.9)</option>
-      <option value="date-kanji">日付 (令和8年5月9日)</option>
-    </select>
-    <select id="stamp-color" class="toolbar-inline-select" disabled
-            title="印影の色">
-      <option value="#cc0000">朱</option>
-      <option value="#000000">黒</option>
-      <option value="#1f4ea1">青</option>
-    </select>
+    <button id="btn-mode-stamp" disabled>スタンプ</button>
     <button id="btn-mode-redaction" disabled>墨消し</button>
-    <select id="redaction-color" class="toolbar-inline-select" disabled
-            title="墨消しの色 — 黒は文字を覆う、白は紙の地を残す">
-      <option value="black">黒</option>
-      <option value="white">白</option>
-    </select>
-    <button id="btn-mode-marker" disabled title="ドラッグで横方向の半透明マーカーを引きます">マーカー</button>
-    <select id="marker-color" class="toolbar-inline-select" disabled
-            title="マーカーの色">
-      <option value="#ffeb3b">黄</option>
-      <option value="#a5d6a7">緑</option>
-      <option value="#f8bbd0">桃</option>
-      <option value="#90caf9">青</option>
-    </select>
+    <button id="btn-mode-marker" disabled title="ドラッグで半透明マーカーを引きます">マーカー</button>
     <button id="btn-mode-callout" disabled title="クリック→ドラッグで矢印付き吹き出しテキストを配置します">吹き出し</button>
     <span class="toolbar-sep"></span>
     <button id="btn-split" disabled>分割保存</button>
@@ -437,6 +396,66 @@
         title="検索 (Enter で次の一致)"
         disabled
       >🔍</button>
+    </div>
+  </div>
+
+  <!-- Mode options bar — appears below the main toolbar when a
+       placement mode (text / stamp / redaction / marker / callout)
+       is active. Keeps the toolbar buttons row clean. -->
+  <div id="mode-options-bar" class="mode-options-bar" hidden>
+    <div class="mode-options" data-mode="text" hidden>
+      <span class="mode-options-label">フォント:</span>
+      <select id="text-font" class="toolbar-inline-select"
+              title="テキストモードのフォント (新規配置 / 編集中の overlay)">
+        <option value="mincho">明朝</option>
+        <option value="gothic">ゴシック</option>
+        <option value="serif">Serif</option>
+        <option value="sans">Sans</option>
+      </select>
+      <span class="mode-options-label">サイズ:</span>
+      <select id="text-size" class="toolbar-inline-select"
+              title="テキストサイズ (pt)">
+        <option value="8">8</option>
+        <option value="10">10</option>
+        <option value="12" selected>12</option>
+        <option value="14">14</option>
+        <option value="18">18</option>
+        <option value="24">24</option>
+        <option value="36">36</option>
+      </select>
+    </div>
+    <div class="mode-options" data-mode="stamp" hidden>
+      <span class="mode-options-label">テンプレート:</span>
+      <select id="stamp-template" class="toolbar-inline-select"
+              title="スタンプテンプレート">
+        <option value="default">印</option>
+        <option value="date-numeric-dash">日付 (-8.-5.-9)</option>
+        <option value="date-numeric-fw">日付 (-8．-5．-9)</option>
+        <option value="date-kanji-dash">日付 (令和-8年-5月-9日)</option>
+      </select>
+      <span class="mode-options-label">色:</span>
+      <select id="stamp-color" class="toolbar-inline-select" title="スタンプの色">
+        <option value="#cc0000">朱</option>
+        <option value="#000000">黒</option>
+        <option value="#1f4ea1">青</option>
+      </select>
+    </div>
+    <div class="mode-options" data-mode="redaction" hidden>
+      <span class="mode-options-label">色:</span>
+      <select id="redaction-color" class="toolbar-inline-select"
+              title="墨消しの色">
+        <option value="black">黒</option>
+        <option value="white">白</option>
+      </select>
+    </div>
+    <div class="mode-options" data-mode="marker" hidden>
+      <span class="mode-options-label">色:</span>
+      <select id="marker-color" class="toolbar-inline-select" title="マーカーの色">
+        <option value="#ffeb3b">黄</option>
+        <option value="#a5d6a7">緑</option>
+        <option value="#f8bbd0">桃</option>
+        <option value="#90caf9">青</option>
+      </select>
     </div>
   </div>
 

@@ -969,10 +969,19 @@ export class Viewer {
 
     const before = ov.properties?.text ?? "";
 
+    // textContent= wipes ALL children, including the callout's leader-
+    // line SVG and the renderer's × close button. Save references so
+    // we can re-append them after, otherwise the arrow disappears
+    // while the user is typing into a callout.
+    const arrowSvg = el.querySelector(":scope > .callout-arrow");
+    const closeBtn = el.querySelector(":scope > .overlay-close-btn");
+
     el.classList.add("editing");
     el.contentEditable = "true";
     el.spellcheck = false;
     el.textContent = before;
+    if (arrowSvg) el.appendChild(arrowSvg);
+    if (closeBtn) el.appendChild(closeBtn);
     this._editingId = id;
 
     let isComposing = false;
@@ -990,7 +999,12 @@ export class Viewer {
       this._editingId = null;
       const after = el.textContent ?? "";
       if (!commit) {
+        // Restore original text without losing the arrow / × siblings.
+        const arrow2 = el.querySelector(":scope > .callout-arrow");
+        const close2 = el.querySelector(":scope > .overlay-close-btn");
         el.textContent = before;
+        if (arrow2) el.appendChild(arrow2);
+        if (close2) el.appendChild(close2);
       } else if (after !== before && this.onTextEditCommit) {
         this.onTextEditCommit(id, after);
       } else {

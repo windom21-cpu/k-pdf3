@@ -183,6 +183,34 @@ body {
   border-bottom: 1px solid #808080;
   font-size: 12px;
 }
+/* Mode-options bar — sits directly under the main toolbar and only
+ * appears when a placement mode is active so the toolbar button row
+ * stays clean. JS toggles `hidden` on the bar + each .mode-options
+ * child based on the active mode. */
+.mode-options-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: #d5d5cc;
+  border-bottom: 1px solid #808080;
+  font-size: 12px;
+  min-height: 24px;
+}
+.mode-options {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.mode-options[hidden] {
+  display: none !important;
+}
+.mode-options-label {
+  font-size: 12px;
+  color: #333;
+  margin-right: 2px;
+}
 .toolbar button {
   min-width: 0;
 }
@@ -672,6 +700,12 @@ button.toggled {
 }
 .overlay-close-btn:hover {
   background: #cc0000;
+}
+/* While inline-editing the overlay, hide the × so Delete in the text
+ * doesn't get confused with "delete this overlay". The button comes
+ * back automatically as soon as the editing class is removed. */
+.overlay.editing > .overlay-close-btn {
+  display: none;
 }
 
 /* While a drag gesture is in flight. */
