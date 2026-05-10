@@ -555,9 +555,11 @@ export class Viewer {
       // Image stamp — render the asset blob via an <img> child. The
       // browser handles the async decode; the URL is created on demand
       // and cached so multiple stamps with the same assetId don't
-      // re-fetch.
+      // re-fetch. userRotation rotates the image content (paper
+      // metaphor — turning the page should turn the print on it).
       const props = ov.properties;
       el.classList.add("overlay-stamp", "overlay-stamp-image");
+      const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
       const img = document.createElement("img");
       img.style.width = "100%";
       img.style.height = "100%";
@@ -565,6 +567,10 @@ export class Viewer {
       img.alt = props.label ?? "image stamp";
       img.draggable = false;
       img.style.pointerEvents = "none";
+      if (rot !== 0) {
+        img.style.transformOrigin = "center center";
+        img.style.transform = `rotate(${rot}deg)`;
+      }
       _stampAssetUrl(props.assetId).then((url) => {
         if (url) img.src = url;
       });

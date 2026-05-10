@@ -545,13 +545,12 @@ function currentStampPreset() {
     return { text, w: 100, h: 40, frame: "rect", fontSize: 13, color };
   }
   if (tmpl === "date-numeric-fw") {
-    // Full-width digits + 「．」 separator. Matches the look of seal-
-    // engraved date stamps where everything is full-width.
+    // ASCII digits with a FULL-WIDTH 「．」separator (digits stay
+    // half-width per the user's spec — only the period is wider).
     const d = new Date();
     const reiwa = d.getFullYear() - 2018;
-    const fw = (n) => String(n).replace(/\d/g, (c) => String.fromCharCode(0xff10 + Number(c)));
-    const text = `-${fw(reiwa)}．-${fw(d.getMonth() + 1)}．-${fw(d.getDate())}`;
-    return { text, w: 110, h: 40, frame: "rect", fontSize: 13, color };
+    const text = `-${reiwa}．-${d.getMonth() + 1}．-${d.getDate()}`;
+    return { text, w: 105, h: 40, frame: "rect", fontSize: 13, color };
   }
   if (tmpl === "date-kanji-dash") {
     const d = new Date();
@@ -2177,7 +2176,7 @@ async function generateAllThumbnails(pages, onProgress) {
       // compositePage handles userRotation + overlays so the split-save
       // thumb matches what the page actually looks like (stamps / marks
       // visible, rotated pages displayed in their rotated orientation).
-      const canvas = compositePage(row, result, projectStore, 0.25);
+      const canvas = await compositePage(row, result, projectStore, 0.25);
       splitState.thumbCache.set(pageNo, canvas);
     } catch (err) {
       console.error(`[split] thumb ${pageNo} failed:`, err);
@@ -3614,7 +3613,10 @@ async function renderThumb(pageNo, itemEl) {
     }
     // compositePage handles userRotation + overlays — sidebar thumbs
     // now visually match the page (with stamps/marks/text on top).
-    const canvas = compositePage(row, result, projectStore, THUMB_ZOOM);
+    // compositePage is async because image-stamp drawImage needs an
+    // awaited bitmap; without await the thumb gets a Promise instead
+    // of a canvas and the sidebar goes blank.
+    const canvas = await compositePage(row, result, projectStore, THUMB_ZOOM);
     canvas.className = "thumb-img";
     const ph = itemEl.querySelector(".thumb-placeholder");
     if (ph) ph.replaceWith(canvas);

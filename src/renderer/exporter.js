@@ -233,11 +233,21 @@ async function drawOverlay(ctx, ov, zoom) {
 
   if (ov.type === "stamp" && props.kind === "image" && props.assetId) {
     // Image stamp — fetch the asset blob and drawImage. Cached so
-    // multiple stamps using the same asset don't re-fetch.
+    // multiple stamps using the same asset don't re-fetch. Apply
+    // userRotation around the box center (paper metaphor).
     try {
       const bitmap = await getAssetBitmap(props.assetId);
       if (bitmap) {
-        ctx.drawImage(bitmap, x, y, w, h);
+        const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+        if (rot === 0) {
+          ctx.drawImage(bitmap, x, y, w, h);
+        } else {
+          ctx.save();
+          ctx.translate(x + w / 2, y + h / 2);
+          ctx.rotate((rot * Math.PI) / 180);
+          ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
+          ctx.restore();
+        }
       }
     } catch (err) {
       console.error("[export] image stamp draw failed", err);
