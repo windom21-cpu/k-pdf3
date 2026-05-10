@@ -795,6 +795,13 @@ button.toggled {
 .busy-modal[hidden] {
   display: none;
 }
+/* The confirm dialog often pops on top of the file-browser dialog
+ * (e.g. "this file already exists, overwrite?"). It needs to win
+ * the stacking competition or it ends up buried — looking like the
+ * app froze. */
+#confirm-dialog {
+  z-index: 10100;
+}
 
 /* Reuses the .busy-modal backdrop class — same overlay treatment, but
  * with a wider window since it carries form fields. */
