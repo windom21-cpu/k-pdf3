@@ -511,7 +511,66 @@ function setPlacementMode(mode) {
   btnModeStamp.classList.toggle("toggled", mode === "stamp");
   btnModeRedaction.classList.toggle("toggled", mode === "redaction");
   btnModeMarker.classList.toggle("toggled", mode === "marker");
+  syncStampGhostMode();
   refreshMenuState();
+}
+
+// ---- Stamp drag ghost (preview that follows the cursor) ---------------
+const STAMP_W = 60;          // PDF points (matches placeStamp default)
+const STAMP_H = 60;
+const STAMP_FONT = 14;
+let stampGhostEl = null;
+
+function ensureStampGhost() {
+  if (stampGhostEl) return stampGhostEl;
+  const el = document.createElement("div");
+  el.className = "stamp-ghost stamp-ghost-circle";
+  el.textContent = "印";
+  el.style.color = "#cc0000";
+  el.hidden = true;
+  document.body.appendChild(el);
+  stampGhostEl = el;
+  return el;
+}
+
+function updateStampGhostSize() {
+  if (!stampGhostEl) return;
+  const z = viewer.zoom;
+  stampGhostEl.style.width = `${STAMP_W * z}px`;
+  stampGhostEl.style.height = `${STAMP_H * z}px`;
+  stampGhostEl.style.fontSize = `${STAMP_FONT * z}px`;
+}
+
+function moveStampGhost(clientX, clientY) {
+  const el = ensureStampGhost();
+  const z = viewer.zoom;
+  el.style.left = `${clientX - (STAMP_W * z) / 2}px`;
+  el.style.top = `${clientY - (STAMP_H * z) / 2}px`;
+}
+
+function onViewerMouseMoveForStampGhost(e) {
+  if (placementMode !== "stamp") return;
+  // Size has to track viewer.zoom which the user can change while in
+  // stamp mode; cheap enough to set on every move.
+  updateStampGhostSize();
+  moveStampGhost(e.clientX, e.clientY);
+  ensureStampGhost().hidden = false;
+}
+function onViewerMouseLeaveForStampGhost() {
+  if (stampGhostEl) stampGhostEl.hidden = true;
+}
+
+function syncStampGhostMode() {
+  if (placementMode === "stamp") {
+    ensureStampGhost();
+    updateStampGhostSize();
+    viewerContainer.addEventListener("mousemove", onViewerMouseMoveForStampGhost);
+    viewerContainer.addEventListener("mouseleave", onViewerMouseLeaveForStampGhost);
+  } else {
+    if (stampGhostEl) stampGhostEl.hidden = true;
+    viewerContainer.removeEventListener("mousemove", onViewerMouseMoveForStampGhost);
+    viewerContainer.removeEventListener("mouseleave", onViewerMouseLeaveForStampGhost);
+  }
 }
 
 function setOpen(open) {
@@ -2056,13 +2115,62 @@ function actionRedo() {
  * subsequent renders see the new dimensions; the viewer reloads to pick
  * up the post-rotation slot size.
  */
+/**
+ * Map an overlay rect (x, y, w, h) in the OLD canonical frame to the
+ * NEW canonical frame after rotating the page by `delta` degrees
+ * (multiple of 90). Mirrors how a piece of paper with writing on it
+ * "carries the writing along" when you rotate the paper.
+ *
+ * Old canonical frame is W_old × H_old. New frame is W_new × H_new
+ * (= H_old × W_old for ±90°, same for 180°).
+ *
+ * @param {{x:number, y:number, w:number, h:number}} ov
+ * @param {number} delta  rotation delta, signed degrees (multiple of 90)
+ * @param {number} W_old  old canonical width
+ * @param {number} H_old  old canonical height
+ */
+function transformRectForRotation(ov, delta, W_old, H_old) {
+  const d = (((delta % 360) + 360) % 360);
+  if (d === 90) {
+    // CW: old TL → new TR, old BL → new TL.
+    return { x: H_old - ov.y - ov.h, y: ov.x, w: ov.h, h: ov.w };
+  }
+  if (d === 180) {
+    return { x: W_old - ov.x - ov.w, y: H_old - ov.y - ov.h, w: ov.w, h: ov.h };
+  }
+  if (d === 270) {
+    // CCW: old TL → new BL, old BR → new TL.
+    return { x: ov.y, y: W_old - ov.x - ov.w, w: ov.h, h: ov.w };
+  }
+  return { x: ov.x, y: ov.y, w: ov.w, h: ov.h };
+}
+
 async function rotateCurrentPage(delta) {
   if (!isOpen) return;
   const pageNo = viewer.currentPage;
   if (!pageNo) return;
   const row = viewer._pages?.find((p) => p.pageNo === pageNo);
   if (!row) return;
-  const next = (((row.userRotation ?? 0) + delta) % 360 + 360) % 360;
+
+  // Old canonical W/H BEFORE the rotation, accounting for both the
+  // intrinsic /Rotate and the previous userRotation.
+  const intrinsic = row.rotation || 0;
+  const oldUser = ((row.userRotation ?? 0) % 360 + 360) % 360;
+  const oldEff = ((intrinsic + oldUser) % 360 + 360) % 360;
+  const swapped = oldEff === 90 || oldEff === 270;
+  const W_old = swapped ? row.cropH : row.cropW;
+  const H_old = swapped ? row.cropW : row.cropH;
+
+  // Carry every overlay on this page along with the rotation. Done
+  // before the userRotation flip so the canonical frame interpretation
+  // hasn't changed yet. Bypasses history (rotation itself isn't in
+  // history — the inverse rotation undoes overlay positions too).
+  for (const ov of projectStore.getPageOverlays(pageNo)) {
+    const t = transformRectForRotation(ov, delta, W_old, H_old);
+    projectStore.update(ov.id, t);
+  }
+
+  const next = ((oldUser + delta) % 360 + 360) % 360;
   try {
     await kpdf3.setPageRotation(pageNo, next);
     await refreshViewer();

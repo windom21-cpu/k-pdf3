@@ -520,6 +520,35 @@ button.toggled {
   border: none;
 }
 
+/* Stamp placement ghost — follows the cursor in stamp mode so the user
+ * can see where the seal will land before clicking. Same visual as
+ * overlay-stamp but pinned to viewport coords and pointer-transparent. */
+.stamp-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 1500;
+  opacity: 0.6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  box-sizing: border-box;
+}
+.stamp-ghost::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.stamp-ghost.stamp-ghost-circle::before {
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+.stamp-ghost.stamp-ghost-rect::before {
+  border: 2px solid currentColor;
+}
+
 /* Overlay accepts pointer events (it sits inside an .overlay-layer with
  * pointer-events: none, so this is what makes the overlay clickable). */
 .overlay {
