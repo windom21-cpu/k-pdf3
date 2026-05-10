@@ -614,6 +614,25 @@ export class Viewer {
         edgeX = cx + dx * t;
         edgeY = cy + dy * t;
       }
+      // SVG <defs> with a per-color arrowhead marker. id includes the
+      // overlay id so multiple callouts on the page get independent
+      // marker definitions (defs in different SVGs don't interfere).
+      const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+      const markerId = `callout-arrow-${ov.id}`;
+      const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+      marker.setAttribute("id", markerId);
+      marker.setAttribute("markerWidth", "8");
+      marker.setAttribute("markerHeight", "8");
+      marker.setAttribute("refX", "6");
+      marker.setAttribute("refY", "4");
+      marker.setAttribute("orient", "auto");
+      marker.setAttribute("markerUnits", "userSpaceOnUse");
+      const head = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      head.setAttribute("d", "M0,0 L6,4 L0,8 z");
+      head.setAttribute("fill", color);
+      marker.appendChild(head);
+      defs.appendChild(marker);
+      svg.appendChild(defs);
       const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
       line.setAttribute("x1", String(edgeX - minX));
       line.setAttribute("y1", String(edgeY - minY));
@@ -621,6 +640,7 @@ export class Viewer {
       line.setAttribute("y2", String(tipY - minY));
       line.setAttribute("stroke", color);
       line.setAttribute("stroke-width", "1.5");
+      line.setAttribute("marker-end", `url(#${markerId})`);
       svg.appendChild(line);
       el.appendChild(svg);
 

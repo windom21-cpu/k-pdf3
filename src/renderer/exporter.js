@@ -282,6 +282,22 @@ function drawOverlay(ctx, ov, zoom) {
     ctx.moveTo(edgeX, edgeY);
     ctx.lineTo(tipX, tipY);
     ctx.stroke();
+    // Filled triangular arrowhead at the tip, oriented along the line.
+    const ah = 6 * zoom;
+    const angle = Math.atan2(tipY - edgeY, tipX - edgeX);
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(
+      tipX - ah * Math.cos(angle - Math.PI / 6),
+      tipY - ah * Math.sin(angle - Math.PI / 6),
+    );
+    ctx.lineTo(
+      tipX - ah * Math.cos(angle + Math.PI / 6),
+      tipY - ah * Math.sin(angle + Math.PI / 6),
+    );
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
     ctx.restore();
     // Text inside the box.
     const fontSize = (props.fontSize ?? 12) * zoom;

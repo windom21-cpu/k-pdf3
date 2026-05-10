@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
+import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
 import { computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
@@ -831,7 +832,21 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
   if (!savePath || !Array.isArray(pages) || pages.length === 0) {
     throw new Error("export-pdf-rasterized: invalid payload");
   }
-  const pdfBytes = assembleRasterizedPdf(pages);
+  let pdfBytes = assembleRasterizedPdf(pages);
+  // §17.14 — write workspace bookmarks back as PDF /Outlines so other
+  // viewers (Adobe / Preview / etc.) can navigate them too.
+  // pageOrder lines up with the order pages were composed in (the
+  // renderer passes the visible-pages list to composePagesForExport,
+  // and assembleRasterizedPdf builds the PDF in that same order).
+  try {
+    const bookmarks = activeWorkspace.listBookmarks();
+    if (Array.isArray(bookmarks) && bookmarks.length > 0) {
+      const pageOrder = pages.map((p) => p.pageNo);
+      pdfBytes = await addFlatOutlinesToPdf(pdfBytes, bookmarks, pageOrder);
+    }
+  } catch (err) {
+    console.error("[export] /Outlines write-back failed (continuing without):", err);
+  }
   writeFileSync(savePath, pdfBytes);
   const rev = activeWorkspace.recordExport(pdfBytes, {
     note: payload.note ?? null,

@@ -226,22 +226,18 @@ function currentRedactionColor() {
   return v === "white" ? "white" : "black";
 }
 
-// ---- Marker (highlighter) — horizontal semi-transparent stripe (§17.6) -----
-const MARKER_THICKNESS_PT = 14;          // ≈ 1 line of 12-pt text
+// ---- Marker (highlighter) — drag-to-define rectangle (§17.6) -----------
 const MARKER_COLOR_STORAGE_KEY = "kpdf3.markerColor";
 function currentMarkerColor() {
   return markerColorSel?.value || "#ffeb3b";
 }
 
 function placeMarker(pageNo, x, y, w, h) {
-  if (w < 5) return; // ignore accidental short strokes
+  if (w < 5 || h < 5) return; // ignore accidental tiny rects
   const cmd = new AddOverlayCommand(projectStore, {
     pageNo,
     type: "line", // CHECK constraint covers 'line'; kind='marker' discriminates
-    x,
-    y,
-    w,
-    h,
+    x, y, w, h,
     // Markers sit between text overlays and redactions.
     zOrder: 50,
     properties: {
@@ -254,46 +250,47 @@ function placeMarker(pageNo, x, y, w, h) {
 }
 
 /**
- * Drag-to-define a marker. Y axis is locked to the start point so the
- * stripe is always horizontal; only the X range varies. Thickness is
- * fixed at MARKER_THICKNESS_PT — covers a single line of body text. On
- * release, placeMarker commits a new line/marker overlay.
+ * Drag-to-define a rectangular marker. Both axes follow the cursor so
+ * the user can paint horizontal stripes by dragging mostly sideways or
+ * cover blocks by dragging diagonally. Mode is sticky — users tend to
+ * highlight several spots in a row.
  */
 function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
+  const DEFAULT_W = 120;
+  const DEFAULT_H = 14;
   if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
-    placeMarker(pageNo, startX - 60, startY - MARKER_THICKNESS_PT / 2, 120, MARKER_THICKNESS_PT);
-    setPlacementMode("none");
+    placeMarker(pageNo, startX - DEFAULT_W / 2, startY - DEFAULT_H / 2, DEFAULT_W, DEFAULT_H);
     return;
   }
   const pointerId = downEvt.pointerId;
   const z = viewer.zoom;
-  const yTop = startY - MARKER_THICKNESS_PT / 2;
   const previewColor = currentMarkerColor();
   const preview = document.createElement("div");
   preview.className = "marker-preview";
   preview.style.background = previewColor;
   preview.style.opacity = "0.55";
   preview.style.left = `${startX * z}px`;
-  preview.style.top = `${yTop * z}px`;
+  preview.style.top = `${startY * z}px`;
   preview.style.width = "0px";
-  preview.style.height = `${MARKER_THICKNESS_PT * z}px`;
+  preview.style.height = "0px";
   div.appendChild(preview);
 
-  let curX = startX;
-  try {
-    div.setPointerCapture(pointerId);
-  } catch {
-    /* ignore */
-  }
+  let curX = startX, curY = startY;
+  try { div.setPointerCapture(pointerId); } catch { /* ignore */ }
 
   function onMove(e) {
     if (e.pointerId !== pointerId) return;
     const rect = div.getBoundingClientRect();
     curX = (e.clientX - rect.left) / z;
+    curY = (e.clientY - rect.top) / z;
     const left = Math.min(startX, curX);
+    const top = Math.min(startY, curY);
     const width = Math.abs(curX - startX);
+    const height = Math.abs(curY - startY);
     preview.style.left = `${left * z}px`;
+    preview.style.top = `${top * z}px`;
     preview.style.width = `${width * z}px`;
+    preview.style.height = `${height * z}px`;
   }
 
   function cleanup() {
@@ -308,17 +305,16 @@ function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
     if (e.pointerId !== pointerId) return;
     cleanup();
     const left = Math.min(startX, curX);
+    const top = Math.min(startY, curY);
     const width = Math.abs(curX - startX);
-    if (width < 5) {
-      // Quick click — drop a default-width stripe centered on the click.
-      placeMarker(pageNo, startX - 60, yTop, 120, MARKER_THICKNESS_PT);
+    const height = Math.abs(curY - startY);
+    if (width < 5 || height < 5) {
+      // Quick click without meaningful drag — drop a default-size
+      // 1-line stripe centered on the click.
+      placeMarker(pageNo, startX - DEFAULT_W / 2, startY - DEFAULT_H / 2, DEFAULT_W, DEFAULT_H);
     } else {
-      placeMarker(pageNo, left, yTop, width, MARKER_THICKNESS_PT);
+      placeMarker(pageNo, left, top, width, height);
     }
-    // Marker mode is "sticky" — let the user paint several stripes in a
-    // row without re-clicking the toolbar. They Esc / re-click marker to
-    // exit. (Redaction is single-shot; marker is sticky because legal
-    // doc highlighting tends to be done in batches.)
   }
 
   function onCancel(e) {
@@ -605,12 +601,36 @@ function reapplySelectionDom() {
   if (!viewer.container) return;
   for (const el of viewer.container.querySelectorAll(".overlay.is-selected")) {
     el.classList.remove("is-selected");
+    el.querySelector(":scope > .overlay-close-btn")?.remove();
   }
   if (!selectedOverlayId) return;
   const el = viewer.container.querySelector(
     `.overlay[data-overlay-id="${_ovCssEscape(selectedOverlayId)}"]`,
   );
-  el?.classList.add("is-selected");
+  if (!el) return;
+  el.classList.add("is-selected");
+  // Inject a × close button as a child so the click reliably hits a
+  // dedicated DOM node (CSS pseudo-elements don't take pointer events).
+  // Skipped while the overlay is being inline-edited — there the user
+  // wants Delete/Backspace to act on the text, not on the overlay.
+  if (!el.classList.contains("editing")) {
+    if (!el.querySelector(":scope > .overlay-close-btn")) {
+      const btn = document.createElement("span");
+      btn.className = "overlay-close-btn";
+      btn.textContent = "×";
+      btn.title = "選択中の overlay を削除";
+      btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = selectedOverlayId;
+        if (!id) return;
+        setSelectedOverlay(null);
+        history.execute(new RemoveOverlayCommand(projectStore, id));
+      });
+      el.appendChild(btn);
+    }
+  }
 }
 
 function handleTextEditCommit(id, newText) {
@@ -2845,8 +2865,13 @@ function selectBookmark(id) {
 function refreshBookmarkToolbarState() {
   const addBtn = $("bookmark-add");
   const rmBtn = $("bookmark-remove");
+  const impBtn = $("bookmark-import");
   if (addBtn) addBtn.disabled = !isOpen;
   if (rmBtn) rmBtn.disabled = !isOpen || !selectedBookmarkId || bookmarkSource !== "workspace";
+  // Import only useful when source-PDF /Outlines exist AND workspace
+  // is empty (otherwise there'd be duplicate entries; user can − the
+  // existing workspace ones first if they really want to re-import).
+  if (impBtn) impBtn.disabled = !isOpen || bookmarkSource !== "outline";
 }
 
 function startInlineRenameBookmark(li, b) {
@@ -2916,6 +2941,54 @@ async function actionRemoveBookmark() {
 
 $("bookmark-add")?.addEventListener("click", actionAddBookmark);
 $("bookmark-remove")?.addEventListener("click", actionRemoveBookmark);
+
+/** Flatten the source-PDF /Outlines tree into workspace bookmarks so the
+ *  user can edit / extend them. The tree is walked depth-first; titles
+ *  for nodes without a target page get suffixed "(章)" so they stay
+ *  visible but skip navigation. Subsequent calls are guarded by the
+ *  toolbar disabled state when workspace bookmarks already exist. */
+async function actionImportOutlines() {
+  if (!isOpen) return;
+  const ok = await customConfirm({
+    title: "しおりの取り込み",
+    message: "元 PDF のしおりを workspace に取り込みます。\n以後は編集できるようになります。",
+    okLabel: "取り込む",
+  });
+  if (!ok) return;
+  const outline = await kpdf3.getOutline();
+  if (!Array.isArray(outline) || outline.length === 0) {
+    wsStatus.textContent = "取り込めるしおりがありません";
+    return;
+  }
+  // Depth-first flatten; nodes without a pageNo get the parent's pageNo
+  // (or 1 if absent) so they're still navigable.
+  const flat = [];
+  const walk = (nodes, fallbackPage) => {
+    for (const n of nodes) {
+      const pageNo = typeof n.pageNo === "number" && n.pageNo > 0 ? n.pageNo : fallbackPage;
+      flat.push({ title: n.title || "(無題)", pageNo });
+      if (Array.isArray(n.children) && n.children.length > 0) {
+        walk(n.children, pageNo);
+      }
+    }
+  };
+  walk(outline, 1);
+  let added = 0;
+  try {
+    for (const b of flat) {
+      const id =
+        crypto?.randomUUID?.() ?? `bm-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      await kpdf3.addBookmark({ id, title: b.title, pageNo: b.pageNo });
+      added += 1;
+    }
+    await refreshBookmarks();
+    wsStatus.textContent = `${added} 件のしおりを取り込みました`;
+  } catch (err) {
+    console.error("[bookmark] import failed", err);
+    wsStatus.textContent = `取り込み失敗: ${err.message ?? err}`;
+  }
+}
+$("bookmark-import")?.addEventListener("click", actionImportOutlines);
 
 function actionToggleBookmarks() {
   if (!isOpen) return;
@@ -3530,10 +3603,15 @@ const menuBar = new MenuBar({
       customConfirm({
         title: "スタンプ管理",
         message:
-          "印影のテンプレートと色は、ツールバーの「印影」ボタン横の\n" +
-          "ドロップダウンで切り替えられます。\n\n" +
-          "テンプレートの追加・編集ダイアログは M6 後半で対応予定（ADR-0019）。",
-        okLabel: "印影モードへ",
+          "現在使えるテンプレート（toolbar の「印影」横の select）:\n" +
+          "  • 印  — 60×60 の朱印（円枠）\n" +
+          "  • 日付 (8.5.9)  — 矩形枠、令和年.月.日\n" +
+          "  • 日付 (令和8年5月9日)  — 矩形枠、漢字\n" +
+          "色: 朱 / 黒 / 青\n" +
+          "配置後はクリックで文字編集、ドラッグで移動。\n\n" +
+          "ユーザー定義のテンプレ保存・編集 / 印影画像の取り込み /\n" +
+          "和文・英文フォント別指定は M6 後半で対応予定（ADR-0019, 0017）。",
+        okLabel: "スタンプモードへ",
         cancelLabel: "閉じる",
       }).then((ok) => {
         if (ok && isOpen) setPlacementMode("stamp");
