@@ -340,6 +340,13 @@ ipcMain.handle("kpdf3:window-is-maximized", async () => {
   return mainWindow ? mainWindow.isMaximized() : false;
 });
 
+ipcMain.handle("kpdf3:toggle-devtools", async () => {
+  if (!mainWindow) return;
+  const wc = mainWindow.webContents;
+  if (wc.isDevToolsOpened()) wc.closeDevTools();
+  else wc.openDevTools({ mode: "detach" });
+});
+
 /**
  * Open the OS-native printer properties dialog for a given printer.
  * Implementation is platform-specific:

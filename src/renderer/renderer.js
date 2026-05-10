@@ -2915,6 +2915,35 @@ function setRenderQuality(level) {
 // ---- Keyboard shortcuts ----------------------------------------------
 // M3-3 will need to skip these when an editable text overlay has focus
 // (let the contentEditable / textarea handle its own undo).
+// Dev / browser-level shortcuts. These fire BEFORE the main app-level
+// keydown handler so they work even when no PDF is open. With
+// frame:false + a custom menu, Electron loses its default Reload /
+// DevTools accelerators, so we wire them here.
+window.addEventListener("keydown", (e) => {
+  const target = e.target;
+  const inText =
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA");
+  // F5 / Ctrl+R / Ctrl+Shift+R → reload the renderer.
+  if (
+    e.key === "F5" ||
+    ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")
+  ) {
+    if (inText) return; // don't hijack reload if user is typing
+    e.preventDefault();
+    location.reload();
+    return;
+  }
+  // F12 → toggle DevTools (main process gets the request via IPC).
+  if (e.key === "F12") {
+    e.preventDefault();
+    kpdf3.toggleDevTools?.();
+    return;
+  }
+});
+
 window.addEventListener("keydown", (e) => {
   if (!isOpen) return;
   const ctrlOrCmd = e.ctrlKey || e.metaKey;

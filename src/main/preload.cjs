@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   windowClose:        ()        => ipcRenderer.invoke("kpdf3:window-close"),
   windowIsMaximized:  ()        => ipcRenderer.invoke("kpdf3:window-is-maximized"),
   onWindowState:      (cb)      => ipcRenderer.on("kpdf3:window-state", (_, s) => cb(s)),
+  toggleDevTools:     ()        => ipcRenderer.invoke("kpdf3:toggle-devtools"),
   // Drag&drop helper — Electron 32+ removed File.path from the renderer,
   // so dropped files now need webUtils.getPathForFile() (preload-only).
   getPathForFile:     (file)    => webUtils.getPathForFile(file),
