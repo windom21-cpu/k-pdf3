@@ -2332,7 +2332,10 @@ zoomSelect.addEventListener("change", () => {
     actionZoomFitPage();
   } else {
     const num = parseFloat(v);
-    if (Number.isFinite(num)) applyZoom(num);
+    if (Number.isFinite(num)) {
+      zoomMode = "fixed";
+      applyZoom(num);
+    }
   }
   refreshZoomSelect();
 });
@@ -2341,7 +2344,10 @@ function actionZoomIn() {
   if (!isOpen) return;
   const cur = viewer.zoom;
   const next = ZOOM_STEPS.find((s) => s > cur + 1e-6);
-  if (next !== undefined) applyZoom(next);
+  if (next !== undefined) {
+    zoomMode = "fixed";
+    applyZoom(next);
+  }
 }
 
 function actionZoomOut() {
@@ -2349,47 +2355,72 @@ function actionZoomOut() {
   const cur = viewer.zoom;
   let next;
   for (const s of ZOOM_STEPS) if (s < cur - 1e-6) next = s;
-  if (next !== undefined) applyZoom(next);
+  if (next !== undefined) {
+    zoomMode = "fixed";
+    applyZoom(next);
+  }
 }
 
 function actionZoom100() {
   if (!isOpen) return;
+  zoomMode = "fixed";
   applyZoom(1.0);
 }
 
-function actionZoomFit() {
-  if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return;
-  // Fit the CURRENT page's width to the viewport — typical PDF-app
-  // semantics. Earlier "max width across all pages" gave undersized
-  // pages whenever any page in the document was rotated landscape.
+// Zoom "mode" — when "fit-width" or "fit-page", the renderer
+// re-applies the fit on every window / sidebar resize so the page
+// keeps tracking the viewport. Picking a fixed percentage (or
+// Ctrl+wheel) drops back to "fixed".
+let zoomMode = "fixed";
+
+function applyFitWidthNow() {
+  if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return false;
   const pageNo = viewer.currentPage || viewer.registry.pageNoAtPos(0);
   let sz;
   try {
     sz = viewer.registry.getCanonicalSize(pageNo);
   } catch {
-    return;
+    return false;
   }
-  // 32 px breathing room left + right
   const targetWidth = viewerContainer.clientWidth - 32;
-  if (targetWidth <= 0 || sz.w <= 0) return;
+  if (targetWidth <= 0 || sz.w <= 0) return false;
   applyZoom(targetWidth / sz.w);
+  return true;
+}
+
+function applyFitPageNow() {
+  if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return false;
+  const pageNo = viewer.currentPage || viewer.registry.pageNoAtPos(0);
+  let sz;
+  try {
+    sz = viewer.registry.getCanonicalSize(pageNo);
+  } catch {
+    return false;
+  }
+  const targetW = viewerContainer.clientWidth - 32;
+  const targetH = viewerContainer.clientHeight - 32;
+  if (targetW <= 0 || targetH <= 0 || sz.w <= 0 || sz.h <= 0) return false;
+  applyZoom(Math.min(targetW / sz.w, targetH / sz.h));
+  return true;
+}
+
+function actionZoomFit() {
+  if (applyFitWidthNow()) zoomMode = "fit-width";
 }
 
 /** Fit the CURRENT page entirely (both width and height) into the viewport. */
 function actionZoomFitPage() {
-  if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return;
-  const pageNo = viewer.currentPage || viewer.registry.pageNoAtPos(0);
-  let sz;
-  try {
-    sz = viewer.registry.getCanonicalSize(pageNo);
-  } catch {
-    return;
-  }
-  const targetW = viewerContainer.clientWidth - 32;
-  const targetH = viewerContainer.clientHeight - 32;
-  if (targetW <= 0 || targetH <= 0 || sz.w <= 0 || sz.h <= 0) return;
-  applyZoom(Math.min(targetW / sz.w, targetH / sz.h));
+  if (applyFitPageNow()) zoomMode = "fit-page";
 }
+
+// Re-apply the current fit mode whenever the viewport area changes
+// (window resize, sidebar splitter drag, panel toggle). ResizeObserver
+// gives us a single signal that covers all of these.
+const _zoomFitResizeObserver = new ResizeObserver(() => {
+  if (zoomMode === "fit-width") applyFitWidthNow();
+  else if (zoomMode === "fit-page") applyFitPageNow();
+});
+_zoomFitResizeObserver.observe(viewerContainer);
 
 function actionPagePrev() {
   if (!isOpen || !viewer.registry) return;
@@ -3052,30 +3083,49 @@ function setRenderQuality(level) {
 // keydown handler so they work even when no PDF is open. With
 // frame:false + a custom menu, Electron loses its default Reload /
 // DevTools accelerators, so we wire them here.
-window.addEventListener("keydown", (e) => {
-  const target = e.target;
-  const inText =
-    target instanceof HTMLElement &&
-    (target.isContentEditable ||
-      target.tagName === "INPUT" ||
-      target.tagName === "TEXTAREA");
-  // F5 / Ctrl+R / Ctrl+Shift+R → reload the renderer.
-  if (
-    e.key === "F5" ||
-    ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")
-  ) {
-    if (inText) return; // don't hijack reload if user is typing
-    e.preventDefault();
-    location.reload();
-    return;
-  }
-  // F12 → toggle DevTools (main process gets the request via IPC).
-  if (e.key === "F12") {
-    e.preventDefault();
-    kpdf3.toggleDevTools?.();
-    return;
-  }
-});
+//
+// `capture: true` registers the listener in the capture phase so it
+// fires before any descendant keydown handler that might stopPropagation
+// (e.g. dialog inputs swallowing keys).
+window.addEventListener(
+  "keydown",
+  (e) => {
+    const target = e.target;
+    const inText =
+      target instanceof HTMLElement &&
+      (target.isContentEditable ||
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA");
+    // Diagnostic — show the key in the status bar briefly so the user
+    // can verify keydown events are even arriving in the renderer.
+    if (e.key === "F5" || e.key === "F12" ||
+        ((e.ctrlKey || e.metaKey) && /^[a-zA-Z]$/.test(e.key))) {
+      console.log("[shortcut] keydown:", {
+        key: e.key, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey,
+        target: target?.tagName,
+      });
+    }
+    // F5 / Ctrl+R / Ctrl+Shift+R → reload the renderer.
+    if (
+      e.key === "F5" ||
+      ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")
+    ) {
+      if (inText) return; // don't hijack reload if user is typing
+      e.preventDefault();
+      e.stopPropagation();
+      location.reload();
+      return;
+    }
+    // F12 → toggle DevTools (main process gets the request via IPC).
+    if (e.key === "F12") {
+      e.preventDefault();
+      e.stopPropagation();
+      kpdf3.toggleDevTools?.();
+      return;
+    }
+  },
+  true,
+);
 
 window.addEventListener("keydown", (e) => {
   if (!isOpen) return;
