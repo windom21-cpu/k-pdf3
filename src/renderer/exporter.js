@@ -157,12 +157,29 @@ function drawOverlay(ctx, ov, zoom) {
     ctx.fillStyle = props.color ?? "#000000";
     ctx.font = `${fontSize}px ${getTextFontStack(props.fontId)}`;
     ctx.textBaseline = "top";
-    // Match the viewer's white-space: pre-wrap behaviour so a long line
-    // doesn't escape the overlay's bbox in the export.
+    const text = props.text ?? "";
     const lineHeight = fontSize * (props.lineHeight ?? 1);
-    const lines = wrapCanvasText(ctx, props.text ?? "", w);
-    for (let i = 0; i < lines.length; i++) {
-      ctx.fillText(lines[i], x, y + i * lineHeight);
+    const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+    if (rot === 0) {
+      const lines = wrapCanvasText(ctx, text, w);
+      for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], x, y + i * lineHeight);
+      }
+    } else {
+      // Match the viewer's "rotate the content within the new rect"
+      // behaviour: wrap to the PRE-rotation width and paint inside a
+      // rotated transform anchored at the new-rect center.
+      const isVert = rot === 90 || rot === 270;
+      const naturalW = isVert ? h : w;
+      const naturalH = isVert ? w : h;
+      ctx.save();
+      ctx.translate(x + w / 2, y + h / 2);
+      ctx.rotate((rot * Math.PI) / 180);
+      const lines = wrapCanvasText(ctx, text, naturalW);
+      for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], -naturalW / 2, -naturalH / 2 + i * lineHeight);
+      }
+      ctx.restore();
     }
     return;
   }
@@ -192,7 +209,16 @@ function drawOverlay(ctx, ov, zoom) {
     ctx.font = `bold ${fontSize}px "MS UI Gothic", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif`;
     ctx.textBaseline = "middle";
     ctx.textAlign = "center";
-    ctx.fillText(props.text ?? "", x + w / 2, y + h / 2);
+    const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+    if (rot === 0) {
+      ctx.fillText(props.text ?? "", x + w / 2, y + h / 2);
+    } else {
+      ctx.save();
+      ctx.translate(x + w / 2, y + h / 2);
+      ctx.rotate((rot * Math.PI) / 180);
+      ctx.fillText(props.text ?? "", 0, 0);
+      ctx.restore();
+    }
     ctx.textAlign = "start";
     return;
   }

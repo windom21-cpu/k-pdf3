@@ -458,11 +458,38 @@ export class Viewer {
 
     if (ov.type === "text") {
       const props = ov.properties ?? {};
-      el.textContent = props.text ?? "";
       const fontSize = (props.fontSize ?? 12) * z;
       el.style.fontSize = `${fontSize}px`;
       el.style.fontFamily = getTextFontStack(props.fontId);
       el.style.color = props.color ?? "#000000";
+
+      const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+      if (rot === 0) {
+        el.textContent = props.text ?? "";
+      } else {
+        // Text is rotated relative to the new canonical frame because
+        // the user rotated the page. Wrap the text in an inner span
+        // sized to the PRE-rotation rect dimensions, then transform
+        // it so it lands centered inside the (post-rotation) outer
+        // rect. The user reads the text in its rotated orientation —
+        // exactly like writing on paper and then turning the paper.
+        const isVert = rot === 90 || rot === 270;
+        const naturalW = (isVert ? ov.h : ov.w) * z;
+        const naturalH = (isVert ? ov.w : ov.h) * z;
+        el.textContent = "";
+        const inner = document.createElement("span");
+        inner.style.position = "absolute";
+        inner.style.left = "50%";
+        inner.style.top = "50%";
+        inner.style.width = `${naturalW}px`;
+        inner.style.height = `${naturalH}px`;
+        inner.style.display = "inline-block";
+        inner.style.transformOrigin = "center center";
+        inner.style.transform = `translate(-50%, -50%) rotate(${rot}deg)`;
+        inner.style.whiteSpace = "pre-wrap";
+        inner.textContent = props.text ?? "";
+        el.appendChild(inner);
+      }
       this._attachOverlayPointer(el, ov);
       this._attachResizeHandles(el, ov);
       return el;
@@ -470,7 +497,6 @@ export class Viewer {
 
     if (ov.type === "stamp") {
       const props = ov.properties ?? {};
-      el.textContent = props.text ?? "";
       const color = props.color ?? "#cc0000";
       const fontSize = (props.fontSize ?? 14) * z;
       el.style.color = color;
@@ -479,6 +505,21 @@ export class Viewer {
       el.style.fontWeight = "bold";
       const frame = props.frame ?? "circle";
       el.classList.add(`overlay-stamp-${frame}`);
+
+      const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+      if (rot === 0) {
+        el.textContent = props.text ?? "";
+      } else {
+        // Stamp text rotates with the paper. The frame (::before) stays
+        // in the outer rect — only the centered character spins.
+        el.textContent = "";
+        const inner = document.createElement("span");
+        inner.style.display = "inline-block";
+        inner.style.transformOrigin = "center center";
+        inner.style.transform = `rotate(${rot}deg)`;
+        inner.textContent = props.text ?? "";
+        el.appendChild(inner);
+      }
       this._attachOverlayPointer(el, ov);
       this._attachResizeHandles(el, ov);
       return el;

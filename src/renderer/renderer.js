@@ -343,8 +343,11 @@ function currentTextFontSize() {
 
 function placeText(pageNo, x, y) {
   const fontSize = currentTextFontSize();
-  const W = Math.max(100, fontSize * 8);
-  const H = Math.max(20, Math.round(fontSize * 1.6));
+  // 1-line tall box (~ standard line-height 1.2); width holds ~6 chars
+  // by default so the placeholder "テキスト" fits without giving an
+  // oversized empty area around it.
+  const W = Math.max(60, fontSize * 6);
+  const H = Math.max(fontSize, Math.round(fontSize * 1.2));
   // I-beam hot spot is the middle of the cursor — map the click point
   // to the text box's vertical center so the new text appears around
   // (rather than below) where the user clicked.
@@ -361,6 +364,7 @@ function placeText(pageNo, x, y) {
       fontSize,
       color: "#000000",
       fontId: currentTextFontId(),
+      rotation: 0, // page-rotation tracked here so content stays upright on rotated paper
     },
   });
   history.execute(cmd);
@@ -390,6 +394,7 @@ function placeStamp(pageNo, x, y) {
       color: "#cc0000",
       frame: "circle",
       fontSize: 14,
+      rotation: 0,
     },
   });
   history.execute(cmd);
@@ -2165,9 +2170,19 @@ async function rotateCurrentPage(delta) {
   // before the userRotation flip so the canonical frame interpretation
   // hasn't changed yet. Bypasses history (rotation itself isn't in
   // history — the inverse rotation undoes overlay positions too).
+  // Content rotation (props.rotation) tracks how much the OVERLAY's
+  // visual content has spun relative to upright; viewer / exporter
+  // apply it when drawing text / stamps. Geometry-only overlays
+  // (redaction / marker) ignore it.
+  const dContent = (((delta % 360) + 360) % 360);
   for (const ov of projectStore.getPageOverlays(pageNo)) {
     const t = transformRectForRotation(ov, delta, W_old, H_old);
-    projectStore.update(ov.id, t);
+    const props = ov.properties ?? {};
+    const newRot = (((props.rotation ?? 0) + dContent) % 360 + 360) % 360;
+    projectStore.update(ov.id, {
+      ...t,
+      properties: { ...props, rotation: newRot },
+    });
   }
 
   const next = ((oldUser + delta) % 360 + 360) % 360;
