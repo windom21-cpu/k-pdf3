@@ -582,10 +582,12 @@ function placeStamp(pageNo, x, y) {
     properties,
   });
   history.execute(cmd);
-  setPlacementMode("none");
-  if (cmd._snapshot) {
-    setTimeout(() => viewer.enterTextEdit(cmd._snapshot.id), 0);
-  }
+  // Stamp mode is sticky — the palette popup stays open so the user
+  // can keep dropping stamps (same one consecutively, or a different
+  // preset by clicking it in the popup). To exit: toolbar スタンプ
+  // button toggles, the popup's ✕, or Esc.
+  // Auto-enter-edit is also skipped: presets carry the intended text,
+  // and entering edit on every placement breaks the rhythm.
 }
 
 function handleOverlayClick(id) {
@@ -752,15 +754,22 @@ document.addEventListener("pointerdown", (ev) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     hideOverlayContextMenu();
-    // Also drop overlay selection — but only if no inline-edit /
-    // dialog is active (those have their own Escape handlers).
+    // Don't steal Esc from inline edits / dialog inputs (they have
+    // their own handlers). Outside those, Esc unwinds the user's
+    // most recent state in priority order: selection → placement
+    // mode. So pressing Esc once cancels what they just started.
     const target = e.target;
     const inEdit =
       target instanceof HTMLElement &&
       (target.isContentEditable ||
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA");
-    if (!inEdit && selectedOverlayId) setSelectedOverlay(null);
+    if (inEdit) return;
+    if (selectedOverlayId) {
+      setSelectedOverlay(null);
+    } else if (placementMode !== "none") {
+      setPlacementMode("none");
+    }
   }
 });
 
@@ -862,8 +871,18 @@ function setPlacementMode(mode) {
   btnModeMarker.classList.toggle("toggled", mode === "marker");
   if (btnModeCallout) btnModeCallout.classList.toggle("toggled", mode === "callout");
   syncStampGhostMode();
+  syncStampPalettePopup();
   refreshMenuState();
   refreshModeOptionsBar();
+}
+
+/** Show / hide the floating stamp palette popup based on placement
+ *  mode. The popup stays visible throughout stamp mode so the user
+ *  can keep picking different stamps without leaving the mode. */
+function syncStampPalettePopup() {
+  const popup = $("stamp-palette-popup");
+  if (!popup) return;
+  popup.hidden = placementMode !== "stamp";
 }
 
 /** Toggle the mode-options bar + the per-mode child visible to match
@@ -4740,6 +4759,50 @@ if (btnModeCallout) {
 // redaction-color UX). Persisted to localStorage.
 // Mode-options bar's "スタンプ管理…" button → opens the manager dialog.
 $("stamp-mgr-open")?.addEventListener("click", () => openStampManagerDialog());
+$("stamp-palette-mgr")?.addEventListener("click", () => openStampManagerDialog());
+$("stamp-palette-close")?.addEventListener("click", () => {
+  // Exit stamp mode entirely — popup hides via syncStampPalettePopup.
+  if (placementMode === "stamp") setPlacementMode("none");
+});
+
+// Drag the stamp palette popup by its titlebar.
+{
+  const popup = $("stamp-palette-popup");
+  const titleBar = $("stamp-palette-titlebar");
+  if (popup && titleBar) {
+    let drag = null;
+    titleBar.addEventListener("pointerdown", (e) => {
+      // Don't drag from the close button.
+      if (e.target instanceof HTMLElement && e.target.id === "stamp-palette-close") return;
+      const rect = popup.getBoundingClientRect();
+      drag = {
+        pointerId: e.pointerId,
+        offsetX: e.clientX - rect.left,
+        offsetY: e.clientY - rect.top,
+      };
+      try { titleBar.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    });
+    titleBar.addEventListener("pointermove", (e) => {
+      if (!drag || drag.pointerId !== e.pointerId) return;
+      const x = e.clientX - drag.offsetX;
+      const y = e.clientY - drag.offsetY;
+      // Clamp to viewport.
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const w = popup.offsetWidth;
+      const h = popup.offsetHeight;
+      popup.style.left = `${Math.max(0, Math.min(vw - w, x))}px`;
+      popup.style.top = `${Math.max(0, Math.min(vh - h, y))}px`;
+      popup.style.right = "auto";
+    });
+    titleBar.addEventListener("pointerup", (e) => {
+      if (!drag || drag.pointerId !== e.pointerId) return;
+      try { titleBar.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+      drag = null;
+    });
+  }
+}
+
 btnRotateLeft.addEventListener("click", actionRotateLeft);
 btnRotateRight.addEventListener("click", actionRotateRight);
 

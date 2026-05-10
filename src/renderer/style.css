@@ -1177,18 +1177,37 @@ button.toggled {
   gap: 2px;
 }
 .stamp-reg-fieldset legend { font-weight: bold; font-size: 11px; }
-/* 98.css strips `appearance` from inputs and replaces them with custom
- * pseudo-element art — that breaks our register dialog checkboxes /
- * radios because we don't follow the exact 98.css HTML pattern. Force
- * native rendering inside register windows so they actually show. */
+/* 98.css hides native checkboxes / radios with `opacity:0;
+ * position:fixed` and re-paints them via `+ label::before` siblings.
+ * Our register dialogs nest <input> inside <label>, which breaks that
+ * pattern — the checkboxes vanish completely. Force native rendering
+ * inside register windows. */
 .stamp-reg-window input[type="checkbox"],
 .stamp-reg-window input[type="radio"] {
   appearance: auto !important;
   -webkit-appearance: auto !important;
+  opacity: 1 !important;
+  position: static !important;
   width: 13px !important;
   height: 13px !important;
   margin: 0 4px 0 0 !important;
+  background: revert !important;
+  box-shadow: none !important;
   vertical-align: middle;
+}
+/* Suppress 98.css's pseudo-element artwork that piggy-backs on the
+ * adjacent label — without this it would float beside our text label
+ * with no associated input. */
+.stamp-reg-window input[type="checkbox"] + label::before,
+.stamp-reg-window input[type="checkbox"] + label::after,
+.stamp-reg-window input[type="radio"] + label::before,
+.stamp-reg-window input[type="radio"] + label::after,
+.stamp-reg-window label > input[type="checkbox"] ~ * ::before,
+.stamp-reg-window label > input[type="radio"] ~ * ::before {
+  content: none !important;
+}
+.stamp-reg-window label {
+  margin-left: 0 !important;
 }
 .stamp-reg-row {
   display: flex;
@@ -1217,9 +1236,45 @@ button.toggled {
 }
 .dialog-buttons button { min-width: 75px; }
 
-/* Stamp preset palette in the mode-options bar — replaces the prior
- * <select>. Each registered stamp is a clickable button with a tiny
- * preview canvas + label. The active preset gets `is-active`. */
+/* Stamp palette popup window — 98-style floating window. Stays
+ * visible the entire time the user is in stamp mode so they can
+ * pick a different stamp between placements (continuous stamping).
+ * Draggable via the titlebar (see renderer.js stamp-palette-titlebar
+ * pointerdown handler). */
+.stamp-palette-popup {
+  position: fixed;
+  top: 120px;
+  right: 24px;
+  z-index: 5000;
+  min-width: 260px;
+  max-width: 360px;
+  user-select: none;
+}
+.stamp-palette-popup .title-bar {
+  cursor: move;
+}
+.stamp-palette-popup[hidden] {
+  display: none !important;
+}
+.stamp-palette-popup .stamp-preset-palette {
+  flex-direction: column;
+  align-items: stretch;
+  max-width: none;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.stamp-palette-popup .stamp-preset-btn {
+  justify-content: flex-start;
+  width: 100%;
+  height: 30px;
+}
+.stamp-palette-popup .stamp-preset-label {
+  max-width: 200px;
+}
+/* Stamp preset palette — used both in the popup window (column layout)
+ * and elsewhere if needed. Each registered stamp is a clickable button
+ * with a tiny preview canvas + label. The active preset gets
+ * `is-active`. */
 .stamp-preset-palette {
   display: flex;
   align-items: center;

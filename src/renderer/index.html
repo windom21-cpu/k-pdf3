@@ -150,6 +150,23 @@
     </div>
   </div>
 
+  <!-- スタンプ palette popup — floating 98 風 ウインドウ。スタンプモード
+       中は表示され、別スタンプを次々に選んで連続配置できる。 -->
+  <div id="stamp-palette-popup" class="window stamp-palette-popup" hidden>
+    <div class="title-bar" id="stamp-palette-titlebar">
+      <div class="title-bar-text">スタンプ</div>
+      <div class="title-bar-controls">
+        <button id="stamp-palette-close" aria-label="Close" title="閉じる (スタンプモード解除)"></button>
+      </div>
+    </div>
+    <div class="window-body">
+      <div id="stamp-preset-palette" class="stamp-preset-palette"></div>
+      <div style="margin-top:8px; display:flex; gap:6px;">
+        <button id="stamp-palette-mgr">スタンプ管理…</button>
+      </div>
+    </div>
+  </div>
+
   <!-- スタンプ管理 dialog (top-level) -->
   <div class="busy-modal" id="stamp-manager-dialog" hidden>
     <div class="window stamp-mgr-window">
@@ -562,8 +579,7 @@
       </select>
     </div>
     <div class="mode-options" data-mode="stamp" hidden>
-      <span class="mode-options-label">スタンプ:</span>
-      <div id="stamp-preset-palette" class="stamp-preset-palette"></div>
+      <span class="mode-options-label" id="stamp-mode-status">スタンプモード — 別ウインドウから選んで紙にクリックで押印できます</span>
       <button id="stamp-mgr-open">スタンプ管理…</button>
     </div>
     <div class="mode-options" data-mode="redaction" hidden>
