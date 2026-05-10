@@ -53,12 +53,15 @@ CREATE TABLE pages (
     -- ユーザーが追加した「論理的な回転」（紙アナロジー、export 時に PDF rotation に合成）
     user_rotation INTEGER NOT NULL DEFAULT 0 CHECK(user_rotation IN (0, 90, 180, 270)),
     -- ページ削除フラグ。ソース PDF はそのまま、workspace 単位で表示・書き出しから除外
-    is_deleted INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1))
+    is_deleted INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1)),
+    -- ユーザーが並び替えた表示順（サムネ D&D で更新）。NULL のとき page_no が初期値。
+    display_order REAL
 );
 
 -- ===================================================================
 -- inserted_pages: 元 PDF にない、ユーザーが挿入した白紙ページ（任意のテキスト付き）
--- 元ページとは別管理。getPages() 時に after_page_no / order_in_slot で間に並ぶ
+-- after_page_no + order_in_slot は新規挿入時のスロット情報。display_order
+-- は元ページと共通の正規順序キーで、サムネ D&D による並び替えで更新される。
 -- ===================================================================
 CREATE TABLE inserted_pages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +77,9 @@ CREATE TABLE inserted_pages (
     image_blob      BLOB,
     image_w         INTEGER,
     image_h         INTEGER,
+    -- 元ページと共通の正規順序キー。NULL のときは after_page_no/order_in_slot
+    -- に基づくスロット位置を使う（後方互換）。並び替え後は INTEGER で詰まる。
+    display_order   REAL,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_inserted_pages_slot ON inserted_pages(after_page_no, order_in_slot);

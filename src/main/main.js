@@ -61,6 +61,29 @@ function legacySidecarPath(pdfPath) {
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
+// ---- Tab registry (ADR-0015 案 B) ----------------------------------------
+//
+// Each tab owns an open Workspace + mupdf Document handle. The
+// renderer is the source of truth for tab order / titles; main only
+// needs to know which tab is active so existing IPC handlers
+// (render-page / save-overlays / get-pages / ...) keep using the
+// `activeWorkspace` etc. references they already do. `kpdf3:switch-
+// tab` swaps those references atomically; `kpdf3:open-pdf-file`
+// accepts a tabId so each tab gets its own handle.
+
+/** @typedef {{
+ *   workspace: Workspace,
+ *   doc: import("mupdf").Document | null,
+ *   pages: Array<ReturnType<Workspace['getPages']>[number]>,
+ *   sourcePdfPath: string,
+ *   sourceName: string,
+ * }} TabHandle */
+
+/** @type {Map<string, TabHandle>} */
+const tabHandles = new Map();
+/** @type {string | null} */
+let activeTabId = null;
+
 /** @type {Workspace | null} */
 let activeWorkspace = null;
 /** @type {string | null} the absolute path of the source PDF that opened
@@ -71,9 +94,45 @@ let activeDoc = null;
 /** @type {Array<ReturnType<Workspace['getPages']>[number]>} */
 let activePages = [];
 
+/** Point the module-level "active *" refs at the given tab (or null). */
+function activateTab(tabId) {
+  const h = tabId ? tabHandles.get(tabId) : null;
+  if (!h) {
+    activeTabId = null;
+    activeWorkspace = null;
+    activeDoc = null;
+    activePages = [];
+    activeSourcePdfPath = null;
+    return;
+  }
+  activeTabId = tabId;
+  activeWorkspace = h.workspace;
+  activeDoc = h.doc;
+  activePages = h.pages;
+  activeSourcePdfPath = h.sourcePdfPath;
+}
+
+/** Dispose a tab's resources and drop it from the registry. If the
+ *  tab was active, leaves the active-* refs nulled — callers should
+ *  pick a successor (or accept "no active") afterward. */
+function disposeTab(tabId) {
+  const h = tabHandles.get(tabId);
+  if (!h) return;
+  if (h.doc) {
+    try { h.doc.destroy(); } catch { /* ignore */ }
+  }
+  if (h.workspace) {
+    try { h.workspace.close(); } catch { /* ignore */ }
+  }
+  tabHandles.delete(tabId);
+  if (activeTabId === tabId) activateTab(null);
+}
+
 /**
- * Open the active workspace's source PDF into mupdf and cache the page list.
- * No-op if there's no active workspace or the workspace has no source PDF yet.
+ * Refresh the active tab's mupdf Document + pages cache. Used after
+ * page insert/delete operations on the active workspace to keep the
+ * tab handle's `pages` in sync (so subsequent render-page calls see
+ * the new layout).
  */
 function reopenActiveDoc() {
   disposeActiveDoc();
@@ -85,6 +144,15 @@ function reopenActiveDoc() {
   // resolve any source-PDF pageNo even when the renderer briefly issues
   // a stale request for a now-hidden page.
   activePages = activeWorkspace.getPages({ includeDeleted: true });
+  // Mirror back into the tab handle so a subsequent switch-tab+back
+  // keeps the refreshed view.
+  if (activeTabId) {
+    const h = tabHandles.get(activeTabId);
+    if (h) {
+      h.doc = activeDoc;
+      h.pages = activePages;
+    }
+  }
 }
 
 function disposeActiveDoc() {
@@ -104,6 +172,7 @@ function createMainWindow() {
     width: 1100,
     height: 820,
     title: "K-PDF3",
+    icon: join(__dirname, "..", "renderer", "vendor", "app-icon.png"),
     frame: false,
     webPreferences: {
       preload: join(__dirname, "preload.cjs"),
@@ -227,13 +296,15 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
-  // Close the workspace + registry handles cleanly so SQLite WAL flushes.
+  // Close every tab so SQLite WAL flushes for each workspace.
+  for (const id of [...tabHandles.keys()]) disposeTab(id);
   disposeActiveDoc();
   if (activeWorkspace) {
     try { activeWorkspace.close(); } catch { /* ignore */ }
     activeWorkspace = null;
   }
   activeSourcePdfPath = null;
+  activeTabId = null;
   closeRegistry();
   if (printWindow && !printWindow.isDestroyed()) {
     try { printWindow.destroy(); } catch { /* ignore */ }
@@ -495,11 +566,14 @@ ipcMain.handle("kpdf3:create-workspace", async (_, filePath) => {
 });
 
 ipcMain.handle("kpdf3:close-workspace", async () => {
+  // ADR-0015: under tabs, "close workspace" means "close every tab".
+  // Used by the legacy single-workspace renderer path and by app exit.
+  if (tabHandles.size === 0 && !activeWorkspace) return false;
+  for (const id of [...tabHandles.keys()]) disposeTab(id);
   disposeActiveDoc();
-  if (!activeWorkspace) return false;
-  activeWorkspace.close();
   activeWorkspace = null;
   activeSourcePdfPath = null;
+  activeTabId = null;
   return true;
 });
 
@@ -519,13 +593,22 @@ ipcMain.handle("kpdf3:import-pdf", async (_, pdfPath) => {
  *             and migrate it into userData; or create a fresh workspace.
  *   4. Open the mupdf doc, cache page rows, return overlays to renderer.
  */
-ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath) => {
-  disposeActiveDoc();
-  if (activeWorkspace) {
-    activeWorkspace.close();
+ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath, tabId = null) => {
+  // ADR-0015: each tab gets its own workspace handle. If a tabId is
+  // passed, we register the new handle under that id (replacing any
+  // existing one for the same id). Otherwise generate a fresh tabId.
+  const targetTabId = tabId ?? `tab-${Date.now().toString(36)}`;
+  // If we're reusing an existing tabId, drop its previous handle so
+  // we don't leak the old workspace + doc. (Renderer drives re-opens
+  // by passing the same tabId.)
+  if (tabHandles.has(targetTabId)) disposeTab(targetTabId);
+  // Detach the active-* refs first; we'll re-point them via
+  // activateTab() once the new handle is built.
+  if (activeTabId === targetTabId) {
+    disposeActiveDoc();
     activeWorkspace = null;
+    activeSourcePdfPath = null;
   }
-  activeSourcePdfPath = null;
 
   const pdfBytes = readFileSync(pdfPath);
   const fingerprint = await computePdfFingerprint(pdfBytes);
@@ -533,9 +616,10 @@ ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath) => {
 
   let isNew = false;
   let migrated = false;
+  let workspace;
   const existing = findWorkspaceByFingerprint(fingerprint);
   if (existing && existsSync(existing.workspacePath)) {
-    activeWorkspace = Workspace.open(existing.workspacePath);
+    workspace = Workspace.open(existing.workspacePath);
     touchWorkspace(fingerprint, pdfPath, sourceName);
   } else {
     const id = generateWorkspaceId();
@@ -549,11 +633,11 @@ ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath) => {
         console.error("[main] sidecar migration rename failed:", err);
         throw err;
       }
-      activeWorkspace = Workspace.open(wsPath);
+      workspace = Workspace.open(wsPath);
       migrated = true;
     } else {
-      activeWorkspace = Workspace.create(wsPath);
-      await activeWorkspace.importPdfFromFile(pdfPath);
+      workspace = Workspace.create(wsPath);
+      await workspace.importPdfFromFile(pdfPath);
       isNew = true;
     }
     registerWorkspace({
@@ -565,16 +649,45 @@ ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath) => {
     });
   }
 
-  activeSourcePdfPath = pdfPath;
-  reopenActiveDoc();
+  // Open the mupdf Document for this tab. Each tab carries its own
+  // handle so a tab switch is just pointer-swapping the active-* refs.
+  const bytes = workspace.getSourceBytes();
+  const doc = bytes ? openPdfDocument(bytes) : null;
+  const pages = workspace.getPages({ includeDeleted: true });
+  tabHandles.set(targetTabId, {
+    workspace,
+    doc,
+    pages,
+    sourcePdfPath: pdfPath,
+    sourceName,
+  });
+  activateTab(targetTabId);
 
   return {
+    tabId: targetTabId,
     pdfPath,
-    pageCount: activeWorkspace.getSourceMeta()?.pageCount ?? 0,
+    pageCount: workspace.getSourceMeta()?.pageCount ?? 0,
     isNew,
     migrated,
-    overlays: activeWorkspace.loadOverlays(),
+    overlays: workspace.loadOverlays(),
   };
+});
+
+ipcMain.handle("kpdf3:switch-tab", async (_, tabId) => {
+  // tabId === null/undefined → clear active (renderer just navigated
+  // to an empty tab that has no main-side handle yet).
+  if (tabId == null) {
+    activateTab(null);
+    return { ok: true, activeTabId: null };
+  }
+  if (!tabHandles.has(tabId)) throw new Error(`Unknown tab: ${tabId}`);
+  activateTab(tabId);
+  return { ok: true, activeTabId };
+});
+
+ipcMain.handle("kpdf3:close-tab", async (_, tabId) => {
+  disposeTab(tabId);
+  return { ok: true, remaining: tabHandles.size, activeTabId };
 });
 
 ipcMain.handle("kpdf3:list-recent-pdfs", async () => {
@@ -591,9 +704,9 @@ ipcMain.handle("kpdf3:list-bookmarks", async () => {
   return activeWorkspace.listBookmarks();
 });
 
-ipcMain.handle("kpdf3:add-bookmark", async (_, { id, title, pageNo }) => {
+ipcMain.handle("kpdf3:add-bookmark", async (_, { id, title, pageNo, parentId }) => {
   if (!activeWorkspace) throw new Error("No active workspace");
-  return activeWorkspace.addBookmark({ id, title, pageNo });
+  return activeWorkspace.addBookmark({ id, title, pageNo, parentId: parentId ?? null });
 });
 
 ipcMain.handle("kpdf3:rename-bookmark", async (_, { id, title }) => {
@@ -605,6 +718,15 @@ ipcMain.handle("kpdf3:rename-bookmark", async (_, { id, title }) => {
 ipcMain.handle("kpdf3:remove-bookmark", async (_, { id }) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   activeWorkspace.removeBookmark(id);
+  return { ok: true };
+});
+
+ipcMain.handle("kpdf3:move-bookmark", async (_, { id, parentId, beforeId }) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.moveBookmark(id, {
+    parentId: parentId ?? null,
+    beforeId: beforeId ?? null,
+  });
   return { ok: true };
 });
 
@@ -1077,6 +1199,21 @@ ipcMain.handle("kpdf3:set-page-rotation", async (_, pageNo, userRotation) => {
   return { ok: true };
 });
 
+ipcMain.handle("kpdf3:reorder-pages", async (_, orderedPageNos) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.reorderPages(orderedPageNos);
+  reopenActiveDoc();
+  return { ok: true };
+});
+
+// Apply a positional reorder across both source + synthetic pages.
+ipcMain.handle("kpdf3:reorder-all-pages", async (_, orderedKeys) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.reorderAllPages(orderedKeys);
+  reopenActiveDoc();
+  return { ok: true };
+});
+
 ipcMain.handle("kpdf3:add-inserted-page", async (_, opts) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   const syntheticPageNo = activeWorkspace.addInsertedPage(opts ?? {});
@@ -1175,5 +1312,6 @@ ipcMain.handle("kpdf3:get-app-info", async () => {
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
+    isPackaged: app.isPackaged,
   };
 });

@@ -210,6 +210,13 @@ function migrateInsertedPagesTable(db) {
     db.exec("ALTER TABLE inserted_pages ADD COLUMN image_w INTEGER");
     db.exec("ALTER TABLE inserted_pages ADD COLUMN image_h INTEGER");
   }
+  // display_order: shared positional ordering with `pages.display_order`
+  // so a synth's position can be controlled independently of its slot
+  // anchor (after_page_no). NULL means "use slot ordering" — getPages
+  // backfills a sensible default when merging.
+  if (!cols.some((c) => c.name === "display_order")) {
+    db.exec("ALTER TABLE inserted_pages ADD COLUMN display_order REAL");
+  }
 }
 
 /**
@@ -222,6 +229,16 @@ function migratePagesIsDeleted(db) {
     db.exec(
       "ALTER TABLE pages ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1))",
     );
+  }
+  // display_order: the user-controlled visual order for source pages
+  // (sidebar thumb D&D reorders this without renaming page_no, so
+  // existing overlay/inserted-page references stay intact). REAL so
+  // we can fractional-insert between two values without renumbering.
+  if (!cols.some((c) => c.name === "display_order")) {
+    db.exec("ALTER TABLE pages ADD COLUMN display_order REAL");
+    // Seed each row's display_order = page_no so first-load looks the
+    // same as before the migration.
+    db.exec("UPDATE pages SET display_order = page_no WHERE display_order IS NULL");
   }
 }
 
@@ -366,9 +383,45 @@ export function getAllPages(db) {
       crop_x  AS cropX,  crop_y  AS cropY,  crop_w  AS cropW,  crop_h  AS cropH,
       rotation,
       user_rotation AS userRotation,
-      is_deleted AS isDeleted
-    FROM pages ORDER BY page_no
+      is_deleted AS isDeleted,
+      display_order AS displayOrder
+    FROM pages ORDER BY COALESCE(display_order, page_no), page_no
   `).all();
+}
+
+/** Apply a new visual ordering to source pages. `orderedPageNos` is the
+ *  array of page_no values in the desired display order; we assign
+ *  display_order = 1, 2, 3, ... so subsequent inserts can fractional-
+ *  index between integers without immediate renumbering.
+ *
+ *  Synthetic (inserted) pages stay slot-anchored to their source page,
+ *  so they automatically follow their anchor's new position — no
+ *  inserted_pages writes needed. */
+export function reorderPages(db, orderedPageNos) {
+  const upd = db.prepare("UPDATE pages SET display_order = ? WHERE page_no = ?");
+  const tx = db.transaction((ids) => {
+    ids.forEach((pageNo, i) => upd.run(i + 1, pageNo));
+  });
+  tx(orderedPageNos);
+}
+
+/** Apply a new positional order to ALL pages (source + synthetic). Each
+ *  entry of `orderedKeys` is either a positive source pageNo or a
+ *  negative synthetic page key (= -inserted_pages.id). display_order
+ *  is assigned 1, 2, 3, ... across the merged list, written to
+ *  whichever table the row lives in. Used by sidebar/split D&D when
+ *  the user reorders pages through the UI. */
+export function reorderAllPages(db, orderedKeys) {
+  const updSrc  = db.prepare("UPDATE pages SET display_order = ? WHERE page_no = ?");
+  const updSyn  = db.prepare("UPDATE inserted_pages SET display_order = ? WHERE id = ?");
+  const tx = db.transaction((keys) => {
+    keys.forEach((key, i) => {
+      const order = i + 1;
+      if (key > 0) updSrc.run(order, key);
+      else if (key < 0) updSyn.run(order, -key);
+    });
+  });
+  tx(orderedKeys);
 }
 
 // ---- Inserted pages (white-with-text pages user adds between source pages) ---
@@ -384,6 +437,7 @@ export function listInsertedPages(db) {
               user_rotation AS userRotation,
               CASE WHEN image_blob IS NULL THEN 0 ELSE 1 END AS hasImage,
               image_w AS imageW, image_h AS imageH,
+              display_order AS displayOrder,
               created_at AS createdAt
        FROM inserted_pages
        ORDER BY after_page_no, order_in_slot, id`,
@@ -607,7 +661,7 @@ export function removeStampPreset(db, id) {
   db.prepare("DELETE FROM stamp_presets WHERE id = ?").run(id);
 }
 
-// ---- Bookmarks (workspace-side editable, ADR-0014 candidate) ------------
+// ---- Bookmarks (workspace-side editable, ADR-0014 + nested children) ----
 
 export function listBookmarks(db) {
   return db
@@ -619,17 +673,21 @@ export function listBookmarks(db) {
     .all();
 }
 
-/** Append a bookmark at the end of the flat list. */
-export function addBookmark(db, { id, title, pageNo }) {
+/** Append a bookmark at the end of the given parent's children. parentId
+ *  may be null for top-level entries. */
+export function addBookmark(db, { id, title, pageNo, parentId = null }) {
   const next = db
-    .prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM bookmarks")
-    .get();
+    .prepare(
+      `SELECT COALESCE(MAX(sort_order), -1) + 1 AS n
+       FROM bookmarks WHERE parent_id IS ?`,
+    )
+    .get(parentId);
   const sortOrder = next?.n ?? 0;
   db.prepare(
     `INSERT INTO bookmarks (id, parent_id, title, page_no, sort_order)
-     VALUES (?, NULL, ?, ?, ?)`,
-  ).run(id, title, pageNo, sortOrder);
-  return { id, title, pageNo, sortOrder };
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(id, parentId, title, pageNo, sortOrder);
+  return { id, parentId, title, pageNo, sortOrder };
 }
 
 export function renameBookmark(db, id, title) {
@@ -638,6 +696,77 @@ export function renameBookmark(db, id, title) {
 
 export function removeBookmark(db, id) {
   db.prepare("DELETE FROM bookmarks WHERE id = ?").run(id);
+}
+
+/**
+ * Move `id` to be the child of `parentId` (null = top level), positioned
+ * directly before `beforeId` — or at the end of the parent if beforeId is
+ * null. Renumbers `sort_order` of all siblings in the destination parent
+ * (and the source parent if different) so they stay densely packed.
+ *
+ * Throws if the move would create a cycle (parentId is `id` itself or a
+ * descendant of `id`).
+ */
+export function moveBookmark(db, id, { parentId = null, beforeId = null } = {}) {
+  // Reject cycles.
+  if (parentId === id) throw new Error("cannot make a bookmark its own parent");
+  if (parentId) {
+    const descendants = collectDescendantIds(db, id);
+    if (descendants.has(parentId)) {
+      throw new Error("cannot move bookmark under one of its descendants");
+    }
+  }
+  const target = db
+    .prepare("SELECT id, parent_id AS parentId FROM bookmarks WHERE id = ?")
+    .get(id);
+  if (!target) throw new Error(`bookmark not found: ${id}`);
+  const oldParent = target.parentId ?? null;
+
+  const tx = db.transaction(() => {
+    const siblings = db
+      .prepare(
+        `SELECT id FROM bookmarks WHERE parent_id IS ? AND id != ?
+         ORDER BY sort_order, rowid`,
+      )
+      .all(parentId, id)
+      .map((r) => r.id);
+    let insertAt = siblings.length;
+    if (beforeId) {
+      const idx = siblings.indexOf(beforeId);
+      if (idx >= 0) insertAt = idx;
+    }
+    siblings.splice(insertAt, 0, id);
+
+    db.prepare("UPDATE bookmarks SET parent_id = ? WHERE id = ?").run(parentId, id);
+    const upd = db.prepare("UPDATE bookmarks SET sort_order = ? WHERE id = ?");
+    siblings.forEach((sid, i) => upd.run(i, sid));
+
+    if (oldParent !== parentId) {
+      const oldSiblings = db
+        .prepare(
+          `SELECT id FROM bookmarks WHERE parent_id IS ?
+           ORDER BY sort_order, rowid`,
+        )
+        .all(oldParent)
+        .map((r) => r.id);
+      oldSiblings.forEach((sid, i) => upd.run(i, sid));
+    }
+  });
+  tx();
+}
+
+function collectDescendantIds(db, rootId) {
+  const out = new Set();
+  const stack = [rootId];
+  const stmt = db.prepare("SELECT id FROM bookmarks WHERE parent_id = ?");
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const row of stmt.all(cur)) {
+      out.add(row.id);
+      stack.push(row.id);
+    }
+  }
+  return out;
 }
 
 // ---- Overlays ------------------------------------------------------------

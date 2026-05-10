@@ -21,6 +21,8 @@ import {
   listExports,
   setPageDeleted,
   setPageUserRotation,
+  reorderPages,
+  reorderAllPages,
   setInsertedPageUserRotation,
   listInsertedPages,
   addInsertedPage,
@@ -31,6 +33,7 @@ import {
   addBookmark,
   renameBookmark,
   removeBookmark,
+  moveBookmark,
   listAssets,
   addAsset,
   getAsset,
@@ -49,6 +52,30 @@ import {
 /**
  * Workspace handle. Wraps an open SQLite db and exposes domain-friendly methods.
  */
+/** Map an inserted_pages row into a synthetic page entry shaped like
+ *  the source-page rows that the renderer expects. Negative pageNo
+ *  marks it as synthetic; the renderer paints the page itself. */
+function syntheticRow(r) {
+  return {
+    pageNo: -r.id,
+    isSynthetic: true,
+    syntheticId: r.id,
+    syntheticText: r.text ?? "",
+    syntheticHasImage: r.hasImage === 1,
+    syntheticImageW: r.imageW ?? null,
+    syntheticImageH: r.imageH ?? null,
+    syntheticAfterPageNo: r.afterPageNo,
+    syntheticOrderInSlot: r.orderInSlot,
+    cropW: r.width,
+    cropH: r.height,
+    mediaW: r.width,
+    mediaH: r.height,
+    rotation: 0,
+    userRotation: r.userRotation ?? 0,
+    isDeleted: false,
+  };
+}
+
 export class Workspace {
   /**
    * @param {string} filePath
@@ -148,45 +175,64 @@ export class Workspace {
   getPages({ includeDeleted = false } = {}) {
     const sourcePages = getAllPages(this.db);
     const inserted = listInsertedPages(this.db);
-    const insertedBySlot = new Map(); // afterPageNo -> rows[]
-    for (const ins of inserted) {
-      const arr = insertedBySlot.get(ins.afterPageNo) ?? [];
-      arr.push(ins);
-      insertedBySlot.set(ins.afterPageNo, arr);
-    }
-    const out = [];
-    const flushSlot = (afterPageNo) => {
-      const rows = insertedBySlot.get(afterPageNo);
-      if (!rows) return;
-      for (const r of rows) {
-        out.push({
-          pageNo: -r.id, // synthetic — always negative
-          isSynthetic: true,
-          syntheticId: r.id,
-          syntheticText: r.text ?? "",
-          syntheticHasImage: r.hasImage === 1,
-          syntheticImageW: r.imageW ?? null,
-          syntheticImageH: r.imageH ?? null,
-          // Slot anchor + order — exposed so the renderer can build
-          // gaps between synthetic pages in the same slot.
-          syntheticAfterPageNo: r.afterPageNo,
-          syntheticOrderInSlot: r.orderInSlot,
-          cropW: r.width,
-          cropH: r.height,
-          mediaW: r.width,
-          mediaH: r.height,
-          rotation: 0,
-          userRotation: r.userRotation ?? 0,
-          isDeleted: false,
-        });
-      }
-    };
-    flushSlot(0); // pages inserted at the very start
+
+    // Unified positional merge. Each row contributes a sort key:
+    //   - source: display_order ?? page_no
+    //   - synth with display_order: that value
+    //   - synth without display_order: derived from its slot anchor's
+    //     source-page display_order + a tiny fractional offset so it
+    //     lands right after the anchor (and a bit later in the slot
+    //     for higher orderInSlot values).
+    // This keeps freshly-inserted blanks sensibly positioned WITHOUT
+    // requiring an immediate display_order assignment, so previous
+    // user reorderings don't get clobbered when a new blank is
+    // introduced after the multi-select drag.
+    const sourceOrderByPN = new Map();
     for (const p of sourcePages) {
-      if (includeDeleted || !p.isDeleted) {
-        out.push({ ...p, isSynthetic: false });
+      sourceOrderByPN.set(
+        p.pageNo,
+        typeof p.displayOrder === "number" ? p.displayOrder : p.pageNo,
+      );
+    }
+    const synthOrder = (r) => {
+      if (typeof r.displayOrder === "number") return r.displayOrder;
+      // Slot-derived: anchor's order + small offset, with order_in_slot
+      // sub-positioning. afterPageNo === 0 = before-everything → offset
+      // from a "virtual 0" anchor.
+      const anchor = r.afterPageNo > 0
+        ? (sourceOrderByPN.get(r.afterPageNo) ?? r.afterPageNo)
+        : 0;
+      // 0.5 nudge places the synth strictly between anchor (integer)
+      // and anchor+1; orderInSlot * 0.001 spreads multiple synths in
+      // the same slot deterministically.
+      return anchor + 0.5 + (r.orderInSlot ?? 0) * 0.001;
+    };
+    const mergedRaw = [];
+    for (const p of sourcePages) {
+      if (!includeDeleted && p.isDeleted) continue;
+      mergedRaw.push({
+        kind: "src",
+        orderKey:
+          typeof p.displayOrder === "number" ? p.displayOrder : p.pageNo,
+        row: p,
+      });
+    }
+    for (const r of inserted) {
+      mergedRaw.push({ kind: "syn", orderKey: synthOrder(r), row: r });
+    }
+    mergedRaw.sort((a, b) => {
+      if (a.orderKey === b.orderKey) {
+        // Stable secondary: source before synth, then by id/pageNo.
+        if (a.kind !== b.kind) return a.kind === "src" ? -1 : 1;
+        if (a.kind === "src") return a.row.pageNo - b.row.pageNo;
+        return a.row.id - b.row.id;
       }
-      flushSlot(p.pageNo);
+      return a.orderKey - b.orderKey;
+    });
+    const out = [];
+    for (const m of mergedRaw) {
+      if (m.kind === "src") out.push({ ...m.row, isSynthetic: false });
+      else out.push(syntheticRow(m.row));
     }
     return out;
   }
@@ -194,6 +240,19 @@ export class Workspace {
   /** Mark / unmark a SOURCE page as deleted at the workspace level. */
   setPageDeleted(pageNo, deleted) {
     setPageDeleted(this.db, pageNo, deleted);
+  }
+
+  /** Apply a new visual order to source pages. Synthetic pages follow
+   *  their slot anchor, so they reorder automatically. */
+  reorderPages(orderedPageNos) {
+    reorderPages(this.db, orderedPageNos);
+  }
+
+  /** Apply a positional order to ALL pages (mixed source + synthetic).
+   *  Each entry of `orderedKeys` is a positive source pageNo or a
+   *  negative synthetic key (= -inserted_pages.id). */
+  reorderAllPages(orderedKeys) {
+    reorderAllPages(this.db, orderedKeys);
   }
 
   /**
@@ -331,9 +390,9 @@ export class Workspace {
     return listBookmarks(this.db);
   }
 
-  /** Add a bookmark; returns the inserted row. */
-  addBookmark({ id, title, pageNo }) {
-    return addBookmark(this.db, { id, title, pageNo });
+  /** Add a bookmark; returns the inserted row. parentId may be null. */
+  addBookmark({ id, title, pageNo, parentId = null }) {
+    return addBookmark(this.db, { id, title, pageNo, parentId });
   }
 
   renameBookmark(id, title) {
@@ -342,6 +401,11 @@ export class Workspace {
 
   removeBookmark(id) {
     removeBookmark(this.db, id);
+  }
+
+  /** Reparent / reorder a bookmark. Used by the sidebar drag-and-drop UI. */
+  moveBookmark(id, opts) {
+    moveBookmark(this.db, id, opts);
   }
 
   // ---- Assets (image stamps, ADR-0017) -------------------------------
