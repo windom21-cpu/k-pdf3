@@ -31,6 +31,10 @@ import {
   addBookmark,
   renameBookmark,
   removeBookmark,
+  listAssets,
+  addAsset,
+  getAsset,
+  removeAsset,
 } from "../backend/sqlite-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -335,5 +339,20 @@ export class Workspace {
 
   removeBookmark(id) {
     removeBookmark(this.db, id);
+  }
+
+  // ---- Assets (image stamps, ADR-0017) -------------------------------
+
+  listAssets() {
+    return listAssets(this.db);
+  }
+  addAsset(opts) {
+    return addAsset(this.db, opts);
+  }
+  getAsset(id) {
+    return getAsset(this.db, id);
+  }
+  removeAsset(id) {
+    removeAsset(this.db, id);
   }
 }

@@ -518,10 +518,26 @@ function placeText(pageNo, x, y) {
 /** Build the stamp properties for the currently-selected template.
  *  Date templates use the legal-practice "leading dash = 令和" form
  *  per HANDOVER §17.5 / §18.3 (e.g. -8.-5.-9 = 令和8年5月9日 stamp).
+ *  Image templates have option value "img:<assetId>".
  */
 function currentStampPreset() {
   const tmpl = stampTemplateSel?.value || "default";
   const color = stampColorSel?.value || "#cc0000";
+  if (tmpl.startsWith("img:")) {
+    const assetId = tmpl.slice(4);
+    const meta = _imageAssetCache.get(assetId);
+    return {
+      text: "",
+      w: 80,
+      h: 80,
+      frame: "none",
+      fontSize: 14,
+      color,
+      kind: "image",
+      assetId,
+      label: meta?.label ?? "",
+    };
+  }
   if (tmpl === "date-numeric-dash") {
     const d = new Date();
     const reiwa = d.getFullYear() - 2018; // 令和元年 = 2019
@@ -551,6 +567,18 @@ function placeStamp(pageNo, x, y) {
   const preset = currentStampPreset();
   const W = preset.w;
   const H = preset.h;
+  const properties = {
+    kind: preset.kind ?? "text-frame",
+    text: preset.text,
+    color: preset.color,
+    frame: preset.frame,
+    fontSize: preset.fontSize,
+    rotation: 0,
+  };
+  if (preset.kind === "image" && preset.assetId) {
+    properties.assetId = preset.assetId;
+    properties.label = preset.label ?? "image-stamp";
+  }
   const cmd = new AddOverlayCommand(projectStore, {
     pageNo,
     type: "stamp",
@@ -559,14 +587,7 @@ function placeStamp(pageNo, x, y) {
     w: W,
     h: H,
     zOrder: 0,
-    properties: {
-      kind: "text-frame",
-      text: preset.text,
-      color: preset.color,
-      frame: preset.frame,
-      fontSize: preset.fontSize,
-      rotation: 0,
-    },
+    properties,
   });
   history.execute(cmd);
   setPlacementMode("none");
@@ -869,6 +890,56 @@ function refreshModeOptionsBar() {
   }
 }
 
+// ---- Image stamp assets (ADR-0017) -------------------------------------
+// Cached metadata of registered image assets so the stamp-template
+// select can list them without an IPC round-trip on every render.
+const _imageAssetCache = new Map(); // id → { id, mime, label }
+
+async function refreshAssetCacheAndTemplateSel() {
+  if (!stampTemplateSel) return;
+  let assets = [];
+  try {
+    if (isOpen) assets = (await kpdf3.listAssets()) ?? [];
+  } catch (err) {
+    console.error("[stamp-image] list assets failed", err);
+  }
+  _imageAssetCache.clear();
+  for (const a of assets) _imageAssetCache.set(a.id, a);
+  // Strip any prior image options.
+  for (const opt of [...stampTemplateSel.querySelectorAll('option[data-image="1"]')]) {
+    opt.remove();
+  }
+  // Append one option per asset, label fallback = first 8 chars of id.
+  for (const a of assets) {
+    const opt = document.createElement("option");
+    opt.value = `img:${a.id}`;
+    opt.dataset.image = "1";
+    opt.textContent = `画像: ${a.label || a.id.slice(0, 8)}`;
+    stampTemplateSel.appendChild(opt);
+  }
+}
+
+async function actionAddImageStamp() {
+  if (!isOpen) return;
+  const path = await showFileBrowser({
+    mode: "open",
+    title: "印影画像を選択",
+    filterDefault: "image",
+  });
+  if (!path) return;
+  try {
+    const r = await kpdf3.addAssetFromFile({ path });
+    await refreshAssetCacheAndTemplateSel();
+    stampTemplateSel.value = `img:${r.id}`;
+    if (placementMode !== "stamp") setPlacementMode("stamp");
+    updateStampGhostPreset();
+    wsStatus.textContent = `画像スタンプを登録: ${path}`;
+  } catch (err) {
+    console.error("[stamp-image] register failed", err);
+    wsStatus.textContent = `画像登録失敗: ${err.message ?? err}`;
+  }
+}
+
 // ---- Stamp drag ghost (preview that follows the cursor) ---------------
 let stampGhostEl = null;
 
@@ -886,13 +957,47 @@ function ensureStampGhost() {
 function updateStampGhostPreset() {
   if (!stampGhostEl) return;
   const preset = currentStampPreset();
+  // Reset content + classes
+  stampGhostEl.textContent = "";
+  stampGhostEl.classList.remove("stamp-ghost-circle", "stamp-ghost-rect", "stamp-ghost-image");
+  if (preset.kind === "image" && preset.assetId) {
+    stampGhostEl.classList.add("stamp-ghost-image");
+    const img = document.createElement("img");
+    img.style.width = "100%";
+    img.style.height = "100%";
+    img.style.objectFit = "contain";
+    img.draggable = false;
+    img.style.pointerEvents = "none";
+    _stampGhostAssetUrl(preset.assetId).then((url) => {
+      if (url) img.src = url;
+    });
+    stampGhostEl.appendChild(img);
+    stampGhostEl.style.color = "transparent";
+    return;
+  }
   stampGhostEl.textContent = preset.text;
   stampGhostEl.style.color = preset.color;
-  // Frame class
-  stampGhostEl.classList.remove("stamp-ghost-circle", "stamp-ghost-rect");
   stampGhostEl.classList.add(
     preset.frame === "circle" ? "stamp-ghost-circle" : "stamp-ghost-rect",
   );
+}
+
+// Reuse viewer's blob-URL cache for the ghost (so we don't double-fetch).
+const _stampGhostUrlCache = new Map();
+async function _stampGhostAssetUrl(assetId) {
+  if (_stampGhostUrlCache.has(assetId)) return _stampGhostUrlCache.get(assetId);
+  try {
+    const data = await kpdf3.getAsset(assetId);
+    if (!data?.blob) return null;
+    const u8 = data.blob instanceof Uint8Array
+      ? data.blob
+      : new Uint8Array(data.blob.buffer ?? data.blob);
+    const url = URL.createObjectURL(new Blob([u8], { type: data.mime || "image/png" }));
+    _stampGhostUrlCache.set(assetId, url);
+    return url;
+  } catch {
+    return null;
+  }
 }
 
 function updateStampGhostSize() {
@@ -1156,6 +1261,7 @@ async function refreshViewer() {
   viewer.load(pages);
   refreshBookmarks();
   rebuildThumbs(pages);
+  refreshAssetCacheAndTemplateSel();
   refreshDirtyIndicator();
 }
 
@@ -1402,18 +1508,24 @@ const fileBrowserState = {
 function isPdfName(name) {
   return /\.pdf$/i.test(name);
 }
+function isImageName(name) {
+  return /\.(png|jpe?g)$/i.test(name);
+}
 
 function classifyEntry(entry) {
   if (entry.isParent) return "open-entry open-entry-parent is-folder";
   if (entry.isDir) return "open-entry is-folder";
   if (isPdfName(entry.name)) return "open-entry is-pdf";
+  if (isImageName(entry.name)) return "open-entry is-image";
   return "open-entry is-other";
 }
 
 function shouldShowEntry(entry) {
   if (entry.isParent || entry.isDir) return true;
   if (fileBrowserState.mode === "folder") return false; // hide files in folder mode
-  if (openFilterSel.value === "all") return true;
+  const filter = openFilterSel.value;
+  if (filter === "all") return true;
+  if (filter === "image") return isImageName(entry.name);
   return isPdfName(entry.name);
 }
 
@@ -1465,8 +1577,15 @@ function activateFileEntry(entry) {
     loadFileBrowserDir(joinPath(fileBrowserState.currentPath, entry.name));
     return;
   }
-  if (fileBrowserState.mode === "open" && isPdfName(entry.name)) {
-    fileBrowserConfirm(joinPath(fileBrowserState.currentPath, entry.name));
+  if (fileBrowserState.mode === "open") {
+    const filter = openFilterSel.value;
+    const accept =
+      filter === "all" ||
+      (filter === "image" && isImageName(entry.name)) ||
+      (filter === "pdf" && isPdfName(entry.name));
+    if (accept) {
+      fileBrowserConfirm(joinPath(fileBrowserState.currentPath, entry.name));
+    }
   } else if (fileBrowserState.mode === "save") {
     handleFileBrowserConfirm();
   }
@@ -1588,9 +1707,14 @@ async function handleFileBrowserConfirm() {
     return;
   }
 
-  // open mode
-  if (!isPdfName(target)) {
-    wsStatus.textContent = "PDF ファイルを選択してください";
+  // open mode — accept whichever extension the active filter allows.
+  const filter = openFilterSel.value;
+  const ok =
+    filter === "all" ||
+    (filter === "image" && isImageName(target)) ||
+    (filter === "pdf" && isPdfName(target));
+  if (!ok) {
+    wsStatus.textContent = filter === "image" ? "画像 (PNG/JPEG) を選択してください" : "PDF ファイルを選択してください";
     return;
   }
   fileBrowserConfirm(target);
@@ -4138,6 +4262,7 @@ if (stampTemplateSel) {
     updateStampGhostPreset();
   });
 }
+$("stamp-add-image")?.addEventListener("click", actionAddImageStamp);
 if (stampColorSel) {
   const saved = localStorage.getItem(STAMP_COLOR_KEY);
   if (saved && [...stampColorSel.options].some((o) => o.value === saved)) {

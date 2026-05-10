@@ -490,6 +490,55 @@ export function setPageUserRotation(db, pageNo, userRotation) {
   ).run(r, pageNo);
 }
 
+// ---- Assets (image stamps + future signature / image overlays) ---------
+
+import { createHash as createHashAsset } from "node:crypto";
+
+/** List all assets (without the heavy `blob` column). */
+export function listAssets(db) {
+  return db
+    .prepare(
+      `SELECT id, hash, mime, width, height, label, created_at AS createdAt
+       FROM assets ORDER BY created_at DESC, rowid DESC`,
+    )
+    .all();
+}
+
+/** Insert a new asset. Returns the id (existing on hash dedupe). */
+export function addAsset(db, { mime, blob, width = null, height = null, label = null }) {
+  const buf = blob instanceof Uint8Array ? Buffer.from(blob) : Buffer.from(blob);
+  const hash = createHashAsset("sha256").update(buf).digest("hex");
+  const existing = db.prepare("SELECT id FROM assets WHERE hash = ?").get(hash);
+  if (existing) {
+    if (label) db.prepare("UPDATE assets SET label = ? WHERE id = ?").run(label, existing.id);
+    return existing.id;
+  }
+  const id =
+    globalThis.crypto?.randomUUID?.() ?? `asset-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  db.prepare(
+    `INSERT INTO assets (id, hash, mime, blob, width, height, label)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, hash, mime, buf, width, height, label);
+  return id;
+}
+
+/** Read an asset's blob (caller renders it). Returns Uint8Array. */
+export function getAsset(db, id) {
+  const row = db
+    .prepare(
+      `SELECT id, mime, blob, width, height, label
+       FROM assets WHERE id = ?`,
+    )
+    .get(id);
+  if (!row) return null;
+  const u8 = row.blob instanceof Uint8Array ? row.blob : new Uint8Array(row.blob);
+  return { id: row.id, mime: row.mime, blob: u8, width: row.width, height: row.height, label: row.label };
+}
+
+export function removeAsset(db, id) {
+  db.prepare("DELETE FROM assets WHERE id = ?").run(id);
+}
+
 // ---- Bookmarks (workspace-side editable, ADR-0014 candidate) ------------
 
 export function listBookmarks(db) {

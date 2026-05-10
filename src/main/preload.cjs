@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld("kpdf3", {
   addBookmark:        (opts)    => ipcRenderer.invoke("kpdf3:add-bookmark", opts),
   renameBookmark:     (opts)    => ipcRenderer.invoke("kpdf3:rename-bookmark", opts),
   removeBookmark:     (opts)    => ipcRenderer.invoke("kpdf3:remove-bookmark", opts),
+  listAssets:         ()        => ipcRenderer.invoke("kpdf3:list-assets"),
+  addAsset:           (opts)    => ipcRenderer.invoke("kpdf3:add-asset", opts),
+  addAssetFromFile:   (opts)    => ipcRenderer.invoke("kpdf3:add-asset-from-file", opts),
+  getAsset:           (id)      => ipcRenderer.invoke("kpdf3:get-asset", id),
+  removeAsset:        (id)      => ipcRenderer.invoke("kpdf3:remove-asset", id),
   listRecentPdfs:     ()        => ipcRenderer.invoke("kpdf3:list-recent-pdfs"),
   getAppInfo:         ()        => ipcRenderer.invoke("kpdf3:get-app-info"),
   // viewer rendering

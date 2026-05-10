@@ -19,6 +19,35 @@
 import { PageRegistry, visiblePageRange } from "../domain/page-registry.js";
 import { getTextFontStack } from "./fonts.js";
 
+/** Cache: assetId → object URL. The URL is created from a Blob built
+ *  from the bytes returned by kpdf3.getAsset(); reused across multiple
+ *  stamp overlays referencing the same image. */
+const _stampAssetUrlCache = new Map();
+async function _stampAssetUrl(assetId) {
+  if (_stampAssetUrlCache.has(assetId)) return _stampAssetUrlCache.get(assetId);
+  try {
+    const data = await globalThis.kpdf3?.getAsset?.(assetId);
+    if (!data?.blob) return null;
+    const u8 = data.blob instanceof Uint8Array
+      ? data.blob
+      : new Uint8Array(data.blob.buffer ?? data.blob);
+    const blob = new Blob([u8], { type: data.mime || "image/png" });
+    const url = URL.createObjectURL(blob);
+    _stampAssetUrlCache.set(assetId, url);
+    return url;
+  } catch (err) {
+    console.error("[stamp-image] asset fetch failed", err);
+    return null;
+  }
+}
+
+/** Drop a single asset from the URL cache (e.g. when removed). */
+export function invalidateStampAssetUrl(assetId) {
+  const url = _stampAssetUrlCache.get(assetId);
+  if (url) URL.revokeObjectURL(url);
+  _stampAssetUrlCache.delete(assetId);
+}
+
 /**
  * Paint a user-inserted page into a Uint8ClampedArray suitable for
  * ImageData. Three flavours, picked from the row:
@@ -517,6 +546,29 @@ export class Viewer {
         inner.textContent = props.text ?? "";
         el.appendChild(inner);
       }
+      this._attachOverlayPointer(el, ov);
+      this._attachResizeHandles(el, ov);
+      return el;
+    }
+
+    if (ov.type === "stamp" && ov.properties?.kind === "image" && ov.properties?.assetId) {
+      // Image stamp — render the asset blob via an <img> child. The
+      // browser handles the async decode; the URL is created on demand
+      // and cached so multiple stamps with the same assetId don't
+      // re-fetch.
+      const props = ov.properties;
+      el.classList.add("overlay-stamp", "overlay-stamp-image");
+      const img = document.createElement("img");
+      img.style.width = "100%";
+      img.style.height = "100%";
+      img.style.objectFit = "contain";
+      img.alt = props.label ?? "image stamp";
+      img.draggable = false;
+      img.style.pointerEvents = "none";
+      _stampAssetUrl(props.assetId).then((url) => {
+        if (url) img.src = url;
+      });
+      el.appendChild(img);
       this._attachOverlayPointer(el, ov);
       this._attachResizeHandles(el, ov);
       return el;

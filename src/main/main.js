@@ -608,6 +608,59 @@ ipcMain.handle("kpdf3:remove-bookmark", async (_, { id }) => {
   return { ok: true };
 });
 
+// ---- Assets (image stamps) — ADR-0017 -----------------------------
+
+ipcMain.handle("kpdf3:list-assets", async () => {
+  if (!activeWorkspace) return [];
+  return activeWorkspace.listAssets();
+});
+
+ipcMain.handle("kpdf3:add-asset", async (_, { mime, blob, width, height, label }) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const u8 = blob instanceof Uint8Array ? blob : new Uint8Array(blob);
+  const id = activeWorkspace.addAsset({ mime, blob: u8, width, height, label });
+  return { id };
+});
+
+ipcMain.handle("kpdf3:get-asset", async (_, id) => {
+  if (!activeWorkspace) return null;
+  const r = activeWorkspace.getAsset(id);
+  if (!r) return null;
+  return { ...r, blob: r.blob instanceof Uint8Array ? r.blob : new Uint8Array(r.blob) };
+});
+
+ipcMain.handle("kpdf3:remove-asset", async (_, id) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.removeAsset(id);
+  return { ok: true };
+});
+
+/**
+ * Read a local file (PNG/JPG) and register it as a workspace asset.
+ * Used by the image-stamp registration UI which only knows the file
+ * path. Returns { id, width, height, mime, label }.
+ */
+ipcMain.handle("kpdf3:add-asset-from-file", async (_, { path: filePath, label }) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  if (!filePath) throw new Error("path missing");
+  const buf = readFileSync(filePath);
+  // Sniff mime from extension. Image stamps support PNG / JPEG.
+  const ext = filePath.toLowerCase().split(".").pop();
+  const mime =
+    ext === "png" ? "image/png" :
+    ext === "jpg" || ext === "jpeg" ? "image/jpeg" :
+    "application/octet-stream";
+  // Decode dimensions via the renderer's createImageBitmap path is
+  // expensive to do from main; defer width/height to first render
+  // (renderer can backfill via update-asset-dims if useful).
+  const id = activeWorkspace.addAsset({
+    mime,
+    blob: new Uint8Array(buf),
+    label: label ?? filePath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? null,
+  });
+  return { id, mime };
+});
+
 ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   activeWorkspace.saveOverlays(overlays);

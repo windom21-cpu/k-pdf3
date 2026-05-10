@@ -17,6 +17,33 @@
 import { canonicalPageSize } from "../domain/coord.js";
 import { getTextFontStack } from "./fonts.js";
 
+/**
+ * In-memory cache: assetId → ImageBitmap. The bitmap survives the
+ * Blob it was created from, so it's safe to reuse across multiple
+ * compositePage / drawOverlay calls.
+ */
+const _assetBitmapCache = new Map();
+async function getAssetBitmap(assetId) {
+  if (_assetBitmapCache.has(assetId)) return _assetBitmapCache.get(assetId);
+  const data = await globalThis.kpdf3?.getAsset?.(assetId);
+  if (!data?.blob) return null;
+  const u8 = data.blob instanceof Uint8Array
+    ? data.blob
+    : new Uint8Array(data.blob.buffer ?? data.blob);
+  const blob = new Blob([u8], { type: data.mime || "image/png" });
+  const bitmap = await createImageBitmap(blob);
+  _assetBitmapCache.set(assetId, bitmap);
+  return bitmap;
+}
+
+/** Drop a single asset from the bitmap cache (e.g. when the user
+ *  removes / replaces an asset and we want a fresh fetch next time). */
+export function invalidateAssetBitmap(assetId) {
+  const bm = _assetBitmapCache.get(assetId);
+  if (bm) bm.close?.();
+  _assetBitmapCache.delete(assetId);
+}
+
 export const EXPORT_ZOOM = 2.0;
 
 /**
@@ -49,7 +76,7 @@ export async function composePagesForExport({
     } else {
       result = await renderPage(row.pageNo, { zoom: EXPORT_ZOOM });
     }
-    const canvas = compositePage(row, result, projectStore, EXPORT_ZOOM);
+    const canvas = await compositePage(row, result, projectStore, EXPORT_ZOOM);
     const png = await canvasToPng(canvas);
     const canonical = canonicalPageSize({
       mediaX: 0, mediaY: 0, mediaW: 0, mediaH: 0,
@@ -96,10 +123,10 @@ export async function composeSinglePageCanvas(pageRow, renderPage, projectStore,
   } else {
     result = await renderPage(pageRow.pageNo, { zoom });
   }
-  return compositePage(pageRow, result, projectStore, zoom);
+  return await compositePage(pageRow, result, projectStore, zoom);
 }
 
-export function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOOM) {
+export async function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOOM) {
   // mupdf returns the PDF at intrinsic /Rotate dims only — userRotation
   // is applied here so thumbs / export both match the rotated viewer.
   const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
@@ -149,7 +176,7 @@ export function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOO
   // lands them where the user expects.
   const overlays = projectStore.getPageOverlays(row.pageNo);
   for (const ov of overlays) {
-    drawOverlay(ctx, ov, zoom);
+    await drawOverlay(ctx, ov, zoom);
   }
 
   return canvas;
@@ -165,7 +192,7 @@ export function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOO
  * @param {import("../domain/project-store.js").Overlay} ov
  * @param {number} zoom    canonical → pixel scale
  */
-function drawOverlay(ctx, ov, zoom) {
+async function drawOverlay(ctx, ov, zoom) {
   const x = ov.x * zoom;
   const y = ov.y * zoom;
   const w = ov.w * zoom;
@@ -200,6 +227,20 @@ function drawOverlay(ctx, ov, zoom) {
         ctx.fillText(lines[i], -naturalW / 2, -naturalH / 2 + i * lineHeight);
       }
       ctx.restore();
+    }
+    return;
+  }
+
+  if (ov.type === "stamp" && props.kind === "image" && props.assetId) {
+    // Image stamp — fetch the asset blob and drawImage. Cached so
+    // multiple stamps using the same asset don't re-fetch.
+    try {
+      const bitmap = await getAssetBitmap(props.assetId);
+      if (bitmap) {
+        ctx.drawImage(bitmap, x, y, w, h);
+      }
+    } catch (err) {
+      console.error("[export] image stamp draw failed", err);
     }
     return;
   }
