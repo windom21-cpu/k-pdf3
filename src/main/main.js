@@ -1007,6 +1007,81 @@ ipcMain.handle("kpdf3:remove-inserted-page", async (_, syntheticPageNo) => {
   return { ok: true };
 });
 
+/**
+ * Import every page of an external PDF file as image-backed inserted
+ * pages, anchored at `afterPageNo`. Each page is rasterised at 144 dpi
+ * (zoom 2.0) and stored as a PNG in inserted_pages.image_blob. Returns
+ * the new synthetic pageNos so the renderer can scroll to the first
+ * inserted page if it wants. (§17.3 MVP: rasterize → synthetic.)
+ */
+ipcMain.handle(
+  "kpdf3:add-inserted-pdf-pages",
+  async (_, { afterPageNo, externalPath }) => {
+    if (!activeWorkspace) throw new Error("No active workspace");
+    if (!externalPath) throw new Error("externalPath missing");
+    const buf = readFileSync(externalPath);
+    const doc = mupdf.Document.openDocument(
+      new Uint8Array(buf),
+      "application/pdf",
+    );
+    const synthetic = [];
+    try {
+      const count = doc.countPages();
+      for (let i = 0; i < count; i++) {
+        const page = doc.loadPage(i);
+        try {
+          const bounds = page.getBounds();
+          const pdfW = bounds[2] - bounds[0];
+          const pdfH = bounds[3] - bounds[1];
+          const ZOOM = 2.0; // 144 dpi
+          const matrix = mupdf.Matrix.scale(ZOOM, ZOOM);
+          const pixmap = page.toPixmap(
+            matrix,
+            mupdf.ColorSpace.DeviceRGB,
+            false,
+            false,
+          );
+          let imgW, imgH, pngBytes;
+          try {
+            imgW = pixmap.getWidth();
+            imgH = pixmap.getHeight();
+            pngBytes = pixmap.asPNG();
+          } finally {
+            pixmap.destroy?.();
+          }
+          const syntheticPageNo = activeWorkspace.addInsertedImagePage({
+            afterPageNo,
+            imageBlob: Buffer.from(pngBytes),
+            imageW: imgW,
+            imageH: imgH,
+            width: pdfW,
+            height: pdfH,
+          });
+          synthetic.push(syntheticPageNo);
+        } finally {
+          page.destroy?.();
+        }
+      }
+    } finally {
+      doc.destroy?.();
+    }
+    reopenActiveDoc();
+    return { syntheticPageNos: synthetic };
+  },
+);
+
+ipcMain.handle("kpdf3:get-inserted-page-image", async (_, id) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const row = activeWorkspace.getInsertedPageImage(id);
+  if (!row) return null;
+  // imageBlob comes back as a Buffer from better-sqlite3; convert to
+  // a Uint8Array so the IPC serializer doesn't lose typing.
+  const u8 = row.imageBlob instanceof Uint8Array
+    ? row.imageBlob
+    : new Uint8Array(row.imageBlob);
+  return { imageBlob: u8, imageW: row.imageW, imageH: row.imageH };
+});
+
 ipcMain.handle("kpdf3:get-app-info", async () => {
   return {
     appVersion: app.getVersion(),

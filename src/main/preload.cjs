@@ -53,5 +53,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   setPageDeleted:     (n, d)    => ipcRenderer.invoke("kpdf3:set-page-deleted", n, d),
   setPageRotation:    (n, r)    => ipcRenderer.invoke("kpdf3:set-page-rotation", n, r),
   addInsertedPage:    (opts)    => ipcRenderer.invoke("kpdf3:add-inserted-page", opts),
+  addInsertedPdfPages:(opts)    => ipcRenderer.invoke("kpdf3:add-inserted-pdf-pages", opts),
+  getInsertedPageImage:(id)     => ipcRenderer.invoke("kpdf3:get-inserted-page-image", id),
   removeInsertedPage: (n)       => ipcRenderer.invoke("kpdf3:remove-inserted-page", n),
 });

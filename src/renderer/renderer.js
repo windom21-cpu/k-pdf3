@@ -1903,7 +1903,7 @@ async function generateAllThumbnails(pages, onProgress) {
     try {
       let result;
       if (row.isSynthetic || pageNo < 0) {
-        result = renderSyntheticPagePixels(row, 0.25);
+        result = await renderSyntheticPagePixels(row, 0.25);
       } else {
         result = await kpdf3.renderPage(pageNo, { zoom: 0.25 });
       }
@@ -2942,12 +2942,53 @@ function rebuildThumbs(pages) {
   refreshThumbSelectionVisuals();
 }
 
+/** Wire drop-on-gap so dragging a PDF onto an insert gap inserts that
+ *  PDF's pages here. stopPropagation prevents the global drop handler
+ *  (which opens a fresh PDF) from firing too. */
+function attachInsertGapDrop(gap, afterPageNo) {
+  gap.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer) return;
+    if ([...e.dataTransfer.types].includes("Files")) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+      gap.classList.add("drop-target");
+    }
+  });
+  gap.addEventListener("dragleave", () => gap.classList.remove("drop-target"));
+  gap.addEventListener("drop", async (e) => {
+    gap.classList.remove("drop-target");
+    if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const file = e.dataTransfer.files[0];
+    const path = kpdf3.getPathForFile?.(file) || file.path || "";
+    if (!path || !/\.pdf$/i.test(path)) {
+      wsStatus.textContent = "PDF ファイルをドロップしてください";
+      return;
+    }
+    showBusy("挿入", "外部 PDF を取り込み中...", 0);
+    try {
+      const r = await kpdf3.addInsertedPdfPages({ afterPageNo, externalPath: path });
+      hideBusy();
+      markWorkspaceMutated();
+      await refreshViewer();
+      const n = r?.syntheticPageNos?.length ?? 0;
+      wsStatus.textContent = `${n} ページを挿入しました`;
+    } catch (err) {
+      hideBusy();
+      console.error("[insert-pdf] failed", err);
+      wsStatus.textContent = `挿入失敗: ${err.message ?? err}`;
+    }
+  });
+}
+
 function makeInsertGap(afterPageNo) {
   const gap = document.createElement("div");
   gap.className = "thumb-insert-gap";
   gap.tabIndex = 0;
-  gap.title = `ここに白紙ページを挿入 (afterPageNo=${afterPageNo})`;
-  gap.textContent = "＋ 白紙を挿入";
+  gap.title = `クリック=白紙挿入 / PDF をドロップ=外部 PDF 挿入 (afterPageNo=${afterPageNo})`;
+  gap.textContent = "＋ 白紙 / PDF をドロップ";
   gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo));
   gap.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
@@ -2955,6 +2996,7 @@ function makeInsertGap(afterPageNo) {
       promptAndInsertBlank(afterPageNo);
     }
   });
+  attachInsertGapDrop(gap, afterPageNo);
   return gap;
 }
 
@@ -2962,7 +3004,7 @@ function makeSplitInsertGap(afterPageNo) {
   const gap = document.createElement("div");
   gap.className = "thumb-insert-gap thumb-insert-gap-vertical";
   gap.tabIndex = 0;
-  gap.title = `ここに白紙ページを挿入 (afterPageNo=${afterPageNo})`;
+  gap.title = `クリック=白紙挿入 / PDF をドロップ=外部 PDF 挿入 (afterPageNo=${afterPageNo})`;
   gap.textContent = "＋";
   gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo));
   gap.addEventListener("keydown", (e) => {
@@ -2971,6 +3013,7 @@ function makeSplitInsertGap(afterPageNo) {
       promptAndInsertBlank(afterPageNo);
     }
   });
+  attachInsertGapDrop(gap, afterPageNo);
   return gap;
 }
 
@@ -3223,7 +3266,7 @@ async function renderThumb(pageNo, itemEl) {
     if (!row) return;
     let result;
     if (pageNo < 0) {
-      result = renderSyntheticPagePixels(row, THUMB_ZOOM);
+      result = await renderSyntheticPagePixels(row, THUMB_ZOOM);
     } else {
       result = await kpdf3.renderPage(pageNo, { zoom: THUMB_ZOOM });
     }

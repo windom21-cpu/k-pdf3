@@ -24,7 +24,9 @@ import {
   setInsertedPageUserRotation,
   listInsertedPages,
   addInsertedPage,
+  addInsertedImagePage,
   removeInsertedPage,
+  getInsertedPageImage,
   listBookmarks,
   addBookmark,
   renameBookmark,
@@ -155,6 +157,9 @@ export class Workspace {
           isSynthetic: true,
           syntheticId: r.id,
           syntheticText: r.text ?? "",
+          syntheticHasImage: r.hasImage === 1,
+          syntheticImageW: r.imageW ?? null,
+          syntheticImageH: r.imageH ?? null,
           cropW: r.width,
           cropH: r.height,
           mediaW: r.width,
@@ -197,6 +202,22 @@ export class Workspace {
   addInsertedPage({ afterPageNo, text = null, width = 595, height = 842 }) {
     const id = addInsertedPage(this.db, { afterPageNo, text, width, height });
     return -id;
+  }
+
+  /** Add an image-backed inserted page (e.g. external PDF page rasterised
+   *  to PNG). Returns the synthetic pageNo (negative). */
+  addInsertedImagePage({ afterPageNo, imageBlob, imageW, imageH, width, height }) {
+    const id = addInsertedImagePage(this.db, {
+      afterPageNo, imageBlob, imageW, imageH, width, height,
+    });
+    return -id;
+  }
+
+  /** Read the raw image bytes for an inserted-image page (lookup by
+   *  positive id; the renderer translates synthetic pageNo → id by
+   *  negating). */
+  getInsertedPageImage(id) {
+    return getInsertedPageImage(this.db, id);
   }
 
   /** Remove an inserted page by its synthetic pageNo (negative). */

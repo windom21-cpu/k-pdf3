@@ -1313,6 +1313,12 @@ button.toggled {
   border-bottom-color: #000080;
   background: #d8e0ff;
 }
+.thumb-insert-gap.drop-target {
+  opacity: 1;
+  border-top: 2px solid #008800;
+  border-bottom: 2px solid #008800;
+  background: #d4f4d4;
+}
 
 /* Split-save row uses horizontal flex; override to be a vertical bar */
 .thumb-insert-gap-vertical {

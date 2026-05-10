@@ -20,15 +20,22 @@ import { PageRegistry, visiblePageRange } from "../domain/page-registry.js";
 import { getTextFontStack } from "./fonts.js";
 
 /**
- * Paint a user-inserted blank/text page into a Uint8ClampedArray suitable
- * for ImageData. The page is white; if `syntheticText` is non-empty we
- * draw it at 72pt (× zoom) starting at a 50pt margin.
+ * Paint a user-inserted page into a Uint8ClampedArray suitable for
+ * ImageData. Three flavours, picked from the row:
+ *   1. image-backed (imported external PDF page) — blob fetched via
+ *      kpdf3.getInsertedPageImage(id) and drawn at the requested zoom.
+ *   2. text-bearing — white background + 72pt user text starting at
+ *      a 50pt margin.
+ *   3. plain blank — white only.
  *
- * @param {{pageNo:number, cropW:number, cropH:number, syntheticText?:string}} row
+ * Async because the image path needs an IPC round-trip + createImageBitmap.
+ *
+ * @param {{pageNo:number, cropW:number, cropH:number, syntheticText?:string,
+ *          syntheticHasImage?:boolean, syntheticId?:number}} row
  * @param {number} zoom
- * @returns {{width:number,height:number,channels:4,pixels:Uint8ClampedArray}}
+ * @returns {Promise<{width:number,height:number,channels:4,pixels:Uint8ClampedArray}>}
  */
-export function renderSyntheticPagePixels(row, zoom) {
+export async function renderSyntheticPagePixels(row, zoom) {
   const w = Math.max(1, Math.round((row.cropW || 595) * zoom));
   const h = Math.max(1, Math.round((row.cropH || 842) * zoom));
   const canvas = document.createElement("canvas");
@@ -37,20 +44,40 @@ export function renderSyntheticPagePixels(row, zoom) {
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, w, h);
-  const text = (row.syntheticText ?? "").trim();
-  if (text) {
-    ctx.fillStyle = "#000000";
-    const fontPx = 72 * zoom;
-    ctx.font = `${fontPx}px "MS UI Gothic", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", serif`;
-    ctx.textBaseline = "top";
-    const margin = 50 * zoom;
-    let y = margin;
-    for (const line of text.split(/\r?\n/)) {
-      ctx.fillText(line, margin, y);
-      y += fontPx * 1.2;
-      if (y > h - fontPx) break;
+
+  if (row.syntheticHasImage && row.syntheticId && globalThis.kpdf3?.getInsertedPageImage) {
+    try {
+      const data = await globalThis.kpdf3.getInsertedPageImage(row.syntheticId);
+      if (data?.imageBlob) {
+        const u8 =
+          data.imageBlob instanceof Uint8Array
+            ? data.imageBlob
+            : new Uint8Array(data.imageBlob.buffer ?? data.imageBlob);
+        const blob = new Blob([u8], { type: "image/png" });
+        const bitmap = await createImageBitmap(blob);
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        bitmap.close?.();
+      }
+    } catch (err) {
+      console.error("[synthetic] image fetch/draw failed", err);
+    }
+  } else {
+    const text = (row.syntheticText ?? "").trim();
+    if (text) {
+      ctx.fillStyle = "#000000";
+      const fontPx = 72 * zoom;
+      ctx.font = `${fontPx}px "MS UI Gothic", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", serif`;
+      ctx.textBaseline = "top";
+      const margin = 50 * zoom;
+      let y = margin;
+      for (const line of text.split(/\r?\n/)) {
+        ctx.fillText(line, margin, y);
+        y += fontPx * 1.2;
+        if (y > h - fontPx) break;
+      }
     }
   }
+
   const imgData = ctx.getImageData(0, 0, w, h);
   return {
     width: w,
@@ -1027,12 +1054,12 @@ export class Viewer {
       const renderZoom = this._zoom * computeOversample(this._renderQuality);
       let result;
       if (pageNo < 0) {
-        // Synthetic page (user-inserted blank/text) — render on the
-        // renderer side via canvas. Look up text/dimensions from the
-        // page row stashed in this._pages.
+        // Synthetic page (user-inserted blank/text or imported image)
+        // — render on the renderer side via canvas. Look up the row
+        // from this._pages so we know which flavour to paint.
         const row = this._pages?.find((p) => p.pageNo === pageNo);
         if (!row) return;
-        result = renderSyntheticPagePixels(row, renderZoom);
+        result = await renderSyntheticPagePixels(row, renderZoom);
       } else {
         result = await window.kpdf3.renderPage(pageNo, { zoom: renderZoom });
       }

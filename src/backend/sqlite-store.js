@@ -181,6 +181,11 @@ function migrateInsertedPagesTable(db) {
       "ALTER TABLE inserted_pages ADD COLUMN user_rotation INTEGER NOT NULL DEFAULT 0 CHECK(user_rotation IN (0, 90, 180, 270))",
     );
   }
+  if (!cols.some((c) => c.name === "image_blob")) {
+    db.exec("ALTER TABLE inserted_pages ADD COLUMN image_blob BLOB");
+    db.exec("ALTER TABLE inserted_pages ADD COLUMN image_w INTEGER");
+    db.exec("ALTER TABLE inserted_pages ADD COLUMN image_h INTEGER");
+  }
 }
 
 /**
@@ -345,16 +350,60 @@ export function getAllPages(db) {
 // ---- Inserted pages (white-with-text pages user adds between source pages) ---
 
 export function listInsertedPages(db) {
+  // hasImage as 0/1 flag — keeps the (potentially large) image_blob
+  // out of the per-page list query. Renderer fetches the bytes via
+  // getInsertedPageImage when it actually needs to paint the page.
   return db
     .prepare(
       `SELECT id, after_page_no AS afterPageNo, order_in_slot AS orderInSlot,
               text, width, height,
               user_rotation AS userRotation,
+              CASE WHEN image_blob IS NULL THEN 0 ELSE 1 END AS hasImage,
+              image_w AS imageW, image_h AS imageH,
               created_at AS createdAt
        FROM inserted_pages
        ORDER BY after_page_no, order_in_slot, id`,
     )
     .all();
+}
+
+/** Insert a new pre-rasterised image page (external PDF import). */
+export function addInsertedImagePage(db, {
+  afterPageNo,
+  imageBlob,
+  imageW,
+  imageH,
+  width,
+  height,
+}) {
+  const orderRow = db
+    .prepare(
+      `SELECT COALESCE(MAX(order_in_slot), -1) + 1 AS nextOrder
+       FROM inserted_pages WHERE after_page_no = ?`,
+    )
+    .get(afterPageNo);
+  const nextOrder = orderRow?.nextOrder ?? 0;
+  const info = db
+    .prepare(
+      `INSERT INTO inserted_pages
+         (after_page_no, order_in_slot, text, width, height,
+          image_blob, image_w, image_h)
+       VALUES (?, ?, NULL, ?, ?, ?, ?, ?)`,
+    )
+    .run(afterPageNo, nextOrder, width, height, imageBlob, imageW, imageH);
+  return Number(info.lastInsertRowid);
+}
+
+/** Read the raw PNG bytes (and dims) of an inserted-image page. */
+export function getInsertedPageImage(db, id) {
+  const row = db
+    .prepare(
+      `SELECT image_blob AS imageBlob, image_w AS imageW, image_h AS imageH
+       FROM inserted_pages WHERE id = ?`,
+    )
+    .get(id);
+  if (!row || !row.imageBlob) return null;
+  return row;
 }
 
 /**

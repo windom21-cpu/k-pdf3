@@ -45,7 +45,7 @@ export async function composePagesForExport({
       if (typeof renderSyntheticPage !== "function") {
         throw new Error("composePagesForExport: synthetic page encountered but no renderSyntheticPage provided");
       }
-      result = renderSyntheticPage(row, EXPORT_ZOOM);
+      result = await renderSyntheticPage(row, EXPORT_ZOOM);
     } else {
       result = await renderPage(row.pageNo, { zoom: EXPORT_ZOOM });
     }
@@ -92,7 +92,7 @@ export async function composeSinglePageCanvas(pageRow, renderPage, projectStore,
     if (typeof renderSyntheticPage !== "function") {
       throw new Error("composeSinglePageCanvas: synthetic page needs renderSyntheticPage");
     }
-    result = renderSyntheticPage(pageRow, zoom);
+    result = await renderSyntheticPage(pageRow, zoom);
   } else {
     result = await renderPage(pageRow.pageNo, { zoom });
   }

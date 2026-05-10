@@ -68,6 +68,12 @@ CREATE TABLE inserted_pages (
     width           REAL NOT NULL DEFAULT 595,   -- A4 portrait, points
     height          REAL NOT NULL DEFAULT 842,
     user_rotation   INTEGER NOT NULL DEFAULT 0 CHECK(user_rotation IN (0, 90, 180, 270)),
+    -- image_blob は外部 PDF 取り込みの場合に PNG バイト列を保持。NULL の
+    -- 行は純粋な白紙 / テキスト挿入。image_w/h は PNG のピクセル寸法
+    -- (width/height は PDF point 単位の表示寸法なので別管理)。
+    image_blob      BLOB,
+    image_w         INTEGER,
+    image_h         INTEGER,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_inserted_pages_slot ON inserted_pages(after_page_no, order_in_slot);
