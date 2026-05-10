@@ -62,8 +62,31 @@ export function openWorkspace(filePath, opts = {}) {
     migrateInsertedPagesTable(db);
     migrateOverlaysDropPageFk(db);
     migrateBookmarksDropPageFk(db);
+    migrateStampPresetsTable(db);
   }
   return { db, isNew };
+}
+
+/** Add the `stamp_presets` table (ADR-0019 MVP). Idempotent. */
+function migrateStampPresetsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS stamp_presets (
+      id          TEXT PRIMARY KEY,
+      kind        TEXT NOT NULL CHECK (kind IN ('date', 'text', 'image')),
+      label       TEXT NOT NULL,
+      color       TEXT NOT NULL DEFAULT '#cc0000',
+      frame       TEXT NOT NULL DEFAULT 'rect' CHECK (frame IN ('circle', 'rect', 'none')),
+      font_size   INTEGER NOT NULL DEFAULT 13,
+      text        TEXT,
+      asset_id    TEXT REFERENCES assets(id) ON DELETE SET NULL,
+      width       INTEGER NOT NULL DEFAULT 80,
+      height      INTEGER NOT NULL DEFAULT 80,
+      sort_order  INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_stamp_presets_kind
+      ON stamp_presets(kind, sort_order);
+  `);
 }
 
 /**
@@ -537,6 +560,44 @@ export function getAsset(db, id) {
 
 export function removeAsset(db, id) {
   db.prepare("DELETE FROM assets WHERE id = ?").run(id);
+}
+
+// ---- Stamp presets (ADR-0019 MVP) --------------------------------------
+
+export function listStampPresets(db) {
+  return db
+    .prepare(
+      `SELECT id, kind, label, color, frame, font_size AS fontSize,
+              text, asset_id AS assetId, width, height,
+              sort_order AS sortOrder, created_at AS createdAt
+       FROM stamp_presets
+       ORDER BY sort_order, created_at, rowid`,
+    )
+    .all();
+}
+
+export function addStampPreset(db, p) {
+  const id = p.id ??
+    globalThis.crypto?.randomUUID?.() ??
+    `sp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const next = db
+    .prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM stamp_presets")
+    .get();
+  const sortOrder = next?.n ?? 0;
+  db.prepare(
+    `INSERT INTO stamp_presets
+       (id, kind, label, color, frame, font_size, text, asset_id, width, height, sort_order)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id, p.kind, p.label, p.color ?? "#cc0000", p.frame ?? "rect",
+    p.fontSize ?? 13, p.text ?? null, p.assetId ?? null,
+    p.width ?? 80, p.height ?? 80, sortOrder,
+  );
+  return id;
+}
+
+export function removeStampPreset(db, id) {
+  db.prepare("DELETE FROM stamp_presets WHERE id = ?").run(id);
 }
 
 // ---- Bookmarks (workspace-side editable, ADR-0014 candidate) ------------

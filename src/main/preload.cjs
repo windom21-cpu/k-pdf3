@@ -37,6 +37,9 @@ contextBridge.exposeInMainWorld("kpdf3", {
   addAssetFromFile:   (opts)    => ipcRenderer.invoke("kpdf3:add-asset-from-file", opts),
   getAsset:           (id)      => ipcRenderer.invoke("kpdf3:get-asset", id),
   removeAsset:        (id)      => ipcRenderer.invoke("kpdf3:remove-asset", id),
+  listStampPresets:   ()        => ipcRenderer.invoke("kpdf3:list-stamp-presets"),
+  addStampPreset:     (p)       => ipcRenderer.invoke("kpdf3:add-stamp-preset", p),
+  removeStampPreset:  (id)      => ipcRenderer.invoke("kpdf3:remove-stamp-preset", id),
   listRecentPdfs:     ()        => ipcRenderer.invoke("kpdf3:list-recent-pdfs"),
   getAppInfo:         ()        => ipcRenderer.invoke("kpdf3:get-app-info"),
   // viewer rendering

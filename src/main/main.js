@@ -635,6 +635,25 @@ ipcMain.handle("kpdf3:remove-asset", async (_, id) => {
   return { ok: true };
 });
 
+// ---- Stamp presets (ADR-0019 MVP) ---------------------------------
+
+ipcMain.handle("kpdf3:list-stamp-presets", async () => {
+  if (!activeWorkspace) return [];
+  return activeWorkspace.listStampPresets();
+});
+
+ipcMain.handle("kpdf3:add-stamp-preset", async (_, preset) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const id = activeWorkspace.addStampPreset(preset ?? {});
+  return { id };
+});
+
+ipcMain.handle("kpdf3:remove-stamp-preset", async (_, id) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  activeWorkspace.removeStampPreset(id);
+  return { ok: true };
+});
+
 /**
  * Read a local file (PNG/JPG) and register it as a workspace asset.
  * Used by the image-stamp registration UI which only knows the file

@@ -150,6 +150,142 @@
     </div>
   </div>
 
+  <!-- スタンプ管理 dialog (top-level) -->
+  <div class="busy-modal" id="stamp-manager-dialog" hidden>
+    <div class="window stamp-mgr-window">
+      <div class="title-bar"><div class="title-bar-text">スタンプ管理</div></div>
+      <div class="window-body">
+        <p style="margin:4px 0 8px">新しいスタンプを登録します。種類を選んでください:</p>
+        <div class="stamp-mgr-actions">
+          <button id="stamp-mgr-date">日付スタンプ…</button>
+          <button id="stamp-mgr-text">テキストスタンプ…</button>
+          <button id="stamp-mgr-image">画像スタンプ…</button>
+          <button id="stamp-mgr-font" disabled title="M6 後半で対応予定">フォント設定…</button>
+        </div>
+        <hr style="margin:12px 0 6px">
+        <div style="font-weight:bold">登録済みのスタンプ:</div>
+        <ul id="stamp-mgr-list" class="stamp-mgr-list"></ul>
+        <div class="dialog-buttons">
+          <button id="stamp-mgr-close" class="default">閉じる</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 日付スタンプ登録 -->
+  <div class="busy-modal" id="stamp-register-date" hidden>
+    <div class="window stamp-reg-window">
+      <div class="title-bar"><div class="title-bar-text">日付スタンプの登録</div></div>
+      <div class="window-body">
+        <fieldset class="stamp-reg-fieldset">
+          <legend>形式</legend>
+          <label><input type="radio" name="stamp-date-format" value="date-numeric-dash" checked> -8.-5.-9</label>
+          <label><input type="radio" name="stamp-date-format" value="date-numeric-fw"> -8．-5．-9 (ピリオド全角)</label>
+          <label><input type="radio" name="stamp-date-format" value="date-kanji-dash"> 令和-8年-5月-9日</label>
+        </fieldset>
+        <div class="stamp-reg-row">
+          <label>色:
+            <select id="stamp-reg-date-color">
+              <option value="#cc0000">朱</option>
+              <option value="#000000">黒</option>
+              <option value="#1f4ea1">青</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="stamp-reg-date-frame" checked> 枠あり</label>
+        </div>
+        <div class="stamp-reg-row">
+          <label>名前:
+            <input type="text" id="stamp-reg-date-label" maxlength="30" placeholder="（未入力なら形式名）">
+          </label>
+        </div>
+        <div class="stamp-reg-preview-row">
+          <span>プレビュー:</span>
+          <canvas id="stamp-reg-date-preview" width="180" height="60"></canvas>
+        </div>
+        <div class="dialog-buttons">
+          <button id="stamp-reg-date-ok" class="default">登録</button>
+          <button id="stamp-reg-date-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- テキストスタンプ登録 -->
+  <div class="busy-modal" id="stamp-register-text" hidden>
+    <div class="window stamp-reg-window">
+      <div class="title-bar"><div class="title-bar-text">テキストスタンプの登録</div></div>
+      <div class="window-body">
+        <div class="stamp-reg-row">
+          <label>テキスト: <input type="text" id="stamp-reg-text-text" maxlength="40" placeholder="例: 写 / 副本 / 秘"></label>
+        </div>
+        <div class="stamp-reg-row">
+          <label>サイズ (pt):
+            <input type="number" id="stamp-reg-text-fontsize" value="14" min="6" max="72" style="width:60px">
+          </label>
+          <label>色:
+            <select id="stamp-reg-text-color">
+              <option value="#cc0000">朱</option>
+              <option value="#000000">黒</option>
+              <option value="#1f4ea1">青</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="stamp-reg-text-frame" checked> 枠あり</label>
+        </div>
+        <div class="stamp-reg-row">
+          <label>名前:
+            <input type="text" id="stamp-reg-text-label" maxlength="30" placeholder="（未入力ならテキスト）">
+          </label>
+        </div>
+        <div class="stamp-reg-preview-row">
+          <span>プレビュー:</span>
+          <canvas id="stamp-reg-text-preview" width="180" height="60"></canvas>
+        </div>
+        <div class="dialog-buttons">
+          <button id="stamp-reg-text-ok" class="default">登録</button>
+          <button id="stamp-reg-text-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 画像スタンプ登録 -->
+  <div class="busy-modal" id="stamp-register-image" hidden>
+    <div class="window stamp-reg-window">
+      <div class="title-bar"><div class="title-bar-text">画像スタンプの登録</div></div>
+      <div class="window-body">
+        <div class="stamp-reg-row">
+          <button id="stamp-reg-image-pick">画像を選択…</button>
+          <span id="stamp-reg-image-name" style="margin-left:8px;color:#555">(未選択)</span>
+        </div>
+        <div class="stamp-reg-row">
+          <label>幅 (pt):
+            <input type="number" id="stamp-reg-image-w" value="80" min="10" max="400" style="width:60px">
+          </label>
+          <label>高さ (pt):
+            <input type="number" id="stamp-reg-image-h" value="80" min="10" max="400" style="width:60px" disabled>
+          </label>
+          <span style="color:#555;font-size:11px">(縦横比固定)</span>
+        </div>
+        <div class="stamp-reg-row">
+          <label><input type="checkbox" id="stamp-reg-image-frame"> 枠あり</label>
+        </div>
+        <div class="stamp-reg-row">
+          <label>名前:
+            <input type="text" id="stamp-reg-image-label" maxlength="30" placeholder="（未入力ならファイル名）">
+          </label>
+        </div>
+        <div class="stamp-reg-preview-row">
+          <span>プレビュー:</span>
+          <canvas id="stamp-reg-image-preview" width="180" height="120"></canvas>
+        </div>
+        <div class="dialog-buttons">
+          <button id="stamp-reg-image-ok" class="default" disabled>登録</button>
+          <button id="stamp-reg-image-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Confirm dialog (98-style replacement for window.confirm) -->
   <div class="busy-modal" id="confirm-dialog" hidden>
     <div class="window range-window">

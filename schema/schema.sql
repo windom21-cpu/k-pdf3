@@ -139,6 +139,30 @@ CREATE TABLE assets (
 -- ===================================================================
 -- bookmarks: しおり（PDF /Outlines として export 可能）
 -- ===================================================================
+-- ===================================================================
+-- stamp_presets: ユーザー登録のスタンプテンプレート（ADR-0019 MVP）
+-- 日付 / テキスト / 画像の 3 種類。登録時に色・枠・サイズ等を確定し
+-- toolbar の stamp template select から呼び出して配置する。
+-- ===================================================================
+CREATE TABLE stamp_presets (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL CHECK (kind IN ('date', 'text', 'image')),
+    label       TEXT NOT NULL,                  -- ユーザー視点の名前
+    color       TEXT NOT NULL DEFAULT '#cc0000',
+    frame       TEXT NOT NULL DEFAULT 'rect' CHECK (frame IN ('circle', 'rect', 'none')),
+    font_size   INTEGER NOT NULL DEFAULT 13,
+    -- date kind: 形式キー (date-numeric-dash / date-numeric-fw / date-kanji-dash)
+    -- text kind: リテラル文字列
+    -- image kind: NULL
+    text        TEXT,
+    asset_id    TEXT REFERENCES assets(id) ON DELETE SET NULL,
+    width       INTEGER NOT NULL DEFAULT 80,
+    height      INTEGER NOT NULL DEFAULT 80,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_stamp_presets_kind ON stamp_presets(kind, sort_order);
+
 CREATE TABLE bookmarks (
     id          TEXT PRIMARY KEY,                     -- UUID v4
     parent_id   TEXT REFERENCES bookmarks(id) ON DELETE CASCADE,

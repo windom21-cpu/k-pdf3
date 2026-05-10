@@ -523,6 +523,26 @@ function placeText(pageNo, x, y) {
 function currentStampPreset() {
   const tmpl = stampTemplateSel?.value || "default";
   const color = stampColorSel?.value || "#cc0000";
+  // User-registered preset (ADR-0019) — full properties pulled from
+  // the cache; date kind renders today's date at placement time.
+  if (tmpl.startsWith("preset:")) {
+    const id = tmpl.slice(7);
+    const p = _stampPresetCache.get(id);
+    if (p) {
+      const base = {
+        w: p.width,
+        h: p.height,
+        frame: p.frame,
+        fontSize: p.fontSize,
+        color: p.color,
+        label: p.label,
+      };
+      if (p.kind === "date") return { ...base, text: renderDateText(p.text) };
+      if (p.kind === "text") return { ...base, text: p.text ?? "" };
+      if (p.kind === "image") return { ...base, kind: "image", assetId: p.assetId, text: "" };
+    }
+    // Unknown preset id — fall through to default.
+  }
   if (tmpl.startsWith("img:")) {
     const assetId = tmpl.slice(4);
     const meta = _imageAssetCache.get(assetId);
@@ -888,6 +908,398 @@ function refreshModeOptionsBar() {
     opt.hidden = opt.dataset.mode !== which;
   }
 }
+
+// ==========================================================================
+// Stamp manager + 3 register dialogs (ADR-0019 MVP) ------------------------
+// ==========================================================================
+
+/** Cached list of user-registered stamp presets (ADR-0019). Refreshed
+ *  whenever the workspace opens or a preset is added / removed. The
+ *  toolbar's stamp template select pulls from this for "preset:<id>"
+ *  options. */
+const _stampPresetCache = new Map(); // id → preset row
+
+async function refreshStampPresetCacheAndSelect() {
+  if (!stampTemplateSel) return;
+  let list = [];
+  try {
+    if (isOpen) list = (await kpdf3.listStampPresets()) ?? [];
+  } catch (err) {
+    console.error("[stamp-presets] list failed", err);
+  }
+  _stampPresetCache.clear();
+  for (const p of list) _stampPresetCache.set(p.id, p);
+  // Strip any prior preset options.
+  for (const opt of [...stampTemplateSel.querySelectorAll('option[data-preset="1"]')]) {
+    opt.remove();
+  }
+  for (const p of list) {
+    const opt = document.createElement("option");
+    opt.value = `preset:${p.id}`;
+    opt.dataset.preset = "1";
+    const kindLabel = p.kind === "date" ? "日付" : p.kind === "text" ? "文字" : "画像";
+    opt.textContent = `${kindLabel}: ${p.label}`;
+    stampTemplateSel.appendChild(opt);
+  }
+}
+
+/** Format a date according to the spec key — same logic as the
+ *  current built-in date templates so the registered preset
+ *  produces the same text at placement time. */
+function renderDateText(formatKey) {
+  const d = new Date();
+  const reiwa = d.getFullYear() - 2018;
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  if (formatKey === "date-numeric-fw") return `-${reiwa}．-${m}．-${day}`;
+  if (formatKey === "date-kanji-dash") return `令和-${reiwa}年-${m}月-${day}日`;
+  return `-${reiwa}.-${m}.-${day}`; // default = numeric-dash
+}
+
+// ---- Stamp manager dialog ---------------------------------------------
+
+const stampMgrDialog = $("stamp-manager-dialog");
+const stampMgrList = $("stamp-mgr-list");
+function openStampManagerDialog() {
+  if (!isOpen) return;
+  populateStampMgrList();
+  stampMgrDialog.hidden = false;
+}
+function closeStampManagerDialog() { stampMgrDialog.hidden = true; }
+$("stamp-mgr-close")?.addEventListener("click", closeStampManagerDialog);
+stampMgrDialog?.addEventListener("click", (e) => {
+  if (e.target === stampMgrDialog) closeStampManagerDialog();
+});
+$("stamp-mgr-date")?.addEventListener("click", () => openStampRegisterDate());
+$("stamp-mgr-text")?.addEventListener("click", () => openStampRegisterText());
+$("stamp-mgr-image")?.addEventListener("click", () => openStampRegisterImage());
+
+async function populateStampMgrList() {
+  stampMgrList.innerHTML = "";
+  await refreshStampPresetCacheAndSelect();
+  if (_stampPresetCache.size === 0) {
+    const li = document.createElement("li");
+    li.className = "stamp-mgr-list-empty";
+    li.textContent = "(まだ登録されていません)";
+    stampMgrList.appendChild(li);
+    return;
+  }
+  for (const p of _stampPresetCache.values()) {
+    const li = document.createElement("li");
+    const lab = document.createElement("span");
+    lab.className = "stamp-mgr-label";
+    const kindLabel = p.kind === "date" ? "日付" : p.kind === "text" ? "文字" : "画像";
+    lab.textContent = `${kindLabel}: ${p.label}`;
+    li.appendChild(lab);
+    const useBtn = document.createElement("button");
+    useBtn.textContent = "使う";
+    useBtn.addEventListener("click", () => {
+      if (stampTemplateSel) stampTemplateSel.value = `preset:${p.id}`;
+      setPlacementMode("stamp");
+      updateStampGhostPreset();
+      closeStampManagerDialog();
+    });
+    li.appendChild(useBtn);
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "削除";
+    delBtn.addEventListener("click", async () => {
+      const ok = await customConfirm({
+        title: "スタンプ削除",
+        message: `「${p.label}」を削除しますか？`,
+        okLabel: "削除",
+      });
+      if (!ok) return;
+      await kpdf3.removeStampPreset(p.id);
+      await populateStampMgrList();
+    });
+    li.appendChild(delBtn);
+    stampMgrList.appendChild(li);
+  }
+}
+
+// ---- Generic stamp preview painter (used by all 3 register dialogs) ----
+function paintStampPreview(canvas, props) {
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const W = canvas.width;
+  const H = canvas.height;
+  // Centered; preview canvas is small so we draw at a fixed scale.
+  const pad = 4;
+  const innerW = W - pad * 2;
+  const innerH = H - pad * 2;
+  // White paper backdrop.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = "#cccccc";
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+  // Stamp content
+  ctx.save();
+  if (props.kind === "image" && props.bitmap) {
+    // Fit image preserving aspect ratio.
+    const bw = props.bitmap.width, bh = props.bitmap.height;
+    const scale = Math.min(innerW / bw, innerH / bh);
+    const w = bw * scale, h = bh * scale;
+    ctx.drawImage(props.bitmap, (W - w) / 2, (H - h) / 2, w, h);
+    if (props.frame === "rect") {
+      ctx.strokeStyle = props.color;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect((W - w) / 2, (H - h) / 2, w, h);
+    } else if (props.frame === "circle") {
+      ctx.beginPath();
+      ctx.ellipse(W / 2, H / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = props.color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    ctx.restore();
+    return;
+  }
+  // Text-bearing preview (date / text)
+  ctx.fillStyle = props.color;
+  ctx.strokeStyle = props.color;
+  ctx.lineWidth = 1.5;
+  ctx.font = `bold ${props.fontSize}px "MS UI Gothic", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif`;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  const text = props.text ?? "";
+  const metrics = ctx.measureText(text);
+  const textW = metrics.width;
+  const boxW = props.frame === "circle"
+    ? Math.max(textW + 16, props.fontSize * 2.4)
+    : Math.max(textW + 16, props.fontSize * 1.5);
+  const boxH = props.frame === "circle"
+    ? boxW
+    : Math.max(props.fontSize + 12, props.fontSize * 1.6);
+  const fitScale = Math.min(innerW / boxW, innerH / boxH, 1);
+  const w = boxW * fitScale, h = boxH * fitScale;
+  const cx = W / 2, cy = H / 2;
+  if (props.frame === "circle") {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, w / 2, h / 2, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (props.frame === "rect") {
+    ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
+  }
+  ctx.fillText(text, cx, cy);
+  ctx.restore();
+}
+
+// ---- 日付スタンプ register dialog --------------------------------------
+
+const stampRegDateDialog = $("stamp-register-date");
+const stampRegDateColor = $("stamp-reg-date-color");
+const stampRegDateFrame = $("stamp-reg-date-frame");
+const stampRegDateLabel = $("stamp-reg-date-label");
+const stampRegDatePreview = $("stamp-reg-date-preview");
+function openStampRegisterDate() {
+  // Reset to defaults.
+  document.querySelector('input[name="stamp-date-format"][value="date-numeric-dash"]').checked = true;
+  stampRegDateColor.value = "#cc0000";
+  stampRegDateFrame.checked = true;
+  stampRegDateLabel.value = "";
+  stampRegDateDialog.hidden = false;
+  paintStampRegDatePreview();
+}
+function closeStampRegisterDate() { stampRegDateDialog.hidden = true; }
+function getDateRegFormatKey() {
+  const r = document.querySelector('input[name="stamp-date-format"]:checked');
+  return r?.value ?? "date-numeric-dash";
+}
+function paintStampRegDatePreview() {
+  const formatKey = getDateRegFormatKey();
+  paintStampPreview(stampRegDatePreview, {
+    text: renderDateText(formatKey),
+    color: stampRegDateColor.value,
+    frame: stampRegDateFrame.checked ? "rect" : "none",
+    fontSize: 14,
+  });
+}
+stampRegDateDialog?.addEventListener("change", paintStampRegDatePreview);
+stampRegDateDialog?.addEventListener("input", paintStampRegDatePreview);
+$("stamp-reg-date-cancel")?.addEventListener("click", closeStampRegisterDate);
+stampRegDateDialog?.addEventListener("click", (e) => {
+  if (e.target === stampRegDateDialog) closeStampRegisterDate();
+});
+$("stamp-reg-date-ok")?.addEventListener("click", async () => {
+  const formatKey = getDateRegFormatKey();
+  const formatLabels = {
+    "date-numeric-dash": "-8.-5.-9",
+    "date-numeric-fw": "-8．-5．-9",
+    "date-kanji-dash": "令和-8年-5月-9日",
+  };
+  const label = stampRegDateLabel.value.trim() || formatLabels[formatKey] || "日付";
+  await kpdf3.addStampPreset({
+    kind: "date",
+    label,
+    color: stampRegDateColor.value,
+    frame: stampRegDateFrame.checked ? "rect" : "none",
+    fontSize: 14,
+    text: formatKey, // store the format spec, render the date at placement
+    width: formatKey === "date-kanji-dash" ? 140 : 105,
+    height: 40,
+  });
+  closeStampRegisterDate();
+  await populateStampMgrList();
+});
+
+// ---- テキストスタンプ register dialog ----------------------------------
+
+const stampRegTextDialog = $("stamp-register-text");
+const stampRegTextText = $("stamp-reg-text-text");
+const stampRegTextFontSize = $("stamp-reg-text-fontsize");
+const stampRegTextColor = $("stamp-reg-text-color");
+const stampRegTextFrame = $("stamp-reg-text-frame");
+const stampRegTextLabel = $("stamp-reg-text-label");
+const stampRegTextPreview = $("stamp-reg-text-preview");
+function openStampRegisterText() {
+  stampRegTextText.value = "";
+  stampRegTextFontSize.value = "14";
+  stampRegTextColor.value = "#cc0000";
+  stampRegTextFrame.checked = true;
+  stampRegTextLabel.value = "";
+  stampRegTextDialog.hidden = false;
+  paintStampRegTextPreview();
+  setTimeout(() => stampRegTextText.focus(), 0);
+}
+function closeStampRegisterText() { stampRegTextDialog.hidden = true; }
+function paintStampRegTextPreview() {
+  paintStampPreview(stampRegTextPreview, {
+    text: stampRegTextText.value || "テキスト",
+    color: stampRegTextColor.value,
+    frame: stampRegTextFrame.checked ? "rect" : "none",
+    fontSize: Number(stampRegTextFontSize.value) || 14,
+  });
+}
+stampRegTextDialog?.addEventListener("input", paintStampRegTextPreview);
+stampRegTextDialog?.addEventListener("change", paintStampRegTextPreview);
+$("stamp-reg-text-cancel")?.addEventListener("click", closeStampRegisterText);
+stampRegTextDialog?.addEventListener("click", (e) => {
+  if (e.target === stampRegTextDialog) closeStampRegisterText();
+});
+$("stamp-reg-text-ok")?.addEventListener("click", async () => {
+  const text = stampRegTextText.value.trim();
+  if (!text) {
+    wsStatus.textContent = "テキストを入力してください";
+    return;
+  }
+  const fontSize = Math.max(6, Math.min(72, Number(stampRegTextFontSize.value) || 14));
+  await kpdf3.addStampPreset({
+    kind: "text",
+    label: stampRegTextLabel.value.trim() || text,
+    color: stampRegTextColor.value,
+    frame: stampRegTextFrame.checked ? "rect" : "none",
+    fontSize,
+    text,
+    // Generous default — text overlay can be resized after placement.
+    width: Math.max(60, text.length * fontSize * 0.85),
+    height: Math.max(20, fontSize * 1.6),
+  });
+  closeStampRegisterText();
+  await populateStampMgrList();
+});
+
+// ---- 画像スタンプ register dialog --------------------------------------
+
+const stampRegImageDialog = $("stamp-register-image");
+const stampRegImagePickBtn = $("stamp-reg-image-pick");
+const stampRegImageName = $("stamp-reg-image-name");
+const stampRegImageW = $("stamp-reg-image-w");
+const stampRegImageH = $("stamp-reg-image-h");
+const stampRegImageFrame = $("stamp-reg-image-frame");
+const stampRegImageLabel = $("stamp-reg-image-label");
+const stampRegImagePreview = $("stamp-reg-image-preview");
+const stampRegImageOk = $("stamp-reg-image-ok");
+let _stampRegImageState = null; // { path, mime, bitmap, naturalW, naturalH, label }
+function openStampRegisterImage() {
+  _stampRegImageState = null;
+  stampRegImageName.textContent = "(未選択)";
+  stampRegImageW.value = "80";
+  stampRegImageH.value = "80";
+  stampRegImageFrame.checked = false;
+  stampRegImageLabel.value = "";
+  stampRegImageOk.disabled = true;
+  paintStampRegImagePreview();
+  stampRegImageDialog.hidden = false;
+}
+function closeStampRegisterImage() { stampRegImageDialog.hidden = true; }
+function paintStampRegImagePreview() {
+  paintStampPreview(stampRegImagePreview, {
+    kind: "image",
+    bitmap: _stampRegImageState?.bitmap,
+    color: "#cc0000",
+    frame: stampRegImageFrame.checked ? "rect" : "none",
+  });
+}
+stampRegImagePickBtn?.addEventListener("click", async () => {
+  const path = await showFileBrowser({
+    mode: "open",
+    title: "印影画像を選択",
+    filterDefault: "image",
+  });
+  if (!path) return;
+  // Read the bytes via the existing addAssetFromFile infrastructure —
+  // here we just need to preview, not commit yet. Re-use the asset
+  // pipeline by registering tentatively, then if user cancels we leave
+  // the asset orphaned (cheap, dedup keeps a single copy of identical
+  // images). Could be optimised in a follow-up.
+  try {
+    const r = await kpdf3.addAssetFromFile({ path });
+    const data = await kpdf3.getAsset(r.id);
+    if (!data?.blob) throw new Error("asset blob unavailable");
+    const u8 = data.blob instanceof Uint8Array
+      ? data.blob
+      : new Uint8Array(data.blob.buffer ?? data.blob);
+    const blob = new Blob([u8], { type: data.mime || "image/png" });
+    const bitmap = await createImageBitmap(blob);
+    _stampRegImageState = {
+      assetId: r.id,
+      mime: r.mime,
+      bitmap,
+      naturalW: bitmap.width,
+      naturalH: bitmap.height,
+      label: data.label ?? "",
+    };
+    stampRegImageName.textContent = path.split(/[\\/]/).pop();
+    if (!stampRegImageLabel.value) stampRegImageLabel.value = _stampRegImageState.label;
+    // Default width = 80 pt; height computed from aspect ratio.
+    const w = Number(stampRegImageW.value) || 80;
+    const h = Math.round((w * bitmap.height) / bitmap.width);
+    stampRegImageH.value = String(h);
+    stampRegImageOk.disabled = false;
+    paintStampRegImagePreview();
+  } catch (err) {
+    console.error("[stamp-img] preview failed", err);
+    wsStatus.textContent = `画像読み込み失敗: ${err.message ?? err}`;
+  }
+});
+stampRegImageW?.addEventListener("input", () => {
+  if (!_stampRegImageState) return;
+  const w = Number(stampRegImageW.value) || 0;
+  const h = Math.round((w * _stampRegImageState.naturalH) / _stampRegImageState.naturalW);
+  stampRegImageH.value = String(h);
+});
+stampRegImageFrame?.addEventListener("change", paintStampRegImagePreview);
+$("stamp-reg-image-cancel")?.addEventListener("click", closeStampRegisterImage);
+stampRegImageDialog?.addEventListener("click", (e) => {
+  if (e.target === stampRegImageDialog) closeStampRegisterImage();
+});
+stampRegImageOk?.addEventListener("click", async () => {
+  if (!_stampRegImageState) return;
+  const w = Math.max(10, Math.min(400, Number(stampRegImageW.value) || 80));
+  const h = Math.max(10, Math.min(400, Number(stampRegImageH.value) || 80));
+  await kpdf3.addStampPreset({
+    kind: "image",
+    label: stampRegImageLabel.value.trim() || _stampRegImageState.label || "image",
+    color: "#cc0000",
+    frame: stampRegImageFrame.checked ? "rect" : "none",
+    fontSize: 14,
+    assetId: _stampRegImageState.assetId,
+    width: w,
+    height: h,
+  });
+  closeStampRegisterImage();
+  await populateStampMgrList();
+});
 
 // ---- Image stamp assets (ADR-0017) -------------------------------------
 // Cached metadata of registered image assets so the stamp-template
@@ -1261,6 +1673,7 @@ async function refreshViewer() {
   refreshBookmarks();
   rebuildThumbs(pages);
   refreshAssetCacheAndTemplateSel();
+  refreshStampPresetCacheAndSelect();
   refreshDirtyIndicator();
 }
 
@@ -3750,26 +4163,7 @@ const menuBar = new MenuBar({
       setPlacementMode(placementMode === "marker" ? "none" : "marker"),
     "mode-callout": () =>
       setPlacementMode(placementMode === "callout" ? "none" : "callout"),
-    "stamp-manager": () => {
-      // Full preset-management dialog is ADR-0019 territory; for the
-      // MVP we just point the user at the existing toolbar select.
-      customConfirm({
-        title: "スタンプ管理",
-        message:
-          "現在使えるテンプレート（toolbar の「印影」横の select）:\n" +
-          "  • 印  — 60×60 の朱印（円枠）\n" +
-          "  • 日付 (8.5.9)  — 矩形枠、令和年.月.日\n" +
-          "  • 日付 (令和8年5月9日)  — 矩形枠、漢字\n" +
-          "色: 朱 / 黒 / 青\n" +
-          "配置後はクリックで文字編集、ドラッグで移動。\n\n" +
-          "ユーザー定義のテンプレ保存・編集 / 印影画像の取り込み /\n" +
-          "和文・英文フォント別指定は M6 後半で対応予定（ADR-0019, 0017）。",
-        okLabel: "スタンプモードへ",
-        cancelLabel: "閉じる",
-      }).then((ok) => {
-        if (ok && isOpen) setPlacementMode("stamp");
-      });
-    },
+    "stamp-manager": () => openStampManagerDialog(),
     "quality-standard": () => setRenderQuality("standard"),
     "quality-high": () => setRenderQuality("high"),
     "quality-max": () => setRenderQuality("max"),

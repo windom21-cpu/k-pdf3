@@ -35,6 +35,9 @@ import {
   addAsset,
   getAsset,
   removeAsset,
+  listStampPresets,
+  addStampPreset,
+  removeStampPreset,
 } from "../backend/sqlite-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -354,5 +357,17 @@ export class Workspace {
   }
   removeAsset(id) {
     removeAsset(this.db, id);
+  }
+
+  // ---- Stamp presets (ADR-0019 MVP) ---------------------------------
+
+  listStampPresets() {
+    return listStampPresets(this.db);
+  }
+  addStampPreset(p) {
+    return addStampPreset(this.db, p);
+  }
+  removeStampPreset(id) {
+    removeStampPreset(this.db, id);
   }
 }

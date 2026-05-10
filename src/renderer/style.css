@@ -1132,6 +1132,74 @@ button.toggled {
   white-space: pre-line;
 }
 
+/* ---- Stamp manager + register dialogs (ADR-0019 MVP) ---- */
+.stamp-mgr-window { width: 360px; }
+.stamp-mgr-window .window-body { padding: 12px 14px; font-size: 12px; }
+.stamp-mgr-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+.stamp-mgr-actions button { min-height: 28px; }
+.stamp-mgr-list {
+  list-style: none;
+  margin: 4px 0 8px;
+  padding: 4px;
+  max-height: 150px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 2px solid;
+  border-color: #808080 #ffffff #ffffff #808080;
+}
+.stamp-mgr-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+}
+.stamp-mgr-list li:hover { background: #d5d5cc; }
+.stamp-mgr-list li .stamp-mgr-label { flex: 1; }
+.stamp-mgr-list li button { min-width: 0; padding: 0 6px; height: 18px; font-size: 10px; }
+.stamp-mgr-list-empty { color: #888; padding: 4px; }
+.stamp-reg-window { width: 360px; }
+.stamp-reg-window .window-body { padding: 12px 14px; font-size: 12px; }
+.stamp-reg-fieldset {
+  border: 1px solid #808080;
+  padding: 6px 10px;
+  margin: 4px 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stamp-reg-fieldset legend { font-weight: bold; font-size: 11px; }
+.stamp-reg-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0;
+  flex-wrap: wrap;
+}
+.stamp-reg-row label { display: inline-flex; align-items: center; gap: 4px; }
+.stamp-reg-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  background: #ffffff;
+  padding: 8px;
+  border: 2px solid;
+  border-color: #808080 #ffffff #ffffff #808080;
+}
+.stamp-reg-preview-row canvas { background: #ffffff; }
+.dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.dialog-buttons button { min-width: 75px; }
+
 /* Recent PDFs dialog */
 .recent-window {
   width: 480px;
