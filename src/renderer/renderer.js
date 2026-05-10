@@ -506,6 +506,56 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideOverlayContextMenu();
 });
 
+// ---- Thumb context menu (sidebar + split-save thumbs) -----------------
+const ctxThumb = $("ctx-thumb");
+function showThumbContextMenu(pageNo, x, y) {
+  ctxThumb.dataset.targetPageNo = String(pageNo);
+  ctxThumb.style.left = `${x}px`;
+  ctxThumb.style.top = `${y}px`;
+  ctxThumb.hidden = false;
+}
+function hideThumbContextMenu() {
+  ctxThumb.hidden = true;
+  delete ctxThumb.dataset.targetPageNo;
+}
+function dispatchThumbCtx(target) {
+  const pageNoStr = ctxThumb.dataset.targetPageNo;
+  hideThumbContextMenu();
+  if (!(target instanceof HTMLElement) || !pageNoStr) return;
+  const action = target.dataset.ctx;
+  const pageNo = Number(pageNoStr);
+  if (!action || !Number.isFinite(pageNo)) return;
+  if (action === "rotate-right") rotatePageBy(pageNo, +90);
+  else if (action === "rotate-left") rotatePageBy(pageNo, -90);
+  else if (action === "rotate-180") rotatePageBy(pageNo, 180);
+}
+ctxThumb.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  let el = e.target;
+  while (el && el !== ctxThumb && !(el.dataset && el.dataset.ctx)) {
+    el = el.parentElement;
+  }
+  if (el && el !== ctxThumb) dispatchThumbCtx(el);
+});
+ctxThumb.addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("pointerdown", (ev) => {
+  if (ev.target instanceof Node && ctxThumb.contains(ev.target)) return;
+  hideThumbContextMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideThumbContextMenu();
+});
+
+/** Attach a contextmenu handler on a thumb element so right-click pops
+ *  the rotate menu anchored at the click coords. Used by both the
+ *  sidebar thumbs and the split-save thumbs. */
+function attachThumbContextMenu(el, pageNo) {
+  el.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    showThumbContextMenu(pageNo, e.clientX, e.clientY);
+  });
+}
+
 /**
  * @param {'none' | 'text' | 'stamp'} mode
  */
@@ -1787,6 +1837,7 @@ function createThumbElement(pageRow) {
     handleThumbSelectionClick(splitThumbSelection, ordered, pageRow.pageNo, e);
     wrap.focus();
   });
+  attachThumbContextMenu(wrap, pageRow.pageNo);
   return wrap;
 }
 
@@ -2151,10 +2202,8 @@ function transformRectForRotation(ov, delta, W_old, H_old) {
   return { x: ov.x, y: ov.y, w: ov.w, h: ov.h };
 }
 
-async function rotateCurrentPage(delta) {
-  if (!isOpen) return;
-  const pageNo = viewer.currentPage;
-  if (!pageNo) return;
+async function rotatePageBy(pageNo, delta) {
+  if (!isOpen || !pageNo) return;
   const row = viewer._pages?.find((p) => p.pageNo === pageNo);
   if (!row) return;
 
@@ -2197,6 +2246,9 @@ async function rotateCurrentPage(delta) {
     console.error("[rotate] failed", err);
     wsStatus.textContent = `回転失敗: ${err.message ?? err}`;
   }
+}
+function rotateCurrentPage(delta) {
+  return rotatePageBy(viewer.currentPage, delta);
 }
 function actionRotateLeft() { return rotateCurrentPage(-90); }
 function actionRotateRight() { return rotateCurrentPage(+90); }
@@ -2479,6 +2531,7 @@ function rebuildThumbs(pages) {
     item.addEventListener("dblclick", () => {
       if (!row.isSynthetic) viewer.scrollToPage(i);
     });
+    attachThumbContextMenu(item, i);
     thumbList.appendChild(item);
     obs.observe(item);
 

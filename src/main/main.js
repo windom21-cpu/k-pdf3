@@ -8,7 +8,7 @@
 //
 // This is the M1 skeleton. Real workspace UI lands in M2.
 
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell, globalShortcut } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -117,21 +117,36 @@ function createMainWindow() {
   mainWindow.on("maximize", broadcastMax);
   mainWindow.on("unmaximize", broadcastMax);
   // frame:false + Menu.setApplicationMenu(null) means no default
-  // accelerators — wire reload / DevTools at the main process level so
-  // they always fire regardless of renderer focus or Wayland quirks.
-  mainWindow.webContents.on("before-input-event", (event, input) => {
-    if (input.type !== "keyDown") return;
-    const k = input.key;
-    if (k === "F5" || ((input.control || input.meta) && k.toLowerCase() === "r")) {
-      event.preventDefault();
-      mainWindow.webContents.reload();
-    } else if (k === "F12") {
-      event.preventDefault();
-      const wc = mainWindow.webContents;
-      if (wc.isDevToolsOpened()) wc.closeDevTools();
-      else wc.openDevTools({ mode: "detach" });
+  // accelerators. Use globalShortcut while the window is focused —
+  // before-input-event was unreliable on Wayland in testing. Each
+  // shortcut is unregistered on blur so it doesn't fire while another
+  // app is in the foreground.
+  const reloadFn  = () => { if (mainWindow) mainWindow.webContents.reload(); };
+  const devtoolsFn = () => {
+    if (!mainWindow) return;
+    const wc = mainWindow.webContents;
+    if (wc.isDevToolsOpened()) wc.closeDevTools();
+    else wc.openDevTools({ mode: "detach" });
+  };
+  const registerShortcuts = () => {
+    try {
+      globalShortcut.register("F5", reloadFn);
+      globalShortcut.register("CommandOrControl+R", reloadFn);
+      globalShortcut.register("CommandOrControl+Shift+R", reloadFn);
+      globalShortcut.register("F12", devtoolsFn);
+      globalShortcut.register("CommandOrControl+Shift+I", devtoolsFn);
+    } catch (e) {
+      console.warn("[shortcuts] register failed:", e);
     }
-  });
+  };
+  const unregisterShortcuts = () => {
+    globalShortcut.unregisterAll();
+  };
+  // Register straight away (window is shown) and re-arm on focus / drop on blur.
+  registerShortcuts();
+  mainWindow.on("focus", registerShortcuts);
+  mainWindow.on("blur", unregisterShortcuts);
+  app.on("will-quit", unregisterShortcuts);
   mainWindow.on("closed", () => {
     disposeActiveDoc();
     if (activeWorkspace) {
