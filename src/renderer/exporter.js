@@ -32,14 +32,23 @@ export async function composePagesForExport({
   pages,
   projectStore,
   renderPage,
+  renderSyntheticPage, // optional: (row, zoom) => {width,height,channels,pixels}
   onProgress,
 }) {
   const out = [];
   const total = pages.length;
   for (let i = 0; i < total; i++) {
     const row = pages[i];
-    const result = await renderPage(row.pageNo, { zoom: EXPORT_ZOOM });
-    const canvas = compositePage(row, result, projectStore);
+    let result;
+    if (row.isSynthetic || row.pageNo < 0) {
+      if (typeof renderSyntheticPage !== "function") {
+        throw new Error("composePagesForExport: synthetic page encountered but no renderSyntheticPage provided");
+      }
+      result = renderSyntheticPage(row, EXPORT_ZOOM);
+    } else {
+      result = await renderPage(row.pageNo, { zoom: EXPORT_ZOOM });
+    }
+    const canvas = compositePage(row, result, projectStore, EXPORT_ZOOM);
     const png = await canvasToPng(canvas);
     const canonical = canonicalPageSize({
       mediaX: 0, mediaY: 0, mediaW: 0, mediaH: 0,
@@ -67,7 +76,29 @@ export async function composePagesForExport({
  * @param {import("../domain/project-store.js").ProjectStore} projectStore
  * @returns {HTMLCanvasElement}
  */
-function compositePage(row, renderResult, projectStore) {
+/**
+ * Public single-page composer used by the print-preview UI.
+ * Renders one page (PDF + overlays) and returns the canvas at `zoom`.
+ *
+ * @param {{pageNo:number, cropW:number, cropH:number, rotation:number, userRotation?:number}} pageRow
+ * @param {(p:number,o:object)=>Promise<{width:number,height:number,channels:3|4,pixels:Uint8ClampedArray|Uint8Array}>} renderPage
+ * @param {import("../domain/project-store.js").ProjectStore} projectStore
+ * @param {number} zoom
+ */
+export async function composeSinglePageCanvas(pageRow, renderPage, projectStore, zoom, renderSyntheticPage) {
+  let result;
+  if (pageRow.isSynthetic || pageRow.pageNo < 0) {
+    if (typeof renderSyntheticPage !== "function") {
+      throw new Error("composeSinglePageCanvas: synthetic page needs renderSyntheticPage");
+    }
+    result = renderSyntheticPage(pageRow, zoom);
+  } else {
+    result = await renderPage(pageRow.pageNo, { zoom });
+  }
+  return compositePage(pageRow, result, projectStore, zoom);
+}
+
+export function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOOM) {
   const canvas = document.createElement("canvas");
   canvas.width = renderResult.width;
   canvas.height = renderResult.height;
@@ -97,7 +128,7 @@ function compositePage(row, renderResult, projectStore) {
   // Overlays in zOrder.
   const overlays = projectStore.getPageOverlays(row.pageNo);
   for (const ov of overlays) {
-    drawOverlay(ctx, ov, EXPORT_ZOOM);
+    drawOverlay(ctx, ov, zoom);
   }
 
   return canvas;

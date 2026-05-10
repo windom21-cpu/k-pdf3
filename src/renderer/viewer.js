@@ -18,9 +18,68 @@
 
 import { PageRegistry, visiblePageRange } from "../domain/page-registry.js";
 
+/**
+ * Paint a user-inserted blank/text page into a Uint8ClampedArray suitable
+ * for ImageData. The page is white; if `syntheticText` is non-empty we
+ * draw it at 72pt (× zoom) starting at a 50pt margin.
+ *
+ * @param {{pageNo:number, cropW:number, cropH:number, syntheticText?:string}} row
+ * @param {number} zoom
+ * @returns {{width:number,height:number,channels:4,pixels:Uint8ClampedArray}}
+ */
+export function renderSyntheticPagePixels(row, zoom) {
+  const w = Math.max(1, Math.round((row.cropW || 595) * zoom));
+  const h = Math.max(1, Math.round((row.cropH || 842) * zoom));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
+  const text = (row.syntheticText ?? "").trim();
+  if (text) {
+    ctx.fillStyle = "#000000";
+    const fontPx = 72 * zoom;
+    ctx.font = `${fontPx}px "MS UI Gothic", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", serif`;
+    ctx.textBaseline = "top";
+    const margin = 50 * zoom;
+    let y = margin;
+    for (const line of text.split(/\r?\n/)) {
+      ctx.fillText(line, margin, y);
+      y += fontPx * 1.2;
+      if (y > h - fontPx) break;
+    }
+  }
+  const imgData = ctx.getImageData(0, 0, w, h);
+  return {
+    width: w,
+    height: h,
+    channels: 4,
+    pixels: imgData.data,
+  };
+}
+
 const DEFAULT_ZOOM = 1.5;
 const GAP = 8; // px between pages (CSS pixel)
 const ROOT_MARGIN = "200px 0px"; // prefetch threshold
+
+/** Oversampling factor: render the canvas at this multiple of the CSS size,
+ *  then let the browser downscale via `canvas.style.width: 100%`. This buys
+ *  sharper text/lines on standard-DPI displays without making pages bigger.
+ *  Memory cost is OVERSAMPLE^2 per visible page; virtualization keeps the
+ *  working set bounded. The base level is multiplied by the device's
+ *  natural DPR (capped at 2×). The user can change the level at runtime
+ *  via Viewer.setRenderQuality(level). */
+const RENDER_QUALITY_MULTIPLIERS = {
+  standard: 1.0,
+  high: 2.0,
+  max: 3.0,
+};
+const DEFAULT_RENDER_QUALITY = "high";
+function computeOversample(level) {
+  const mul = RENDER_QUALITY_MULTIPLIERS[level] ?? RENDER_QUALITY_MULTIPLIERS[DEFAULT_RENDER_QUALITY];
+  return Math.min(window.devicePixelRatio || 1, 2) * mul;
+}
 
 export class Viewer {
   /**
@@ -68,6 +127,7 @@ export class Viewer {
     /** @type {Array<any> | null} pages last passed to load() — used by setZoom to rebuild */
     this._pages = null;
     this._zoom = DEFAULT_ZOOM;
+    this._renderQuality = DEFAULT_RENDER_QUALITY;
     if (this.projectStore) {
       this._subscribeStore();
     }
@@ -100,6 +160,25 @@ export class Viewer {
     this.container.scrollTop = ratio * Math.max(this.container.scrollHeight, 1);
   }
 
+  get renderQuality() {
+    return this._renderQuality;
+  }
+
+  /**
+   * Change the canvas oversampling level. Drops the existing canvases so
+   * visible pages re-render at the new resolution. Layout / scroll position
+   * are unaffected (only internal pixel density changes).
+   * @param {"standard" | "high" | "max"} level
+   */
+  setRenderQuality(level) {
+    if (!(level in RENDER_QUALITY_MULTIPLIERS)) return;
+    if (level === this._renderQuality) return;
+    this._renderQuality = level;
+    if (!this._pages || this._pages.length === 0) return;
+    // Rebuild via load() which clears canvases and re-renders visible pages.
+    this.load(this._pages);
+  }
+
   /**
    * Load a workspace's pages into the viewer.
    * @param {Array<{pageNo:number, cropW:number, cropH:number, rotation:number, userRotation?:number}>} pages
@@ -121,8 +200,8 @@ export class Viewer {
     // Reset to top by default. setZoom overrides this afterwards to keep
     // the user's scroll position relative to the document.
     this.container.scrollTop = 0;
-    this._currentPage = 1;
-    if (this.onPageChange) this.onPageChange(1, pages.length);
+    this._currentPage = this.registry.pageNoAtPos(0) || 1;
+    if (this.onPageChange) this.onPageChange(this._currentPage, pages.length);
   }
 
   /** Tear down DOM + observers; safe to call multiple times. _pages is
@@ -151,9 +230,10 @@ export class Viewer {
 
   /** Scroll the viewer so `pageNo` is at the top of the viewport. */
   scrollToPage(pageNo) {
-    if (!this.layout) return;
-    if (pageNo < 1 || pageNo > this.layout.pageTops.length) return;
-    this.container.scrollTop = this.layout.pageTops[pageNo - 1];
+    if (!this.layout || !this.registry) return;
+    const pos = this.registry.posOfPageNo(pageNo);
+    if (pos < 0) return;
+    this.container.scrollTop = this.layout.pageTops[pos];
   }
 
   _setupScrollListener() {
@@ -169,10 +249,15 @@ export class Viewer {
           this.container.scrollTop,
           this.container.clientHeight,
         );
-        const next = range.first > 0 ? range.first : this._currentPage;
-        if (next !== this._currentPage) {
-          this._currentPage = next;
-          if (this.onPageChange) this.onPageChange(next, this.registry.count());
+        // range.first is a 1-based POSITION; translate to source-PDF pageNo
+        // (sparse-safe after deletions).
+        const nextPageNo =
+          range.first > 0
+            ? this.registry.pageNoAtPos(range.first - 1)
+            : this._currentPage;
+        if (nextPageNo !== this._currentPage) {
+          this._currentPage = nextPageNo;
+          if (this.onPageChange) this.onPageChange(nextPageNo, this.registry.count());
         }
       });
     };
@@ -218,7 +303,9 @@ export class Viewer {
 
     const N = this.registry.count();
     for (let i = 0; i < N; i++) {
-      const pageNo = i + 1;
+      // pageNo is the source PDF page number (sparse after deletions);
+      // the *position* i is what indexes the layout arrays.
+      const pageNo = this.registry.pageNoAtPos(i);
       const div = document.createElement("div");
       div.className = "viewer-page";
       div.dataset.pageNo = String(pageNo);
@@ -754,7 +841,18 @@ export class Viewer {
     if (this.pendingRenders.has(pageNo)) return;
     this.pendingRenders.add(pageNo);
     try {
-      const result = await window.kpdf3.renderPage(pageNo, { zoom: this._zoom });
+      const renderZoom = this._zoom * computeOversample(this._renderQuality);
+      let result;
+      if (pageNo < 0) {
+        // Synthetic page (user-inserted blank/text) — render on the
+        // renderer side via canvas. Look up text/dimensions from the
+        // page row stashed in this._pages.
+        const row = this._pages?.find((p) => p.pageNo === pageNo);
+        if (!row) return;
+        result = renderSyntheticPagePixels(row, renderZoom);
+      } else {
+        result = await window.kpdf3.renderPage(pageNo, { zoom: renderZoom });
+      }
       // Bail if the viewer was unloaded while we were waiting
       const div = this.pageEls.get(pageNo);
       if (!div) return;

@@ -4,7 +4,7 @@
 // the user through the file picker; main resolves the sidecar `.kpdf3`
 // automatically.
 
-import { Viewer } from "./viewer.js";
+import { Viewer, renderSyntheticPagePixels } from "./viewer.js";
 import { MenuBar } from "./menu-bar.js";
 import { ProjectStore } from "../domain/project-store.js";
 import { HistoryStack } from "../domain/history.js";
@@ -13,7 +13,7 @@ import {
   UpdateOverlayCommand,
   RemoveOverlayCommand,
 } from "../domain/commands.js";
-import { composePagesForExport } from "./exporter.js";
+import { composePagesForExport, composeSinglePageCanvas } from "./exporter.js";
 
 const { kpdf3 } = window;
 
@@ -27,16 +27,19 @@ const history = new HistoryStack();
 
 const $ = (id) => document.getElementById(id);
 const btnOpen = $("btn-open");
-const btnClose = $("btn-close");
+const btnSave = $("btn-save");
+const btnExport = $("btn-export");
+const btnPrint = $("btn-print");
+const zoomSelect = $("zoom-select");
 const btnModeText = $("btn-mode-text");
 const btnModeStamp = $("btn-mode-stamp");
 const btnModeRedaction = $("btn-mode-redaction");
-const wsLabel = $("ws-label");
 const wsStatus = $("ws-status");
 const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
 const sidebar = $("sidebar");
 const bookmarkTree = $("bookmark-tree");
+const thumbList = $("thumb-list");
 const mainArea = $("main-area");
 const splitView = $("split-view");
 const btnSplit = $("btn-split");
@@ -55,6 +58,7 @@ function showBusy(title, message, percent = 0) {
   busyMessage.textContent = message;
   busyProgressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
   busyModal.hidden = false;
+  document.body.classList.add("is-busy");
 }
 function updateBusy(message, percent) {
   if (typeof message === "string") busyMessage.textContent = message;
@@ -64,6 +68,7 @@ function updateBusy(message, percent) {
 }
 function hideBusy() {
   busyModal.hidden = true;
+  document.body.classList.remove("is-busy");
 }
 
 const viewer = new Viewer(viewerContainer, {
@@ -364,12 +369,15 @@ function setPlacementMode(mode) {
   btnModeText.classList.toggle("toggled", mode === "text");
   btnModeStamp.classList.toggle("toggled", mode === "stamp");
   btnModeRedaction.classList.toggle("toggled", mode === "redaction");
+  refreshMenuState();
 }
 
 function setOpen(open) {
   isOpen = open;
   btnOpen.disabled = open;
-  btnClose.disabled = !open;
+  btnExport.disabled = !open;
+  btnPrint.disabled = !open;
+  zoomSelect.disabled = !open;
   btnModeText.disabled = !open;
   btnModeStamp.disabled = !open;
   btnModeRedaction.disabled = !open;
@@ -380,19 +388,47 @@ function setOpen(open) {
   }
   refreshMenuState();
   refreshDirtyIndicator();
+  refreshSidebarToggle();
+  refreshZoomSelect();
+  refreshSearchEnabled();
 }
 
 /** Refresh the title bar / file label / status bar to reflect the dirty flag. */
+const appTitleText = $("app-title-text");
+const APP_TITLE_DEFAULT = "K-PDF3 — 法律実務向け PDF Workspace";
+
+// ---- Window controls (frame: false custom title bar) -----------------
+const winMinimizeBtn = $("win-minimize");
+const winMaximizeBtn = $("win-maximize");
+const winCloseBtn = $("win-close");
+
+winMinimizeBtn.addEventListener("click", () => kpdf3.windowMinimize());
+winMaximizeBtn.addEventListener("click", () => kpdf3.windowMaximizeToggle());
+winCloseBtn.addEventListener("click", () => kpdf3.windowClose());
+
+// Double-click on title bar toggles maximize (Windows convention).
+$("app-title-text").addEventListener("dblclick", () => {
+  kpdf3.windowMaximizeToggle();
+});
+
+function setMaximizedGlyph(isMax) {
+  // 98.css picks the glyph from aria-label; swap between Maximize/Restore.
+  winMaximizeBtn.setAttribute("aria-label", isMax ? "Restore" : "Maximize");
+}
+kpdf3.onWindowState(({ maximized }) => setMaximizedGlyph(maximized));
+kpdf3.windowIsMaximized().then(setMaximizedGlyph);
+
 function refreshDirtyIndicator() {
-  const dirty = isOpen && projectStore.isDirty();
+  const dirty = isOpen && isWorkspaceDirty();
   const prefix = dirty ? "● " : "";
   if (isOpen) {
-    wsLabel.textContent = `${prefix}${activeSourceName}`;
     document.title = `${prefix}${activeSourceName || "K-PDF3"} — K-PDF3`;
+    appTitleText.textContent = `${prefix}${activeSourceName || "K-PDF3"}`;
   } else {
-    wsLabel.textContent = "";
     document.title = "K-PDF3";
+    appTitleText.textContent = APP_TITLE_DEFAULT;
   }
+  btnSave.disabled = !dirty;
 }
 
 /**
@@ -406,28 +442,47 @@ function refreshMenuState() {
   menuBar.setEnabled({
     open: !isOpen,
     close: isOpen,
-    save: isOpen && projectStore.isDirty(),
+    save: isOpen && isWorkspaceDirty(),
     undo: isOpen && history.canUndo(),
     redo: isOpen && history.canRedo(),
     "zoom-in": isOpen && z < ZOOM_STEPS[ZOOM_STEPS.length - 1],
     "zoom-out": isOpen && z > ZOOM_STEPS[0],
     "zoom-fit": isOpen,
     "zoom-100": isOpen && Math.abs(z - 1.0) > 1e-6,
-    "page-prev": isOpen && viewer.currentPage > 1,
+    "page-prev":
+      isOpen &&
+      !!viewer.registry &&
+      viewer.registry.posOfPageNo(viewer.currentPage) > 0,
     "page-next":
       isOpen &&
       !!viewer.registry &&
-      viewer.currentPage < viewer.registry.count(),
+      viewer.registry.posOfPageNo(viewer.currentPage) <
+        viewer.registry.count() - 1,
     "page-goto": isOpen,
     "toggle-bookmarks": isOpen,
     export: isOpen,
     "export-range": isOpen,
     "split-save": isOpen,
     print: isOpen,
+    "mode-text": isOpen,
+    "mode-stamp": isOpen,
+    "mode-redaction": isOpen,
+    // Future tools — kept disabled until M6 (placeholder slots)
+    "stamp-manager": false,
+    "font-settings": false,
     // Still M5+ stubs (clipboard)
     cut: false,
     copy: false,
     paste: false,
+  });
+  const q = viewer.renderQuality;
+  menuBar.setChecked({
+    "mode-text": placementMode === "text",
+    "mode-stamp": placementMode === "stamp",
+    "mode-redaction": placementMode === "redaction",
+    "quality-standard": q === "standard",
+    "quality-high": q === "high",
+    "quality-max": q === "max",
   });
 }
 
@@ -444,6 +499,7 @@ const _origUpdatePageIndicator = updatePageIndicator;
 function updatePageIndicatorAndMenu(current, total) {
   _origUpdatePageIndicator(current, total);
   refreshMenuState();
+  highlightCurrentThumb(current);
 }
 viewer.onPageChange = updatePageIndicatorAndMenu;
 
@@ -454,17 +510,21 @@ async function refreshViewer() {
     viewer.unload();
     sidebar.hidden = true;
     bookmarkTree.innerHTML = "";
+    clearThumbs();
     refreshDirtyIndicator();
     return;
   }
   const meta = await kpdf3.getSourceMeta();
-  const pages = await kpdf3.getPages();
+  const allPages = await kpdf3.getPages();
+  // In-session pending deletions filter out pages prior to persistence.
+  const pages = allPages.filter((p) => !pendingDeletedPages.has(p.pageNo));
   if (!meta || pages.length === 0) {
     activeSourceName = "";
     wsStatus.textContent = "(PDF が読み込めませんでした)";
     viewer.unload();
     sidebar.hidden = true;
     bookmarkTree.innerHTML = "";
+    clearThumbs();
     refreshDirtyIndicator();
     return;
   }
@@ -472,11 +532,12 @@ async function refreshViewer() {
   wsStatus.textContent = `${pages.length} ページ`;
   viewer.load(pages);
   refreshBookmarks();
+  rebuildThumbs(pages);
   refreshDirtyIndicator();
 }
 
 function confirmDiscardIfDirty() {
-  if (!projectStore.isDirty()) return true;
+  if (!isWorkspaceDirty()) return true;
   return window.confirm(
     "未保存の変更があります。\n変更を破棄して続行しますか？",
   );
@@ -625,6 +686,8 @@ async function openPdfPath(pdfPath) {
   try {
     const result = await kpdf3.openPdfFile(pdfPath);
     projectStore.reset(result.overlays ?? []);
+    pendingDeletedPages.clear();
+    workspaceMutated = false;
     history.clear();
     setOpen(true);
     await refreshViewer();
@@ -634,41 +697,370 @@ async function openPdfPath(pdfPath) {
   }
 }
 
+// ---- Generic Win95-style file browser (open / save / folder) ---------
+const openDialog = $("open-dialog");
+const openTitleText = $("open-title-text");
+const openQuickSel = $("open-quick");
+const openUpBtn = $("open-up");
+const openCurrentPathEl = $("open-current-path");
+const openFileList = $("open-file-list");
+const openFilenameInput = $("open-filename");
+const openFilenameRow = $("open-row-filename");
+const openFilterSel = $("open-filter");
+const openFilterRow = $("open-row-filter");
+const openConfirmBtn = $("open-confirm");
+const openCancelBtn = $("open-cancel");
+const openTitlebarCloseBtn = $("open-titlebar-close");
+
+const fileBrowserState = {
+  mode: "open", // "open" | "save" | "folder"
+  currentPath: null,
+  parentPath: null,
+  entries: [],
+  selectedName: null,
+  defaultPaths: null,
+  resolve: null, // Promise resolver for the current invocation
+};
+
+function isPdfName(name) {
+  return /\.pdf$/i.test(name);
+}
+
+function classifyEntry(entry) {
+  if (entry.isParent) return "open-entry open-entry-parent is-folder";
+  if (entry.isDir) return "open-entry is-folder";
+  if (isPdfName(entry.name)) return "open-entry is-pdf";
+  return "open-entry is-other";
+}
+
+function shouldShowEntry(entry) {
+  if (entry.isParent || entry.isDir) return true;
+  if (fileBrowserState.mode === "folder") return false; // hide files in folder mode
+  if (openFilterSel.value === "all") return true;
+  return isPdfName(entry.name);
+}
+
+function renderFileBrowserList() {
+  openFileList.innerHTML = "";
+  fileBrowserState.selectedName = null;
+  if (fileBrowserState.mode !== "save") openFilenameInput.value = "";
+  const visible = fileBrowserState.entries.filter(shouldShowEntry);
+  if (visible.length === 0) {
+    const li = document.createElement("li");
+    li.className = "open-entry-empty";
+    li.textContent = "(このフォルダには表示できる項目がありません)";
+    openFileList.appendChild(li);
+    return;
+  }
+  for (const entry of visible) {
+    const li = document.createElement("li");
+    li.className = classifyEntry(entry);
+    li.dataset.name = entry.name;
+    li.dataset.isDir = entry.isDir ? "1" : "0";
+    li.dataset.isParent = entry.isParent ? "1" : "0";
+    const nameEl = document.createElement("span");
+    nameEl.className = "open-entry-name";
+    nameEl.textContent = entry.isParent ? ".. (上のフォルダ)" : entry.name;
+    li.appendChild(nameEl);
+    li.addEventListener("click", () => selectFileEntry(entry, li));
+    li.addEventListener("dblclick", () => activateFileEntry(entry));
+    openFileList.appendChild(li);
+  }
+}
+
+function selectFileEntry(entry, liEl) {
+  for (const li of openFileList.querySelectorAll(".open-entry.selected")) {
+    li.classList.remove("selected");
+  }
+  if (liEl) liEl.classList.add("selected");
+  fileBrowserState.selectedName = entry.isParent ? null : entry.name;
+  if (!entry.isDir && !entry.isParent) {
+    openFilenameInput.value = entry.name;
+  }
+}
+
+function activateFileEntry(entry) {
+  if (entry.isParent) {
+    if (fileBrowserState.parentPath) loadFileBrowserDir(fileBrowserState.parentPath);
+    return;
+  }
+  if (entry.isDir) {
+    loadFileBrowserDir(joinPath(fileBrowserState.currentPath, entry.name));
+    return;
+  }
+  if (fileBrowserState.mode === "open" && isPdfName(entry.name)) {
+    fileBrowserConfirm(joinPath(fileBrowserState.currentPath, entry.name));
+  } else if (fileBrowserState.mode === "save") {
+    handleFileBrowserConfirm();
+  }
+}
+
+function joinPath(dir, name) {
+  if (!dir) return name;
+  if (dir.endsWith("/") || dir.endsWith("\\")) return dir + name;
+  return dir + (dir.includes("\\") && !dir.includes("/") ? "\\" : "/") + name;
+}
+
+async function loadFileBrowserDir(targetPath) {
+  const result = await kpdf3.listDirectory(targetPath);
+  fileBrowserState.currentPath = result.path;
+  fileBrowserState.parentPath = result.parent;
+  const entries = result.error ? [] : [...result.entries];
+  if (result.parent) {
+    entries.unshift({ name: "..", isParent: true, isDir: true });
+  }
+  fileBrowserState.entries = entries;
+  openCurrentPathEl.textContent = result.path;
+  openCurrentPathEl.title = result.path;
+  openUpBtn.disabled = !result.parent;
+  if (result.error) {
+    openFileList.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "open-entry-error";
+    li.textContent = `エラー: ${result.error}`;
+    openFileList.appendChild(li);
+  } else {
+    renderFileBrowserList();
+  }
+  syncQuickSelector();
+}
+
+function syncQuickSelector() {
+  if (!fileBrowserState.defaultPaths) return;
+  const cur = fileBrowserState.currentPath;
+  const match = [...openQuickSel.options].find((o) => o.value === cur);
+  openQuickSel.value = match ? cur : "";
+}
+
+async function populateQuickSelector() {
+  if (!fileBrowserState.defaultPaths) {
+    fileBrowserState.defaultPaths = await kpdf3.getDefaultPaths();
+  }
+  const dp = fileBrowserState.defaultPaths;
+  const opts = [
+    { value: "", label: "(現在のフォルダ)" },
+    { value: dp.home, label: `ホーム  ${dp.home ?? ""}` },
+    { value: dp.desktop, label: `デスクトップ  ${dp.desktop ?? ""}` },
+    { value: dp.documents, label: `ドキュメント  ${dp.documents ?? ""}` },
+    { value: dp.downloads, label: `ダウンロード  ${dp.downloads ?? ""}` },
+  ];
+  openQuickSel.innerHTML = "";
+  for (const o of opts) {
+    if (o.value === null) continue;
+    const opt = document.createElement("option");
+    opt.value = o.value ?? "";
+    opt.textContent = o.label;
+    openQuickSel.appendChild(opt);
+  }
+}
+
+function fileBrowserCancel() {
+  openDialog.hidden = true;
+  if (fileBrowserState.resolve) {
+    const r = fileBrowserState.resolve;
+    fileBrowserState.resolve = null;
+    r(null);
+  }
+}
+
+function fileBrowserConfirm(value) {
+  if (fileBrowserState.currentPath) {
+    localStorage.setItem("kpdf3.lastBrowseDir", fileBrowserState.currentPath);
+  }
+  openDialog.hidden = true;
+  if (fileBrowserState.resolve) {
+    const r = fileBrowserState.resolve;
+    fileBrowserState.resolve = null;
+    r(value);
+  }
+}
+
+async function handleFileBrowserConfirm() {
+  const mode = fileBrowserState.mode;
+  if (mode === "folder") {
+    if (fileBrowserState.currentPath) {
+      fileBrowserConfirm(fileBrowserState.currentPath);
+    }
+    return;
+  }
+
+  const filename = openFilenameInput.value.trim();
+  if (!filename) {
+    if (mode === "open" && fileBrowserState.selectedName) {
+      fileBrowserConfirm(
+        joinPath(fileBrowserState.currentPath, fileBrowserState.selectedName),
+      );
+    }
+    return;
+  }
+  const isAbsolute = /^([a-zA-Z]:[/\\]|[/\\])/.test(filename);
+  let target = isAbsolute ? filename : joinPath(fileBrowserState.currentPath, filename);
+
+  if (mode === "save") {
+    // Auto-append .pdf if missing
+    if (!/\.[a-zA-Z0-9]+$/.test(target)) target += ".pdf";
+    if (await kpdf3.fileExists(target)) {
+      const ok = window.confirm(`${target}\nは既に存在します。上書きしますか？`);
+      if (!ok) return;
+    }
+    fileBrowserConfirm(target);
+    return;
+  }
+
+  // open mode
+  if (!isPdfName(target)) {
+    wsStatus.textContent = "PDF ファイルを選択してください";
+    return;
+  }
+  fileBrowserConfirm(target);
+}
+
+/**
+ * Show the file browser. Returns a Promise resolving to:
+ *   - open mode  : selected file's full path (or null if cancelled)
+ *   - save mode  : full save path (or null)
+ *   - folder mode: selected folder path (or null)
+ */
+async function showFileBrowser({
+  mode = "open",
+  title,
+  initialName = "",
+  defaultDir = null,
+  filterDefault = "pdf",
+  confirmLabel,
+} = {}) {
+  fileBrowserState.mode = mode;
+  await populateQuickSelector();
+
+  // Resolve initial directory
+  const stored = localStorage.getItem("kpdf3.lastBrowseDir");
+  const initial =
+    defaultDir ||
+    stored ||
+    fileBrowserState.defaultPaths?.home ||
+    "";
+
+  // UI configuration based on mode
+  if (mode === "folder") {
+    openTitleText.textContent = title || "フォルダの選択";
+    openFilenameRow.hidden = true;
+    openFilterRow.hidden = true;
+    openConfirmBtn.textContent = confirmLabel || "このフォルダを選択";
+  } else if (mode === "save") {
+    openTitleText.textContent = title || "名前を付けて保存";
+    openFilenameRow.hidden = false;
+    openFilterRow.hidden = false;
+    openFilterSel.value = filterDefault;
+    openFilenameInput.value = initialName;
+    openConfirmBtn.textContent = confirmLabel || "保存";
+  } else {
+    openTitleText.textContent = title || "PDF を開く";
+    openFilenameRow.hidden = false;
+    openFilterRow.hidden = false;
+    openFilterSel.value = filterDefault;
+    openFilenameInput.value = "";
+    openConfirmBtn.textContent = confirmLabel || "開く";
+  }
+
+  await loadFileBrowserDir(initial);
+  openDialog.hidden = false;
+  if (mode === "save") {
+    // Pre-select base name (stem) so the user can immediately type to replace
+    openFilenameInput.focus();
+    const stem = initialName.replace(/\.[^.]+$/, "");
+    openFilenameInput.setSelectionRange(0, stem.length);
+  } else {
+    openFilenameInput.focus();
+  }
+
+  return new Promise((resolve) => {
+    fileBrowserState.resolve = resolve;
+  });
+}
+
+openConfirmBtn.addEventListener("click", handleFileBrowserConfirm);
+openCancelBtn.addEventListener("click", fileBrowserCancel);
+openTitlebarCloseBtn.addEventListener("click", fileBrowserCancel);
+openDialog.addEventListener("click", (e) => {
+  if (e.target === openDialog) fileBrowserCancel();
+});
+openUpBtn.addEventListener("click", () => {
+  if (fileBrowserState.parentPath) loadFileBrowserDir(fileBrowserState.parentPath);
+});
+openQuickSel.addEventListener("change", () => {
+  if (openQuickSel.value) loadFileBrowserDir(openQuickSel.value);
+});
+openFilterSel.addEventListener("change", renderFileBrowserList);
+openFilenameInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    handleFileBrowserConfirm();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    fileBrowserCancel();
+  }
+});
+openDialog.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    fileBrowserCancel();
+  }
+});
+
 async function actionOpen() {
   if (!confirmDiscardIfDirty()) return;
-  const pdfPath = await kpdf3.pickPdf();
-  if (!pdfPath) return;
-  try {
-    const result = await kpdf3.openPdfFile(pdfPath);
-    projectStore.reset(result.overlays ?? []);
-    history.clear();
-    setOpen(true);
-    await refreshViewer();
-  } catch (err) {
-    console.error("[renderer] openPdfFile failed:", err);
-    wsStatus.textContent = `エラー: ${err.message ?? err}`;
-  }
+  const path = await showFileBrowser({ mode: "open" });
+  if (!path) return;
+  await openPdfPath(path);
 }
 
 async function actionClose() {
   if (!confirmDiscardIfDirty()) return;
   await kpdf3.closeWorkspace();
   projectStore.reset([]);
+  pendingDeletedPages.clear();
+  workspaceMutated = false;
   history.clear();
   setOpen(false);
   await refreshViewer();
 }
 
-// ---- Print dialog (M5-4 rework) -------------------------------------
+// ---- Print preview dialog (Adobe simplified) -------------------------
 const printDialog = $("print-dialog");
 const printPrinterSelect = $("print-printer");
+const printPropertiesBtn = $("print-properties");
 const printCopiesInput = $("print-copies");
+const printRangeAll = $("print-range-all");
+const printRangeCurrent = $("print-range-current");
+const printRangeCustom = $("print-range-custom");
+const printRangeInput = $("print-range-input");
+const printSizeActual = $("print-size-actual");
+const printSizeFit = $("print-size-fit");
+const printOrientPortrait = $("print-orient-portrait");
+const printOrientLandscape = $("print-orient-landscape");
+const printPreviewCanvas = $("print-preview-canvas");
+const printPreviewCounter = $("print-preview-counter");
+const printPreviewPrev = $("print-preview-prev");
+const printPreviewNext = $("print-preview-next");
 const printConfirmBtn = $("print-confirm");
 const printCancelBtn = $("print-cancel");
-/** @type {((value: { deviceName: string, copies: number } | null) => void) | null} */
-let printDialogResolve = null;
+const printTitlebarCloseBtn = $("print-titlebar-close");
 
-function showPrintDialog(printers) {
+const PREVIEW_ZOOM = 0.6; // matches a comfortable preview tile size
+const printState = {
+  pages: [],          // pages array from kpdf3.getPages()
+  printers: [],
+  resolve: null,      // Promise resolver
+  previewIndex: 0,    // 0-based index into the *visible* page list
+  visiblePageNos: [], // page numbers selected by current range
+  renderToken: 0,     // monotonic — bail outdated renders
+};
+
+function showPrintDialog(printers, pages, currentPageNo) {
+  printState.pages = pages;
+  printState.printers = printers;
+
+  // Populate printer select
   printPrinterSelect.innerHTML = "";
   if (printers.length === 0) {
     const opt = document.createElement("option");
@@ -676,8 +1068,10 @@ function showPrintDialog(printers) {
     opt.textContent = "(プリンタが見つかりません)";
     printPrinterSelect.appendChild(opt);
     printConfirmBtn.disabled = true;
+    printPropertiesBtn.disabled = true;
   } else {
     printConfirmBtn.disabled = false;
+    printPropertiesBtn.disabled = false;
     for (const p of printers) {
       const opt = document.createElement("option");
       opt.value = p.name;
@@ -686,34 +1080,179 @@ function showPrintDialog(printers) {
       printPrinterSelect.appendChild(opt);
     }
   }
+
   printCopiesInput.value = "1";
+  printRangeAll.checked = true;
+  printRangeInput.value = `1-${pages.length}`;
+  printSizeActual.checked = true;
+  printOrientPortrait.checked = true;
+
+  // Initial preview = current page (or 1)
+  recomputeVisiblePages();
+  const idx = printState.visiblePageNos.indexOf(currentPageNo);
+  printState.previewIndex = idx >= 0 ? idx : 0;
+  refreshPreview();
+
   printDialog.hidden = false;
   return new Promise((resolve) => {
-    printDialogResolve = resolve;
+    printState.resolve = resolve;
   });
 }
 
-function hidePrintDialog() {
-  printDialog.hidden = true;
+function recomputeVisiblePages() {
+  const total = printState.pages.length;
+  if (printRangeCurrent.checked) {
+    const cur = viewer.currentPage || 1;
+    printState.visiblePageNos = [cur];
+  } else if (printRangeCustom.checked) {
+    const parsed = parsePageList(printRangeInput.value, total);
+    printState.visiblePageNos = parsed.length > 0 ? parsed : [];
+  } else {
+    printState.visiblePageNos = printState.pages.map((p) => p.pageNo);
+  }
+  if (printState.previewIndex >= printState.visiblePageNos.length) {
+    printState.previewIndex = Math.max(0, printState.visiblePageNos.length - 1);
+  }
+}
+
+/**
+ * Parse "1-3, 5, 7-10" into a sorted unique array of page numbers.
+ */
+function parsePageList(input, total) {
+  const out = new Set();
+  for (const part of String(input).split(",")) {
+    const m = part.trim().match(/^(\d+)\s*(?:-\s*(\d+))?$/);
+    if (!m) continue;
+    const start = Number(m[1]);
+    const end = m[2] ? Number(m[2]) : start;
+    if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+    if (start < 1 || end > total || start > end) continue;
+    for (let i = start; i <= end; i++) out.add(i);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+async function refreshPreview() {
+  const visible = printState.visiblePageNos;
+  if (visible.length === 0) {
+    printPreviewCounter.textContent = "— / —";
+    const ctx = printPreviewCanvas.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, printPreviewCanvas.width, printPreviewCanvas.height);
+    printPreviewPrev.disabled = true;
+    printPreviewNext.disabled = true;
+    return;
+  }
+  const pageNo = visible[printState.previewIndex];
+  printPreviewCounter.textContent = `${printState.previewIndex + 1} / ${visible.length}（p.${pageNo}）`;
+  printPreviewPrev.disabled = printState.previewIndex <= 0;
+  printPreviewNext.disabled = printState.previewIndex >= visible.length - 1;
+
+  const pageRow = printState.pages.find((p) => p.pageNo === pageNo);
+  if (!pageRow) return;
+
+  const myToken = ++printState.renderToken;
+  try {
+    const sourceCanvas = await composeSinglePageCanvas(
+      pageRow,
+      kpdf3.renderPage,
+      projectStore,
+      PREVIEW_ZOOM,
+      renderSyntheticPagePixels,
+    );
+    if (myToken !== printState.renderToken) return; // stale
+    // Apply orientation: rotate canvas if landscape selected
+    const landscape = printOrientLandscape.checked;
+    const dest = printPreviewCanvas;
+    if (landscape) {
+      dest.width = sourceCanvas.height;
+      dest.height = sourceCanvas.width;
+      const ctx = dest.getContext("2d");
+      ctx.save();
+      ctx.translate(dest.width, 0);
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(sourceCanvas, 0, 0);
+      ctx.restore();
+    } else {
+      dest.width = sourceCanvas.width;
+      dest.height = sourceCanvas.height;
+      const ctx = dest.getContext("2d");
+      ctx.drawImage(sourceCanvas, 0, 0);
+    }
+  } catch (err) {
+    console.error("[print-preview] render failed", err);
+  }
 }
 
 function settlePrintDialog(value) {
-  hidePrintDialog();
-  if (printDialogResolve) {
-    printDialogResolve(value);
-    printDialogResolve = null;
+  printDialog.hidden = true;
+  if (printState.resolve) {
+    const r = printState.resolve;
+    printState.resolve = null;
+    r(value);
   }
 }
 
 printConfirmBtn.addEventListener("click", () => {
+  const range = currentPrintRange();
+  if (!range || range.length === 0) {
+    wsStatus.textContent = "印刷範囲が無効です";
+    return;
+  }
   settlePrintDialog({
     deviceName: printPrinterSelect.value,
     copies: Math.max(1, Number(printCopiesInput.value) || 1),
+    pageNos: range,
+    sizing: printSizeFit.checked ? "fit" : "actual",
+    landscape: printOrientLandscape.checked,
   });
 });
 printCancelBtn.addEventListener("click", () => settlePrintDialog(null));
+printTitlebarCloseBtn.addEventListener("click", () => settlePrintDialog(null));
 printDialog.addEventListener("click", (e) => {
   if (e.target === printDialog) settlePrintDialog(null);
+});
+
+function currentPrintRange() {
+  recomputeVisiblePages();
+  return printState.visiblePageNos;
+}
+
+// Wire range / size / orientation changes to refresh the preview
+for (const el of [printRangeAll, printRangeCurrent, printRangeCustom]) {
+  el.addEventListener("change", () => {
+    recomputeVisiblePages();
+    refreshPreview();
+  });
+}
+printRangeInput.addEventListener("input", () => {
+  printRangeCustom.checked = true;
+  recomputeVisiblePages();
+  refreshPreview();
+});
+for (const el of [printOrientPortrait, printOrientLandscape, printSizeFit, printSizeActual]) {
+  el.addEventListener("change", refreshPreview);
+}
+
+printPreviewPrev.addEventListener("click", () => {
+  if (printState.previewIndex > 0) {
+    printState.previewIndex--;
+    refreshPreview();
+  }
+});
+printPreviewNext.addEventListener("click", () => {
+  if (printState.previewIndex < printState.visiblePageNos.length - 1) {
+    printState.previewIndex++;
+    refreshPreview();
+  }
+});
+
+printPropertiesBtn.addEventListener("click", async () => {
+  const name = printPrinterSelect.value;
+  if (!name) return;
+  const r = await kpdf3.printerProperties(name);
+  if (r && r.ok === false) {
+    wsStatus.textContent = `プロパティ表示失敗: ${r.error ?? "unknown"}`;
+  }
 });
 
 /**
@@ -820,10 +1359,16 @@ function defaultPartName() {
 async function generateAllThumbnails(pages, onProgress) {
   // Render each page at zoom 0.25 to a tiny canvas, cache by pageNo.
   for (let i = 0; i < pages.length; i++) {
-    const pageNo = pages[i].pageNo;
+    const row = pages[i];
+    const pageNo = row.pageNo;
     if (splitState.thumbCache.has(pageNo)) continue;
     try {
-      const result = await kpdf3.renderPage(pageNo, { zoom: 0.25 });
+      let result;
+      if (row.isSynthetic || pageNo < 0) {
+        result = renderSyntheticPagePixels(row, 0.25);
+      } else {
+        result = await kpdf3.renderPage(pageNo, { zoom: 0.25 });
+      }
       const canvas = document.createElement("canvas");
       canvas.width = result.width;
       canvas.height = result.height;
@@ -873,9 +1418,35 @@ function rebuildSplitUI(pages) {
 
     const row = document.createElement("div");
     row.className = "split-thumbs-row";
+    // Leading insert gap (always present). Anchored to the nearest
+    // preceding source page, or 0 when this part starts at the very
+    // beginning of the document.
+    {
+      let anchor = 0;
+      for (let k = part.start - 1; k >= 0; k--) {
+        if (!pages[k].isSynthetic) {
+          anchor = pages[k].pageNo;
+          break;
+        }
+      }
+      row.appendChild(makeSplitInsertGap(anchor));
+    }
     for (let i = part.start; i <= part.end; i++) {
       const thumb = createThumbElement(pages[i]);
       row.appendChild(thumb);
+      // Trailing insert gap — anchored to this source page (or its
+      // preceding source page when this thumb is synthetic).
+      let anchor = pages[i].pageNo;
+      if (pages[i].isSynthetic) {
+        for (let k = i - 1; k >= 0; k--) {
+          if (!pages[k].isSynthetic) {
+            anchor = pages[k].pageNo;
+            break;
+          }
+        }
+        if (anchor < 0) anchor = 0;
+      }
+      row.appendChild(makeSplitInsertGap(anchor));
       if (i < part.end) {
         // Inner separator — click to split here.
         const sep = document.createElement("div");
@@ -913,10 +1484,10 @@ function rebuildSplitUI(pages) {
 function createThumbElement(pageRow) {
   const wrap = document.createElement("div");
   wrap.className = "split-thumb";
+  wrap.dataset.pageNo = String(pageRow.pageNo);
+  wrap.tabIndex = 0;
   const cached = splitState.thumbCache.get(pageRow.pageNo);
   if (cached) {
-    // Clone: cached canvas may be reused elsewhere (rebuild) — DOM only
-    // allows one parent, so we draw into a fresh canvas.
     const c = document.createElement("canvas");
     c.width = cached.width;
     c.height = cached.height;
@@ -937,6 +1508,11 @@ function createThumbElement(pageRow) {
   lbl.className = "split-thumb-label";
   lbl.textContent = `p.${pageRow.pageNo}`;
   wrap.appendChild(lbl);
+  wrap.addEventListener("click", (e) => {
+    const ordered = getOrderedThumbPageNos(splitFlow, ".split-thumb[data-page-no]");
+    handleThumbSelectionClick(splitThumbSelection, ordered, pageRow.pageNo, e);
+    wrap.focus();
+  });
   return wrap;
 }
 
@@ -956,7 +1532,7 @@ async function actionSplitSave() {
     setSplitMode(false);
     return;
   }
-  const pages = await kpdf3.getPages();
+  const pages = await fetchVisiblePages();
   if (pages.length === 0) return;
 
   // Reset state for a fresh split session
@@ -983,9 +1559,14 @@ async function actionSplitSave() {
 splitCancelBtn.addEventListener("click", () => setSplitMode(false));
 
 splitConfirmBtn.addEventListener("click", async () => {
-  const pages = await kpdf3.getPages();
+  const pages = await fetchVisiblePages();
   const parts = computeParts(pages.length, splitState.splitAfter);
-  const folder = await kpdf3.pickExportFolder();
+  const defaults = await kpdf3.getExportDefaults();
+  const folder = await showFileBrowser({
+    mode: "folder",
+    title: "分割した PDF を保存するフォルダ",
+    defaultDir: defaults.sourceDir,
+  });
   if (!folder) return;
 
   setSplitMode(false);
@@ -1007,6 +1588,7 @@ splitConfirmBtn.addEventListener("click", async () => {
         pages: filteredPages,
         projectStore,
         renderPage: kpdf3.renderPage,
+        renderSyntheticPage: renderSyntheticPagePixels,
         onProgress: ({ done, total }) => {
           const partProgress = done / total;
           updateBusy(
@@ -1030,7 +1612,7 @@ btnSplit.addEventListener("click", actionSplitSave);
 
 async function actionExportRange() {
   if (!isOpen) return;
-  const pages = await kpdf3.getPages();
+  const pages = await fetchVisiblePages();
   if (pages.length === 0) return;
   const total = pages.length;
   const input = await showRangePrompt({
@@ -1044,7 +1626,13 @@ async function actionExportRange() {
     wsStatus.textContent = `無効な範囲: ${input}`;
     return;
   }
-  const savePath = await kpdf3.pickExportPdf();
+  const defaults = await kpdf3.getExportDefaults();
+  const savePath = await showFileBrowser({
+    mode: "save",
+    title: "範囲書き出し",
+    initialName: defaults.defaultName ?? "export.pdf",
+    defaultDir: defaults.sourceDir,
+  });
   if (!savePath) return;
 
   const filteredPages = pages.slice(range.start - 1, range.end);
@@ -1054,6 +1642,7 @@ async function actionExportRange() {
       pages: filteredPages,
       projectStore,
       renderPage: kpdf3.renderPage,
+      renderSyntheticPage: renderSyntheticPagePixels,
       onProgress: ({ done, total: t }) => {
         updateBusy(`${done} / ${t} ページを描画中...`, (done / t) * 80);
       },
@@ -1075,18 +1664,40 @@ async function actionExportRange() {
 
 async function actionPrint() {
   if (!isOpen) return;
-  const pages = await kpdf3.getPages();
+  const pages = await fetchVisiblePages();
   if (pages.length === 0) return;
-  const overlayCount = projectStore.count();
-  const isCopy = overlayCount === 0;
 
-  showBusy("印刷準備", "ページを描画しています...", 0);
-  /** @type {Array<any> | null} */
+  showBusy("プリンタ情報を取得中...", "プリンタ一覧を読み込んでいます...", 50);
+  let printers;
+  try {
+    printers = await kpdf3.listPrinters();
+  } finally {
+    hideBusy();
+  }
+
+  const currentPageNo = viewer.currentPage || 1;
+  const choice = await showPrintDialog(printers, pages, currentPageNo);
+  if (!choice) {
+    wsStatus.textContent = "印刷をキャンセルしました";
+    return;
+  }
+
+  // Decide pipeline: byte-copy only when no overlays AND printing all pages.
+  const overlayCount = projectStore.count();
+  const allPagesSelected =
+    choice.pageNos.length === pages.length &&
+    choice.pageNos.every((n, i) => n === i + 1);
+  const isCopy = overlayCount === 0 && allPagesSelected;
+
+  showBusy("印刷準備", "ページを描画中...", 0);
   let composed = null;
   try {
     if (!isCopy) {
+      const filteredPages = pages.filter((p) =>
+        choice.pageNos.includes(p.pageNo),
+      );
       composed = await composePagesForExport({
-        pages,
+        pages: filteredPages,
         projectStore,
         renderPage: kpdf3.renderPage,
         onProgress: ({ done, total }) => {
@@ -1094,25 +1705,16 @@ async function actionPrint() {
         },
       });
     }
-    updateBusy("プリンタ情報を取得中...", 90);
-    const printers = await kpdf3.listPrinters();
-    hideBusy();
-
-    const choice = await showPrintDialog(printers);
-    if (!choice) {
-      wsStatus.textContent = "印刷をキャンセルしました";
-      return;
-    }
-
-    showBusy("印刷中", `${choice.deviceName} に送信中...`, 50);
+    updateBusy(`${choice.deviceName} に送信中...`, 90);
     await kpdf3.printPdfSilent({
       source: isCopy ? "byte-copy" : "rasterized",
       pages: composed,
       deviceName: choice.deviceName,
       copies: choice.copies,
+      landscape: choice.landscape,
     });
     hideBusy();
-    wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部）`;
+    wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部 / ${choice.pageNos.length} ページ）`;
   } catch (err) {
     hideBusy();
     console.error("[renderer] print failed:", err);
@@ -1122,14 +1724,29 @@ async function actionPrint() {
 
 async function actionExport() {
   if (!isOpen) return;
-  const pages = await kpdf3.getPages();
+  const pages = await fetchVisiblePages();
   if (pages.length === 0) return;
-  const savePath = await kpdf3.pickExportPdf();
+  const defaults = await kpdf3.getExportDefaults();
+  const savePath = await showFileBrowser({
+    mode: "save",
+    title: "PDF として書き出し",
+    initialName: defaults.defaultName ?? "export.pdf",
+    defaultDir: defaults.sourceDir,
+  });
   if (!savePath) return;
   // ADR-0008: with no overlays, byte-copy the source PDF instead of
   // rasterising — preserves the original PDF's text layer and size.
+  // BUT byte-copy outputs the source PDF as-is, so if any pages are
+  // hidden (pending or persisted deletions) OR user-inserted blank
+  // pages are present, we must rasterize instead.
   const overlayCount = projectStore.count();
-  const isCopy = overlayCount === 0;
+  const meta = await kpdf3.getSourceMeta();
+  const hasInsertions = pages.some((p) => p.isSynthetic || p.pageNo < 0);
+  const sourcePagesCount = pages.filter((p) => !p.isSynthetic && p.pageNo > 0).length;
+  const hasDeletions =
+    pendingDeletedPages.size > 0 ||
+    (meta && sourcePagesCount < (meta.pageCount ?? sourcePagesCount));
+  const isCopy = overlayCount === 0 && !hasDeletions && !hasInsertions;
   const verb = isCopy ? "コピー" : "書き出し";
   showBusy(`${verb}準備`, "ページを描画しています...", 0);
   try {
@@ -1142,6 +1759,7 @@ async function actionExport() {
         pages,
         projectStore,
         renderPage: kpdf3.renderPage,
+        renderSyntheticPage: renderSyntheticPagePixels,
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
@@ -1152,9 +1770,29 @@ async function actionExport() {
         pages: composed,
       });
     }
+    // ---- Save As convention: switch active workspace to the new file --
+    // After saving as 008.pdf the user expects to be editing 008 (not 001
+    // with risk of accidentally Ctrl+S overwriting 001). Mirrors Word /
+    // Excel "Save As" semantics. byte-copy with no edits → fingerprint
+    // matches source → main process opens the existing workspace, which
+    // is fine (same content). For rasterized output a fresh workspace is
+    // created.
+    updateBusy("新しいファイルに切り替え中...", 95);
+    try {
+      await kpdf3.closeWorkspace();
+      const opened = await kpdf3.openPdfFile(savePath);
+      projectStore.reset(opened.overlays ?? []);
+      pendingDeletedPages.clear();
+      workspaceMutated = false;
+      thumbSelection.pageNos.clear();
+      thumbSelection.anchor = null;
+      history.clear();
+      await refreshViewer();
+    } catch (switchErr) {
+      console.error("[renderer] post-export workspace switch failed:", switchErr);
+    }
     hideBusy();
-    wsStatus.textContent =
-      `${verb}完了 (${result.pageCount} ページ, rev ${result.revisionId.slice(0, 8)} → ${savePath})`;
+    wsStatus.textContent = `${savePath} に切り替えました（${verb}, rev ${result.revisionId.slice(0, 8)}）`;
   } catch (err) {
     hideBusy();
     console.error("[renderer] export failed:", err);
@@ -1165,16 +1803,31 @@ async function actionExport() {
 async function actionSave() {
   if (!isOpen) return;
   // No-op when nothing has changed since the last save.
-  if (!projectStore.isDirty()) return;
+  if (!isWorkspaceDirty()) return;
   try {
-    const snapshot = projectStore.snapshot();
-    await kpdf3.saveOverlays(snapshot);
-    projectStore.markClean();
+    const overlaySnapshot = projectStore.snapshot();
+    if (projectStore.isDirty()) {
+      await kpdf3.saveOverlays(overlaySnapshot);
+      projectStore.markClean();
+    }
+    let deletedCount = 0;
+    if (pendingDeletedPages.size > 0) {
+      for (const n of pendingDeletedPages) {
+        await kpdf3.setPageDeleted(n, true);
+      }
+      deletedCount = pendingDeletedPages.size;
+      pendingDeletedPages.clear();
+    }
+    workspaceMutated = false;
     refreshDirtyIndicator();
     refreshMenuState();
-    wsStatus.textContent = `保存しました (${snapshot.length} overlays)`;
+    const parts = [];
+    if (overlaySnapshot.length > 0) parts.push(`${overlaySnapshot.length} overlays`);
+    if (deletedCount > 0) parts.push(`${deletedCount} pages 削除`);
+    wsStatus.textContent =
+      parts.length > 0 ? `保存しました (${parts.join(", ")})` : "保存しました";
   } catch (err) {
-    console.error("[renderer] saveOverlays failed:", err);
+    console.error("[renderer] save failed:", err);
     wsStatus.textContent = `保存失敗: ${err.message ?? err}`;
   }
 }
@@ -1190,8 +1843,30 @@ function actionRedo() {
 function applyZoom(z) {
   viewer.setZoom(z);
   refreshMenuState();
+  refreshZoomSelect();
   if (isOpen) wsStatus.textContent = `${Math.round(z * 100)}%`;
 }
+
+function refreshZoomSelect() {
+  if (!zoomSelect) return;
+  const z = viewer.zoom;
+  const match = [...zoomSelect.options].find((opt) => {
+    const v = parseFloat(opt.value);
+    return Number.isFinite(v) && Math.abs(v - z) < 1e-3;
+  });
+  zoomSelect.value = match ? match.value : "";
+}
+
+zoomSelect.addEventListener("change", () => {
+  const v = zoomSelect.value;
+  if (v === "fit") {
+    actionZoomFit();
+  } else {
+    const num = parseFloat(v);
+    if (Number.isFinite(num)) applyZoom(num);
+  }
+  refreshZoomSelect();
+});
 
 function actionZoomIn() {
   if (!isOpen) return;
@@ -1228,15 +1903,19 @@ function actionZoomFit() {
 
 function actionPagePrev() {
   if (!isOpen || !viewer.registry) return;
-  const cur = viewer.currentPage;
-  if (cur > 1) viewer.scrollToPage(cur - 1);
+  const pos = viewer.registry.posOfPageNo(viewer.currentPage);
+  if (pos > 0) {
+    viewer.scrollToPage(viewer.registry.pageNoAtPos(pos - 1));
+  }
 }
 
 function actionPageNext() {
   if (!isOpen || !viewer.registry) return;
-  const cur = viewer.currentPage;
-  const total = viewer.registry.count();
-  if (cur < total) viewer.scrollToPage(cur + 1);
+  const pos = viewer.registry.posOfPageNo(viewer.currentPage);
+  if (pos < 0) return;
+  if (pos < viewer.registry.count() - 1) {
+    viewer.scrollToPage(viewer.registry.pageNoAtPos(pos + 1));
+  }
 }
 
 async function actionPageGoto() {
@@ -1249,8 +1928,12 @@ async function actionPageGoto() {
   });
   if (input === null) return;
   const n = Number(String(input).trim());
-  if (!Number.isInteger(n) || n < 1 || n > total) {
+  if (!Number.isInteger(n) || n < 1) {
     wsStatus.textContent = `無効なページ番号: ${input}`;
+    return;
+  }
+  if (viewer.registry.posOfPageNo(n) < 0) {
+    wsStatus.textContent = `p.${n} は削除されています`;
     return;
   }
   viewer.scrollToPage(n);
@@ -1302,20 +1985,500 @@ function createBookmarkNode(item) {
 function actionToggleBookmarks() {
   if (!isOpen) return;
   sidebar.hidden = !sidebar.hidden;
+  refreshSidebarToggle();
   refreshMenuState();
+  // Trigger thumb rendering for items now visible.
+  if (!sidebar.hidden && currentSidebarTab === "thumbs") {
+    requestVisibleThumbRenders();
+  }
+}
+
+function refreshSidebarToggle() {
+  const toggle = $("sidebar-toggle");
+  if (!toggle) return;
+  const open = isOpen && !sidebar.hidden;
+  toggle.classList.toggle("is-open", open);
+  toggle.disabled = !isOpen;
+}
+
+const sidebarToggleBtn = $("sidebar-toggle");
+sidebarToggleBtn.addEventListener("click", actionToggleBookmarks);
+
+// ---- Sidebar tabs (しおり / サムネ) -----------------------------------
+const THUMB_ZOOM = 0.3;
+let currentSidebarTab = "thumbs";
+const thumbCache = new Map(); // pageNo -> HTMLCanvasElement
+const inFlightThumbs = new Set();
+let thumbObserver = null;
+let lastHighlightedThumb = null;
+
+const sidebarTabEls = document.querySelectorAll(".sidebar-tablist [role='tab']");
+const sidebarPanes = document.querySelectorAll(".sidebar-pane");
+
+for (const tabEl of sidebarTabEls) {
+  tabEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    switchSidebarTab(tabEl.dataset.tab);
+  });
+}
+
+function switchSidebarTab(tab) {
+  currentSidebarTab = tab;
+  for (const t of sidebarTabEls) {
+    t.setAttribute("aria-selected", t.dataset.tab === tab ? "true" : "false");
+  }
+  for (const p of sidebarPanes) {
+    p.hidden = p.dataset.pane !== tab;
+  }
+  if (tab === "thumbs") requestVisibleThumbRenders();
+}
+
+function ensureThumbObserver() {
+  if (thumbObserver) return thumbObserver;
+  thumbObserver = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) {
+          const item = e.target;
+          const pageNo = Number(item.dataset.pageNo);
+          if (pageNo && !thumbCache.has(pageNo) && !inFlightThumbs.has(pageNo)) {
+            renderThumb(pageNo, item);
+          }
+        }
+      }
+    },
+    { root: thumbList.parentElement, rootMargin: "200px", threshold: 0.01 },
+  );
+  return thumbObserver;
+}
+
+/** Build thumb items for the given pages array (already filtered to
+ *  non-deleted by main). Pass the visible pageNos so click→scroll uses
+ *  the actual page index in the viewer. */
+function rebuildThumbs(pages) {
+  clearThumbs();
+  const list = Array.isArray(pages)
+    ? pages
+    : Array.from({ length: pages || 0 }, (_, i) => ({ pageNo: i + 1 }));
+  if (list.length === 0) return;
+  const obs = ensureThumbObserver();
+
+  // Insert "+" gap before page 1 (afterPageNo = 0). Only for source-PDF
+  // pages — gaps are anchored to the prior source page, so they sit
+  // before the first source page or after each one.
+  const firstSrcRow = list.find((r) => !r.isSynthetic);
+  if (firstSrcRow) {
+    thumbList.appendChild(makeInsertGap(0));
+  }
+
+  for (const row of list) {
+    const i = row.pageNo;
+    const item = document.createElement("div");
+    item.className = "thumb-item";
+    item.dataset.pageNo = String(i);
+    item.tabIndex = 0;
+    if (row.isSynthetic) item.classList.add("is-synthetic");
+    const ph = document.createElement("div");
+    ph.className = "thumb-placeholder";
+    item.appendChild(ph);
+    const label = document.createElement("div");
+    label.className = "thumb-label";
+    label.textContent = row.isSynthetic ? "✎ 挿入" : String(i);
+    item.appendChild(label);
+    item.addEventListener("click", (e) => {
+      const ordered = getOrderedThumbPageNos(thumbList, ".thumb-item");
+      handleThumbSelectionClick(sidebarThumbSelection, ordered, i, e);
+      item.focus();
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !row.isSynthetic) {
+        viewer.scrollToPage(i);
+      }
+    });
+    item.addEventListener("dblclick", () => {
+      if (!row.isSynthetic) viewer.scrollToPage(i);
+    });
+    thumbList.appendChild(item);
+    obs.observe(item);
+
+    // Gap after this row — anchored to the prior source page in document
+    // order (so insertions stay in the right slot regardless of how many
+    // synthetic rows precede them in the same slot).
+    if (!row.isSynthetic) {
+      thumbList.appendChild(makeInsertGap(i));
+    }
+  }
+  refreshThumbSelectionVisuals();
+}
+
+function makeInsertGap(afterPageNo) {
+  const gap = document.createElement("div");
+  gap.className = "thumb-insert-gap";
+  gap.tabIndex = 0;
+  gap.title = `ここに白紙ページを挿入 (afterPageNo=${afterPageNo})`;
+  gap.textContent = "＋ 白紙を挿入";
+  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo));
+  gap.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      promptAndInsertBlank(afterPageNo);
+    }
+  });
+  return gap;
+}
+
+function makeSplitInsertGap(afterPageNo) {
+  const gap = document.createElement("div");
+  gap.className = "thumb-insert-gap thumb-insert-gap-vertical";
+  gap.tabIndex = 0;
+  gap.title = `ここに白紙ページを挿入 (afterPageNo=${afterPageNo})`;
+  gap.textContent = "＋";
+  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo));
+  gap.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      promptAndInsertBlank(afterPageNo);
+    }
+  });
+  return gap;
+}
+
+// ---- Multi-select: separate state for sidebar vs split-save thumbs ----
+function makeSelection() {
+  return { pageNos: new Set(), anchor: null };
+}
+const sidebarThumbSelection = makeSelection();
+const splitThumbSelection = makeSelection();
+
+// Back-compat alias used by the delete flow (acts on whichever context the
+// user is interacting with — see deleteSelectedPages below).
+const thumbSelection = sidebarThumbSelection;
+
+function getOrderedThumbPageNos(rootEl, selector) {
+  if (!rootEl) return [];
+  return [...rootEl.querySelectorAll(selector)]
+    .map((el) => Number(el.dataset.pageNo))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+function handleThumbSelectionClick(state, orderedPageNos, pageNo, evt) {
+  if (evt.shiftKey && state.anchor !== null) {
+    const a = orderedPageNos.indexOf(state.anchor);
+    const b = orderedPageNos.indexOf(pageNo);
+    if (a >= 0 && b >= 0) {
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      if (!evt.ctrlKey && !evt.metaKey) state.pageNos.clear();
+      for (let k = lo; k <= hi; k++) {
+        state.pageNos.add(orderedPageNos[k]);
+      }
+    }
+  } else if (evt.ctrlKey || evt.metaKey) {
+    if (state.pageNos.has(pageNo)) state.pageNos.delete(pageNo);
+    else state.pageNos.add(pageNo);
+    state.anchor = pageNo;
+  } else {
+    state.pageNos.clear();
+    state.pageNos.add(pageNo);
+    state.anchor = pageNo;
+  }
+  refreshThumbSelectionVisuals();
+}
+
+function refreshThumbSelectionVisuals() {
+  for (const el of thumbList?.querySelectorAll(".thumb-item") ?? []) {
+    const n = Number(el.dataset.pageNo);
+    el.classList.toggle("is-selected", sidebarThumbSelection.pageNos.has(n));
+  }
+  for (const el of splitFlow?.querySelectorAll(".split-thumb[data-page-no]") ?? []) {
+    const n = Number(el.dataset.pageNo);
+    el.classList.toggle("is-selected", splitThumbSelection.pageNos.has(n));
+  }
+}
+
+function clearThumbSelection() {
+  sidebarThumbSelection.pageNos.clear();
+  sidebarThumbSelection.anchor = null;
+  splitThumbSelection.pageNos.clear();
+  splitThumbSelection.anchor = null;
+  refreshThumbSelectionVisuals();
+}
+
+/** Pages the user has marked for deletion in this session, not yet
+ *  persisted. Flushed to SQLite on Ctrl+S. Until then, viewer / thumbs /
+ *  export / print all filter via this set so the deletion is purely
+ *  in-memory. Reset on close / new PDF open. */
+const pendingDeletedPages = new Set();
+
+/** Workspace got changed via a path that already persisted to DB
+ *  (page insertions/removals). Flagging this lets Ctrl+S behave
+ *  consistently — the save action will simply clear the flag. */
+let workspaceMutated = false;
+function markWorkspaceMutated() {
+  workspaceMutated = true;
+  refreshDirtyIndicator();
+  refreshMenuState();
+}
+
+// ---- Insert blank/text page dialog ----------------------------------
+const insertDialog = $("insert-dialog");
+const insertTitleText = $("insert-title-text");
+const insertPositionLabel = $("insert-position-label");
+const insertTextEl = $("insert-text");
+const insertConfirmBtn = $("insert-confirm");
+const insertCancelBtn = $("insert-cancel");
+const insertTitlebarCloseBtn = $("insert-titlebar-close");
+
+let insertResolve = null;
+
+function showInsertDialog({ afterPageNo }) {
+  insertPositionLabel.textContent =
+    afterPageNo === 0 ? "全ページの先頭" : `p.${afterPageNo} の直後`;
+  insertTextEl.value = "";
+  insertDialog.hidden = false;
+  setTimeout(() => insertTextEl.focus(), 0);
+  return new Promise((resolve) => {
+    insertResolve = resolve;
+  });
+}
+
+function settleInsertDialog(value) {
+  insertDialog.hidden = true;
+  if (insertResolve) {
+    const r = insertResolve;
+    insertResolve = null;
+    r(value);
+  }
+}
+
+insertConfirmBtn.addEventListener("click", () =>
+  settleInsertDialog({ text: insertTextEl.value }),
+);
+insertCancelBtn.addEventListener("click", () => settleInsertDialog(null));
+insertTitlebarCloseBtn.addEventListener("click", () => settleInsertDialog(null));
+insertDialog.addEventListener("click", (e) => {
+  if (e.target === insertDialog) settleInsertDialog(null);
+});
+insertTextEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    settleInsertDialog({ text: insertTextEl.value });
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    settleInsertDialog(null);
+  }
+});
+
+async function promptAndInsertBlank(afterPageNo) {
+  const r = await showInsertDialog({ afterPageNo });
+  if (!r) return;
+  try {
+    await kpdf3.addInsertedPage({
+      afterPageNo,
+      text: r.text || null,
+    });
+    wsStatus.textContent =
+      afterPageNo === 0
+        ? `先頭に白紙を挿入しました${r.text ? "（テキスト付き）" : ""}`
+        : `p.${afterPageNo} の後に白紙を挿入しました${r.text ? "（テキスト付き）" : ""}`;
+    markWorkspaceMutated();
+    await refreshViewer();
+    // If split-save is active, refresh its UI with the new page list.
+    if (isSplitMode) await refreshSplitView();
+  } catch (err) {
+    console.error("[insert] failed", err);
+    wsStatus.textContent = `挿入失敗: ${err.message ?? err}`;
+  }
+}
+
+/** Refresh the split-save panel after a workspace-level page change
+ *  (insert/delete). Regenerates thumbnails for any new pages and rebuilds
+ *  the row layout. Called only while split mode is active. */
+async function refreshSplitView() {
+  const pages = await fetchVisiblePages();
+  if (pages.length === 0) return;
+  // Drop cache entries for pages that no longer exist (e.g. deleted)
+  const livePageNos = new Set(pages.map((p) => p.pageNo));
+  for (const cachedPageNo of [...splitState.thumbCache.keys()]) {
+    if (!livePageNos.has(cachedPageNo)) {
+      splitState.thumbCache.delete(cachedPageNo);
+    }
+  }
+  await generateAllThumbnails(pages);
+  rebuildSplitUI(pages);
+}
+
+function isWorkspaceDirty() {
+  return (
+    projectStore.isDirty() ||
+    pendingDeletedPages.size > 0 ||
+    workspaceMutated
+  );
+}
+
+/** Pages currently visible to the user (DB pages minus pending deletions). */
+async function fetchVisiblePages() {
+  const all = await kpdf3.getPages();
+  return all.filter((p) => !pendingDeletedPages.has(p.pageNo));
+}
+
+async function deleteSelectedPages(state = sidebarThumbSelection) {
+  const all = [...state.pageNos].sort((a, b) => a - b);
+  if (all.length === 0) return;
+  const sourceDeletes = all.filter((n) => n > 0);
+  const syntheticDeletes = all.filter((n) => n < 0);
+  const labels = all
+    .map((n) => (n > 0 ? `p.${n}` : "挿入ページ"))
+    .join(", ");
+  const ok = window.confirm(
+    all.length === 1
+      ? `${labels} を削除しますか？\n\n※ 元 PDF は変更されません。\n挿入ページは即時削除、元ページは Ctrl+S で確定。`
+      : `${all.length} ページを削除しますか？\n(${labels})\n\n※ 元 PDF は変更されません。\n挿入ページは即時削除、元ページは Ctrl+S で確定。`,
+  );
+  if (!ok) return;
+  // Synthetic pages: remove immediately from DB (no pending state).
+  for (const n of syntheticDeletes) {
+    try {
+      await kpdf3.removeInsertedPage(n);
+    } catch (err) {
+      console.error("[remove-inserted] failed", err);
+    }
+  }
+  if (syntheticDeletes.length > 0) markWorkspaceMutated();
+  // Source pages: queue as pending until Ctrl+S.
+  for (const n of sourceDeletes) pendingDeletedPages.add(n);
+  state.pageNos.clear();
+  state.anchor = null;
+  refreshThumbSelectionVisuals();
+  const parts = [];
+  if (syntheticDeletes.length > 0) parts.push(`${syntheticDeletes.length} 挿入ページを削除`);
+  if (sourceDeletes.length > 0) parts.push(`${sourceDeletes.length} 元ページを削除予定 (Ctrl+S で確定)`);
+  wsStatus.textContent = parts.join(" / ");
+  refreshDirtyIndicator();
+  await refreshViewer();
+  if (isSplitMode) await refreshSplitView();
+}
+
+// Delete key from either thumb context — each operates on its own selection.
+thumbList?.addEventListener("keydown", (e) => {
+  if (e.key === "Delete" || e.key === "Backspace") {
+    e.preventDefault();
+    deleteSelectedPages(sidebarThumbSelection);
+  }
+});
+splitFlow?.addEventListener("keydown", (e) => {
+  if (e.key === "Delete" || e.key === "Backspace") {
+    e.preventDefault();
+    deleteSelectedPages(splitThumbSelection);
+  }
+});
+
+function clearThumbs() {
+  if (thumbObserver) thumbObserver.disconnect();
+  thumbObserver = null;
+  thumbCache.clear();
+  inFlightThumbs.clear();
+  thumbList.innerHTML = "";
+  lastHighlightedThumb = null;
+}
+
+async function renderThumb(pageNo, itemEl) {
+  inFlightThumbs.add(pageNo);
+  try {
+    let result;
+    if (pageNo < 0) {
+      // Synthetic — find the row in the viewer's known pages
+      const row = viewer._pages?.find((p) => p.pageNo === pageNo);
+      if (!row) return;
+      result = renderSyntheticPagePixels(row, THUMB_ZOOM);
+    } else {
+      result = await kpdf3.renderPage(pageNo, { zoom: THUMB_ZOOM });
+    }
+    const pixels =
+      result.pixels instanceof Uint8ClampedArray
+        ? result.pixels
+        : new Uint8ClampedArray(result.pixels.buffer ?? result.pixels);
+    const imageData = new ImageData(pixels, result.width, result.height);
+    const canvas = document.createElement("canvas");
+    canvas.width = result.width;
+    canvas.height = result.height;
+    canvas.className = "thumb-img";
+    canvas.getContext("2d").putImageData(imageData, 0, 0);
+    const ph = itemEl.querySelector(".thumb-placeholder");
+    if (ph) ph.replaceWith(canvas);
+    thumbCache.set(pageNo, canvas);
+  } catch (err) {
+    console.error("[thumb] render failed", pageNo, err);
+  } finally {
+    inFlightThumbs.delete(pageNo);
+  }
+}
+
+function requestVisibleThumbRenders() {
+  // IntersectionObserver fires automatically as items become visible, but
+  // when we toggle the pane from hidden→visible the observer may not refire
+  // for already-intersecting elements. Force-evaluate the visible viewport.
+  if (!thumbList) return;
+  const rootRect = thumbList.parentElement.getBoundingClientRect();
+  for (const item of thumbList.children) {
+    const r = item.getBoundingClientRect();
+    const visible = r.bottom >= rootRect.top - 200 && r.top <= rootRect.bottom + 200;
+    const pageNo = Number(item.dataset.pageNo);
+    if (visible && pageNo && !thumbCache.has(pageNo) && !inFlightThumbs.has(pageNo)) {
+      renderThumb(pageNo, item);
+    }
+  }
+}
+
+function highlightCurrentThumb(pageNo) {
+  if (!thumbList) return;
+  if (lastHighlightedThumb && lastHighlightedThumb.dataset.pageNo === String(pageNo)) return;
+  if (lastHighlightedThumb) lastHighlightedThumb.classList.remove("is-current");
+  const next = thumbList.querySelector(`.thumb-item[data-page-no="${pageNo}"]`);
+  if (next) {
+    next.classList.add("is-current");
+    if (currentSidebarTab === "thumbs" && !sidebar.hidden) {
+      next.scrollIntoView({ block: "nearest", behavior: "auto" });
+    }
+  }
+  lastHighlightedThumb = next ?? null;
+}
+
+const aboutDialog = $("about-dialog");
+const aboutVersionEl = $("about-version");
+const aboutMetaEl = $("about-meta");
+const aboutCloseBtn = $("about-close");
+
+function hideAboutDialog() {
+  aboutDialog.hidden = true;
 }
 
 async function actionAbout() {
   const info = await kpdf3.getAppInfo();
-  const lines = [
-    `K-PDF3 v${info.appVersion}`,
-    "法律実務向け PDF Workspace",
-    "",
-    `Electron ${info.electronVersion} / Node ${info.nodeVersion}`,
-    `Platform: ${info.platform}`,
+  aboutVersionEl.textContent = `v${info.appVersion}`;
+  aboutMetaEl.innerHTML = "";
+  const rows = [
+    ["Electron", info.electronVersion],
+    ["Node.js", info.nodeVersion],
+    ["Platform", info.platform],
   ];
-  alert(lines.join("\n"));
+  for (const [k, v] of rows) {
+    const row = document.createElement("div");
+    row.className = "about-meta-row";
+    const left = document.createElement("span");
+    left.textContent = k;
+    const right = document.createElement("span");
+    right.textContent = v;
+    row.appendChild(left);
+    row.appendChild(right);
+    aboutMetaEl.appendChild(row);
+  }
+  aboutDialog.hidden = false;
+  aboutCloseBtn.focus();
 }
+
+aboutCloseBtn.addEventListener("click", hideAboutDialog);
+aboutDialog.addEventListener("click", (e) => {
+  if (e.target === aboutDialog) hideAboutDialog();
+});
 
 function actionExit() {
   window.close();
@@ -1328,6 +2491,7 @@ const menuBar = new MenuBar({
     file: $("menu-file"),
     edit: $("menu-edit"),
     view: $("menu-view"),
+    tools: $("menu-tools"),
     help: $("menu-help"),
   },
   actions: {
@@ -1351,8 +2515,37 @@ const menuBar = new MenuBar({
     "page-next": actionPageNext,
     "page-goto": actionPageGoto,
     "toggle-bookmarks": actionToggleBookmarks,
+    "mode-text": () =>
+      setPlacementMode(placementMode === "text" ? "none" : "text"),
+    "mode-stamp": () =>
+      setPlacementMode(placementMode === "stamp" ? "none" : "stamp"),
+    "mode-redaction": () =>
+      setPlacementMode(placementMode === "redaction" ? "none" : "redaction"),
+    "quality-standard": () => setRenderQuality("standard"),
+    "quality-high": () => setRenderQuality("high"),
+    "quality-max": () => setRenderQuality("max"),
   },
 });
+
+// ---- Render quality (oversample level) -------------------------------
+const RENDER_QUALITY_KEY = "kpdf3.renderQuality";
+
+function setRenderQuality(level) {
+  viewer.setRenderQuality(level);
+  localStorage.setItem(RENDER_QUALITY_KEY, level);
+  refreshMenuState();
+  wsStatus.textContent = `表示解像度: ${
+    { standard: "標準", high: "高", max: "最高" }[level] ?? level
+  }`;
+}
+
+// Apply persisted level on startup.
+{
+  const stored = localStorage.getItem(RENDER_QUALITY_KEY);
+  if (stored && stored !== "high") {
+    viewer.setRenderQuality(stored);
+  }
+}
 
 // ---- Keyboard shortcuts ----------------------------------------------
 // M3-3 will need to skip these when an editable text overlay has focus
@@ -1369,17 +2562,26 @@ window.addEventListener("keydown", (e) => {
       target.tagName === "TEXTAREA");
   const key = e.key.toLowerCase();
 
-  if (key === "s") {
+  if (key === "s" && !e.shiftKey) {
     // Ctrl+S works even inside text edit — commit the edit first via blur,
     // then save.
     e.preventDefault();
     if (inText && target instanceof HTMLElement) target.blur();
     setTimeout(() => actionSave(), 0);
     return;
-  } else if (key === "e") {
+  } else if (key === "s" && e.shiftKey) {
+    // Ctrl+Shift+S = 名前を付けて保存 (formerly export, Ctrl+E)
     e.preventDefault();
     if (inText && target instanceof HTMLElement) target.blur();
     setTimeout(() => actionExport(), 0);
+    return;
+  } else if (key === "f") {
+    // Ctrl+F → focus the menu-bar search box
+    e.preventDefault();
+    if (!menuSearchInput.disabled) {
+      menuSearchInput.focus();
+      menuSearchInput.select();
+    }
     return;
   } else if (key === "p") {
     e.preventDefault();
@@ -1413,6 +2615,241 @@ window.addEventListener("keydown", (e) => {
     actionPageGoto();
   }
 });
+
+// ---- Search box (menu bar) -------------------------------------------
+const menuSearchInput = $("menu-search-input");
+const menuSearchBtn = $("menu-search-btn");
+
+const searchState = {
+  lastQuery: "",
+  pages: [],          // [{ pageNo, count }]
+  cursorIdx: -1,      // -1 = no result yet, else index into pages[]
+};
+
+async function runSearch() {
+  const q = menuSearchInput.value.trim();
+  if (!q) {
+    searchState.lastQuery = "";
+    searchState.pages = [];
+    searchState.cursorIdx = -1;
+    wsStatus.textContent = "検索語を入力してください";
+    return;
+  }
+  if (!isOpen) {
+    wsStatus.textContent = "PDF を開いてから検索してください";
+    return;
+  }
+  // Same query as last time → advance to next match
+  if (q === searchState.lastQuery && searchState.pages.length > 0) {
+    const pageCount = searchState.pages.length;
+    if (pageCount === 0) return;
+    searchState.cursorIdx = (searchState.cursorIdx + 1) % pageCount;
+    const target = searchState.pages[searchState.cursorIdx];
+    viewer.scrollToPage(target.pageNo);
+    wsStatus.textContent = `${searchState.cursorIdx + 1} / ${pageCount} 件 (p.${target.pageNo}, ${target.count} 一致)`;
+    return;
+  }
+  // New query
+  wsStatus.textContent = "検索中...";
+  try {
+    const result = await kpdf3.searchPdf(q);
+    searchState.lastQuery = q;
+    searchState.pages = result.pages ?? [];
+    searchState.cursorIdx = -1;
+    if (searchState.pages.length === 0) {
+      wsStatus.textContent = `「${q}」: 一致なし`;
+      return;
+    }
+    searchState.cursorIdx = 0;
+    const first = searchState.pages[0];
+    viewer.scrollToPage(first.pageNo);
+    wsStatus.textContent = `「${q}」: ${result.totalMatches} 件、${searchState.pages.length} ページにヒット (1 件目: p.${first.pageNo})`;
+  } catch (err) {
+    console.error("[search] failed", err);
+    wsStatus.textContent = `検索失敗: ${err.message ?? err}`;
+  }
+}
+
+menuSearchBtn.addEventListener("click", runSearch);
+menuSearchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    runSearch();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    menuSearchInput.blur();
+  }
+});
+
+// Enable / disable with PDF open state
+function refreshSearchEnabled() {
+  menuSearchInput.disabled = !isOpen;
+  menuSearchBtn.disabled = !isOpen;
+}
+
+// ---- Sidebar splitter (drag to resize) -------------------------------
+const sidebarSplitter = $("sidebar-splitter");
+const SIDEBAR_WIDTH_KEY = "kpdf3.sidebarWidth";
+const SIDEBAR_MIN = 140;
+const SIDEBAR_MAX = 600;
+
+(function initSidebarWidth() {
+  const stored = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) ?? "", 10);
+  if (Number.isFinite(stored) && stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX) {
+    sidebar.style.flexBasis = `${stored}px`;
+  }
+})();
+
+let splitterDragStartX = 0;
+let splitterDragStartW = 0;
+sidebarSplitter.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  sidebarSplitter.setPointerCapture(e.pointerId);
+  sidebarSplitter.classList.add("is-dragging");
+  splitterDragStartX = e.clientX;
+  splitterDragStartW = sidebar.getBoundingClientRect().width;
+});
+sidebarSplitter.addEventListener("pointermove", (e) => {
+  if (!sidebarSplitter.hasPointerCapture(e.pointerId)) return;
+  const dx = e.clientX - splitterDragStartX;
+  const w = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, splitterDragStartW + dx));
+  sidebar.style.flexBasis = `${w}px`;
+});
+sidebarSplitter.addEventListener("pointerup", (e) => {
+  if (sidebarSplitter.hasPointerCapture(e.pointerId)) {
+    sidebarSplitter.releasePointerCapture(e.pointerId);
+  }
+  sidebarSplitter.classList.remove("is-dragging");
+  const w = sidebar.getBoundingClientRect().width;
+  if (Number.isFinite(w) && w > 0) {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(Math.round(w)));
+  }
+});
+
+// ---- Status bar hover hints (Win9x convention) -----------------------
+// While the cursor is over a labelled UI element, the bottom-left status
+// field shows a one-liner about that element. Restored on mouseleave.
+const STATUS_HINTS = {
+  "btn-open": "PDF ファイルを開きます (Ctrl+O 同等)",
+  "btn-save": "現在の状態を上書き保存します (Ctrl+S)",
+  "btn-export": "名前を付けて保存します (Ctrl+Shift+S)",
+  "btn-print": "印刷します (Ctrl+P)",
+  "btn-mode-text": "テキストを配置するモードに切り替えます",
+  "btn-mode-stamp": "印影を配置するモードに切り替えます",
+  "btn-mode-redaction": "墨消し範囲を配置するモードに切り替えます",
+  "btn-mode-marker": "マーカー機能 — 将来対応",
+  "btn-split": "PDF をパートごとに分割保存します",
+  "btn-rotate-left": "左に 90° 回転 — 将来対応",
+  "btn-rotate-right": "右に 90° 回転 — 将来対応",
+  "zoom-select": "表示倍率を選びます",
+  "win-minimize": "ウィンドウを最小化します",
+  "win-maximize": "ウィンドウを最大化／復元します",
+  "win-close": "ウィンドウを閉じます",
+  "sidebar-toggle": "しおり／サムネイルパネルを開閉します (F4)",
+};
+const MENU_HINTS = {
+  open: "PDF ファイルを開きます",
+  recent: "最近開いた PDF の一覧から選びます",
+  close: "現在の PDF を閉じます (アプリは開いたまま)",
+  save: "現在の状態を上書き保存します (Ctrl+S)",
+  export: "PDF を選んだ場所に保存します (Ctrl+Shift+S)",
+  "export-range": "ページ範囲を指定して PDF を書き出します",
+  "split-save": "PDF を複数のパートに分割保存します",
+  print: "PDF を印刷します (Ctrl+P)",
+  exit: "アプリを終了します",
+  undo: "直前の編集を取り消します (Ctrl+Z)",
+  redo: "取り消した編集をやり直します (Ctrl+Y)",
+  "zoom-in": "表示を拡大します (Ctrl++)",
+  "zoom-out": "表示を縮小します (Ctrl+-)",
+  "zoom-fit": "ページがウィンドウに収まる倍率にします",
+  "zoom-100": "表示を 100% に戻します (Ctrl+0)",
+  "page-prev": "前のページへ移動します (PageUp)",
+  "page-next": "次のページへ移動します (PageDown)",
+  "page-goto": "ページ番号を指定して移動します (Ctrl+G)",
+  "toggle-bookmarks": "しおり／サムネイルパネルを開閉します (F4)",
+  "mode-text": "テキスト配置モードに切替",
+  "mode-stamp": "印影配置モードに切替",
+  "mode-redaction": "墨消し配置モードに切替",
+  "mode-marker": "マーカー配置モード — 将来対応",
+  "quality-standard": "PDF 表示解像度: 標準 (軽量)",
+  "quality-high": "PDF 表示解像度: 高 (推奨)",
+  "quality-max": "PDF 表示解像度: 最高 (重め)",
+  "stamp-manager": "スタンプ管理 — 将来対応",
+  "font-settings": "フォント設定 — 将来対応",
+  about: "K-PDF3 のバージョン情報",
+};
+const DEFAULT_STATUS = "PDF を「開く」で読み込みます";
+let statusHintActive = false;
+let statusBeforeHint = "";
+
+function showStatusHint(text) {
+  if (!statusHintActive) statusBeforeHint = wsStatus.textContent;
+  statusHintActive = true;
+  wsStatus.textContent = text;
+}
+function clearStatusHint() {
+  if (!statusHintActive) return;
+  statusHintActive = false;
+  wsStatus.textContent = statusBeforeHint;
+}
+
+for (const [id, text] of Object.entries(STATUS_HINTS)) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.addEventListener("mouseenter", () => showStatusHint(text));
+  el.addEventListener("mouseleave", clearStatusHint);
+}
+for (const dropdownId of ["menu-file", "menu-edit", "menu-view", "menu-tools", "menu-help"]) {
+  const dd = document.getElementById(dropdownId);
+  if (!dd) continue;
+  for (const item of dd.querySelectorAll(".menu-item[data-action]")) {
+    const action = item.dataset.action;
+    const text = MENU_HINTS[action];
+    if (!text) continue;
+    item.addEventListener("mouseenter", () => showStatusHint(text));
+    item.addEventListener("mouseleave", clearStatusHint);
+  }
+}
+
+// Drag-and-drop to open: dropping a `.pdf` anywhere on the window opens it.
+// preventDefault on dragover is needed for the drop event to fire.
+document.addEventListener("dragover", (e) => {
+  e.preventDefault();
+});
+document.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  const files = e.dataTransfer?.files;
+  if (!files || files.length === 0) return;
+  const file = files[0];
+  // Electron 32+ removed File.path on the renderer side; resolve the
+  // backing OS path via the preload helper instead.
+  const path = kpdf3.getPathForFile?.(file) || file.path || "";
+  if (!path) {
+    wsStatus.textContent = "ドロップされたファイルのパスを取得できませんでした";
+    return;
+  }
+  if (!/\.pdf$/i.test(path)) {
+    wsStatus.textContent = "PDF ファイルを指定してください";
+    return;
+  }
+  if (!confirmDiscardIfDirty()) return;
+  await openPdfPath(path);
+});
+
+// Ctrl + mouse wheel zooms the viewer (Adobe / browser convention).
+// passive:false so we can preventDefault and stop the page from scrolling
+// while the user holds Ctrl.
+viewerContainer.addEventListener(
+  "wheel",
+  (e) => {
+    if (!isOpen) return;
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    if (e.deltaY < 0) actionZoomIn();
+    else if (e.deltaY > 0) actionZoomOut();
+  },
+  { passive: false },
+);
 
 // PageUp / PageDown for page navigation (no Ctrl required, like a PDF viewer).
 // F4 toggles the bookmarks sidebar.
@@ -1448,7 +2885,9 @@ window.addEventListener("beforeunload", (e) => {
 
 // ---- Toolbar buttons --------------------------------------------------
 btnOpen.addEventListener("click", actionOpen);
-btnClose.addEventListener("click", actionClose);
+btnSave.addEventListener("click", actionSave);
+btnExport.addEventListener("click", actionExport);
+btnPrint.addEventListener("click", actionPrint);
 btnModeText.addEventListener("click", () =>
   setPlacementMode(placementMode === "text" ? "none" : "text"),
 );

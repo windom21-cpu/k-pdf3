@@ -100,4 +100,19 @@ export class MenuBar {
       }
     }
   }
+
+  /**
+   * Update checkmark state of items by data-action (toggle-style menu items).
+   * @param {Record<string, boolean>} state action -> checked?
+   */
+  setChecked(state) {
+    for (const dd of Object.values(this.dropdowns)) {
+      for (const mi of dd.querySelectorAll(".menu-item[data-action]")) {
+        const action = mi.dataset.action;
+        if (action in state) {
+          mi.classList.toggle("checked", !!state[action]);
+        }
+      }
+    }
+  }
 }

@@ -9,9 +9,11 @@
 </head>
 <body>
   <div class="title-bar">
-    <div class="title-bar-text">K-PDF3 — 法律実務向け PDF Workspace</div>
+    <div class="title-bar-text" id="app-title-text">K-PDF3 — 法律実務向け PDF Workspace</div>
     <div class="title-bar-controls">
-      <!-- Window controls reserved for future use (M3 menu / multi-window) -->
+      <button id="win-minimize" aria-label="Minimize"></button>
+      <button id="win-maximize" aria-label="Maximize"></button>
+      <button id="win-close" aria-label="Close"></button>
     </div>
   </div>
 
@@ -19,6 +21,7 @@
     <div class="menu-bar-item" data-menu="file">ファイル(<u>F</u>)</div>
     <div class="menu-bar-item" data-menu="edit">編集(<u>E</u>)</div>
     <div class="menu-bar-item" data-menu="view">表示(<u>V</u>)</div>
+    <div class="menu-bar-item" data-menu="tools">ツール(<u>T</u>)</div>
     <div class="menu-bar-item" data-menu="help">ヘルプ(<u>H</u>)</div>
   </div>
 
@@ -28,7 +31,7 @@
     <div class="menu-item disabled" data-action="close">閉じる</div>
     <div class="menu-separator"></div>
     <div class="menu-item disabled" data-action="save">上書き保存 (Ctrl+S)</div>
-    <div class="menu-item disabled" data-action="export">PDF として書き出し (Ctrl+E)</div>
+    <div class="menu-item disabled" data-action="export">名前を付けて保存 (Ctrl+Shift+S)</div>
     <div class="menu-item disabled" data-action="export-range">範囲指定で書き出し...</div>
     <div class="menu-item disabled" data-action="split-save">分割保存...</div>
     <div class="menu-item disabled" data-action="print">印刷... (Ctrl+P)</div>
@@ -56,6 +59,20 @@
     <div class="menu-item disabled" data-action="page-goto">ページ移動... (Ctrl+G)</div>
     <div class="menu-separator"></div>
     <div class="menu-item disabled" data-action="toggle-bookmarks">しおり (F4)</div>
+  </div>
+
+  <div class="menu-dropdown" id="menu-tools" hidden>
+    <div class="menu-item disabled" data-action="mode-text">テキスト</div>
+    <div class="menu-item disabled" data-action="mode-stamp">印影</div>
+    <div class="menu-item disabled" data-action="mode-redaction">墨消し</div>
+    <div class="menu-item disabled" data-action="mode-marker">マーカー (将来対応)</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item" data-action="quality-standard">表示解像度: 標準</div>
+    <div class="menu-item" data-action="quality-high">表示解像度: 高</div>
+    <div class="menu-item" data-action="quality-max">表示解像度: 最高</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="stamp-manager">スタンプ管理...</div>
+    <div class="menu-item disabled" data-action="font-settings">フォント設定...</div>
   </div>
 
   <div class="menu-dropdown" id="menu-help" hidden>
@@ -137,45 +154,244 @@
     </div>
   </div>
 
-  <!-- Custom print options dialog (M5-4 rework) -->
-  <div class="busy-modal" id="print-dialog" hidden>
-    <div class="window print-window">
+  <!-- Custom Win95-style file browser (open / save / folder modes) -->
+  <div class="busy-modal" id="open-dialog" hidden>
+    <div class="window open-window">
       <div class="title-bar">
-        <div class="title-bar-text">印刷</div>
+        <div class="title-bar-text" id="open-title-text">PDF を開く</div>
+        <div class="title-bar-controls">
+          <button id="open-titlebar-close" aria-label="Close"></button>
+        </div>
       </div>
       <div class="window-body">
-        <div class="print-row">
-          <label for="print-printer">プリンタ:</label>
-          <select id="print-printer"></select>
+        <div class="open-row open-row-toolbar">
+          <label for="open-quick">場所:</label>
+          <select id="open-quick"></select>
+          <button id="open-up" title="上のフォルダへ">↑</button>
         </div>
-        <div class="print-row">
-          <label for="print-copies">部数:</label>
-          <input type="number" id="print-copies" value="1" min="1" max="99" />
+        <div class="open-current-path" id="open-current-path"></div>
+        <div class="open-list-frame">
+          <ul id="open-file-list" class="open-file-list"></ul>
         </div>
-        <div class="print-buttons">
-          <button id="print-confirm" class="default">印刷</button>
-          <button id="print-cancel">キャンセル</button>
+        <div class="open-row" id="open-row-filename">
+          <label for="open-filename">ファイル名:</label>
+          <input type="text" id="open-filename" />
+        </div>
+        <div class="open-row" id="open-row-filter">
+          <label for="open-filter">ファイルの種類:</label>
+          <select id="open-filter">
+            <option value="pdf">PDF (*.pdf)</option>
+            <option value="all">すべてのファイル (*.*)</option>
+          </select>
+        </div>
+        <div class="open-buttons">
+          <button id="open-confirm" class="default">開く</button>
+          <button id="open-cancel">キャンセル</button>
         </div>
       </div>
     </div>
   </div>
 
+  <!-- Insert blank/text page dialog -->
+  <div class="busy-modal" id="insert-dialog" hidden>
+    <div class="window insert-window">
+      <div class="title-bar">
+        <div class="title-bar-text" id="insert-title-text">白紙ページを挿入</div>
+        <div class="title-bar-controls">
+          <button id="insert-titlebar-close" aria-label="Close"></button>
+        </div>
+      </div>
+      <div class="window-body">
+        <p class="insert-hint">挿入位置: <span id="insert-position-label"></span></p>
+        <p class="insert-hint">テキスト（72pt で表示。空欄なら純粋な白紙）:</p>
+        <textarea
+          id="insert-text"
+          class="insert-textarea"
+          rows="3"
+          placeholder="（任意）テキストを入力..."
+        ></textarea>
+        <div class="insert-buttons">
+          <button id="insert-confirm" class="default">挿入</button>
+          <button id="insert-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- About / version info dialog -->
+  <div class="busy-modal" id="about-dialog" hidden>
+    <div class="window about-window">
+      <div class="title-bar">
+        <div class="title-bar-text">バージョン情報</div>
+      </div>
+      <div class="window-body">
+        <div class="about-header">
+          <div class="about-title">K-PDF3</div>
+          <div class="about-subtitle">法律実務向け PDF Workspace</div>
+          <div class="about-version" id="about-version">v—</div>
+        </div>
+        <div class="about-meta" id="about-meta"></div>
+        <div class="about-buttons">
+          <button id="about-close" class="default">OK</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom print preview dialog (Adobe Reader simplified, Win9x style) -->
+  <div class="busy-modal" id="print-dialog" hidden>
+    <div class="window print-window">
+      <div class="title-bar">
+        <div class="title-bar-text">印刷</div>
+        <div class="title-bar-controls">
+          <button id="print-titlebar-close" aria-label="Close"></button>
+        </div>
+      </div>
+      <div class="window-body print-window-body">
+        <div class="print-pane print-settings-pane">
+          <fieldset class="print-fieldset">
+            <legend>プリンタ</legend>
+            <div class="print-row">
+              <select id="print-printer"></select>
+              <button id="print-properties" type="button">プロパティ...</button>
+            </div>
+            <div class="print-row">
+              <label for="print-copies">部数:</label>
+              <input type="number" id="print-copies" value="1" min="1" max="99" />
+            </div>
+          </fieldset>
+
+          <fieldset class="print-fieldset">
+            <legend>印刷範囲</legend>
+            <div class="print-row">
+              <input type="radio" id="print-range-all" name="print-range" value="all" checked />
+              <label for="print-range-all">すべて</label>
+            </div>
+            <div class="print-row">
+              <input type="radio" id="print-range-current" name="print-range" value="current" />
+              <label for="print-range-current">現在のページ</label>
+            </div>
+            <div class="print-row">
+              <input type="radio" id="print-range-custom" name="print-range" value="custom" />
+              <label for="print-range-custom">範囲:</label>
+              <input type="text" id="print-range-input" placeholder="例: 1-3, 5" />
+            </div>
+          </fieldset>
+
+          <fieldset class="print-fieldset">
+            <legend>サイズ</legend>
+            <div class="print-row">
+              <input type="radio" id="print-size-actual" name="print-size" value="actual" checked />
+              <label for="print-size-actual">実寸</label>
+            </div>
+            <div class="print-row">
+              <input type="radio" id="print-size-fit" name="print-size" value="fit" />
+              <label for="print-size-fit">用紙に合わせる</label>
+            </div>
+          </fieldset>
+
+          <fieldset class="print-fieldset">
+            <legend>向き</legend>
+            <div class="print-row">
+              <input type="radio" id="print-orient-portrait" name="print-orient" value="portrait" checked />
+              <label for="print-orient-portrait">縦</label>
+              <input type="radio" id="print-orient-landscape" name="print-orient" value="landscape" />
+              <label for="print-orient-landscape">横</label>
+            </div>
+          </fieldset>
+        </div>
+
+        <div class="print-pane print-preview-pane">
+          <div class="print-preview-area" id="print-preview-area">
+            <div class="print-preview-frame" id="print-preview-frame">
+              <canvas id="print-preview-canvas"></canvas>
+            </div>
+          </div>
+          <div class="print-preview-nav">
+            <button id="print-preview-prev" type="button" title="前のページ">◀</button>
+            <span class="print-preview-counter" id="print-preview-counter">— / —</span>
+            <button id="print-preview-next" type="button" title="次のページ">▶</button>
+          </div>
+        </div>
+      </div>
+      <footer class="print-footer">
+        <button id="print-confirm" class="default">印刷</button>
+        <button id="print-cancel">キャンセル</button>
+      </footer>
+    </div>
+  </div>
+
   <div class="toolbar">
     <button id="btn-open">開く</button>
-    <button id="btn-close" disabled>閉じる</button>
+    <span class="toolbar-sep"></span>
+    <button id="btn-save" disabled title="上書き保存 (Ctrl+S)">上書き</button>
+    <button id="btn-export" disabled title="名前を付けて保存 (Ctrl+Shift+S)">保存</button>
+    <button id="btn-print" disabled title="印刷 (Ctrl+P)">印刷</button>
     <span class="toolbar-sep"></span>
     <button id="btn-mode-text" disabled>テキスト</button>
     <button id="btn-mode-stamp" disabled>印影</button>
     <button id="btn-mode-redaction" disabled>墨消し</button>
+    <button id="btn-mode-marker" disabled title="マーカー (将来対応)">マーカー</button>
     <span class="toolbar-sep"></span>
     <button id="btn-split" disabled>分割保存</button>
-    <span id="ws-label" class="ws-label"></span>
+    <span class="toolbar-sep"></span>
+    <label for="zoom-select" class="toolbar-label">表示:</label>
+    <select id="zoom-select" disabled>
+      <option value="0.5">50%</option>
+      <option value="0.75">75%</option>
+      <option value="1.0">100%</option>
+      <option value="1.25">125%</option>
+      <option value="1.5">150%</option>
+      <option value="1.75">175%</option>
+      <option value="2.0">200%</option>
+      <option value="2.5">250%</option>
+      <option value="3.0">300%</option>
+      <option value="fit">ウィンドウに合わせる</option>
+    </select>
+    <button id="btn-rotate-left" disabled title="左に 90° 回転 (将来対応)">↺</button>
+    <button id="btn-rotate-right" disabled title="右に 90° 回転 (将来対応)">↻</button>
+    <div class="toolbar-search">
+      <input
+        type="search"
+        id="menu-search-input"
+        class="menu-search-input"
+        placeholder="検索 (Ctrl+F)"
+        disabled
+      />
+      <button
+        id="menu-search-btn"
+        type="button"
+        class="menu-search-btn"
+        title="検索 (Enter で次の一致)"
+        disabled
+      >🔍</button>
+    </div>
   </div>
 
   <div id="main-area" class="main-area">
+    <button
+      id="sidebar-toggle"
+      class="sidebar-toggle"
+      type="button"
+      title="しおり (F4)"
+      aria-label="しおりを開閉"
+    >
+      <span class="sidebar-toggle-arrow"></span>
+    </button>
     <aside id="sidebar" class="sidebar" hidden>
-      <div class="sidebar-header">しおり</div>
-      <ul id="bookmark-tree" class="bookmark-tree"></ul>
+      <div class="sidebar-splitter" id="sidebar-splitter" title="ドラッグして幅を調整"></div>
+      <menu role="tablist" class="sidebar-tablist">
+        <li role="tab" aria-selected="true" data-tab="thumbs"><a href="#">サムネイル</a></li>
+        <li role="tab" aria-selected="false" data-tab="bookmarks"><a href="#">しおり</a></li>
+      </menu>
+      <div class="sidebar-tab-body window" role="tabpanel">
+        <div class="sidebar-pane" data-pane="thumbs">
+          <div id="thumb-list" class="thumb-list"></div>
+        </div>
+        <div class="sidebar-pane" data-pane="bookmarks" hidden>
+          <ul id="bookmark-tree" class="bookmark-tree"></ul>
+        </div>
+      </div>
     </aside>
     <main id="viewer-container" class="viewer-container">
       <!-- Page DOM is built dynamically by viewer.js -->
@@ -188,8 +404,8 @@
         </p>
         <div class="split-controls">
           <label for="thumb-size">サムネサイズ:</label>
-          <input type="range" id="thumb-size" min="40" max="200" value="80" />
-          <span id="thumb-size-display" class="thumb-size-display">80px</span>
+          <input type="range" id="thumb-size" min="40" max="320" value="200" />
+          <span id="thumb-size-display" class="thumb-size-display">200px</span>
           <span class="toolbar-sep"></span>
           <input type="checkbox" id="date-prefix-toggle" />
           <label for="date-prefix-toggle">日付 (<span id="date-prefix-preview">260509</span>) を頭に付ける</label>
