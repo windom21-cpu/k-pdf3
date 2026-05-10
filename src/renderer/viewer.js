@@ -17,6 +17,7 @@
 // M3+ will add: zoom control, overlay editor surface, canvas eviction LRU.
 
 import { PageRegistry, visiblePageRange } from "../domain/page-registry.js";
+import { getTextFontStack } from "./fonts.js";
 
 /**
  * Paint a user-inserted blank/text page into a Uint8ClampedArray suitable
@@ -275,6 +276,33 @@ export class Viewer {
   }
 
   /**
+   * Re-apply text style (font / size / color) to the inline-edit
+   * element of the currently-edited overlay, if any. Called by the
+   * renderer when the user changes the font / size selects during a
+   * live edit. The store has already been updated; this method just
+   * keeps the visible DOM in sync (otherwise the viewer's "preserve
+   * editing element across store events" logic would freeze the look
+   * until the edit commits).
+   * @param {{fontId?: string, fontSize?: number, color?: string}} style
+   */
+  applyEditingTextStyle(style) {
+    if (!this._editingId) return;
+    const editEl = this.container.querySelector(
+      `.overlay[data-overlay-id="${cssEscape(this._editingId)}"]`,
+    );
+    if (!editEl) return;
+    if (typeof style.fontSize === "number") {
+      editEl.style.fontSize = `${style.fontSize * this.zoom}px`;
+    }
+    if (style.fontId) {
+      editEl.style.fontFamily = getTextFontStack(style.fontId);
+    }
+    if (style.color) {
+      editEl.style.color = style.color;
+    }
+  }
+
+  /**
    * Toggle edit-mode classes on the container so CSS can switch the
    * page cursor per placement mode (text → I-beam, stamp/redaction →
    * crosshair).
@@ -433,6 +461,7 @@ export class Viewer {
       el.textContent = props.text ?? "";
       const fontSize = (props.fontSize ?? 12) * z;
       el.style.fontSize = `${fontSize}px`;
+      el.style.fontFamily = getTextFontStack(props.fontId);
       el.style.color = props.color ?? "#000000";
       this._attachOverlayPointer(el, ov);
       this._attachResizeHandles(el, ov);

@@ -345,6 +345,23 @@
     <button id="btn-print" disabled title="印刷 (Ctrl+P)">印刷</button>
     <span class="toolbar-sep"></span>
     <button id="btn-mode-text" disabled>テキスト</button>
+    <select id="text-font" class="toolbar-inline-select" disabled
+            title="テキストモードのフォント (新規配置 / 編集中の overlay)">
+      <option value="mincho">明朝</option>
+      <option value="gothic">ゴシック</option>
+      <option value="serif">Serif</option>
+      <option value="sans">Sans</option>
+    </select>
+    <select id="text-size" class="toolbar-inline-select" disabled
+            title="テキストサイズ (pt) — 配置時のデフォルト">
+      <option value="8">8</option>
+      <option value="10">10</option>
+      <option value="12" selected>12</option>
+      <option value="14">14</option>
+      <option value="18">18</option>
+      <option value="24">24</option>
+      <option value="36">36</option>
+    </select>
     <button id="btn-mode-stamp" disabled>印影</button>
     <button id="btn-mode-redaction" disabled>墨消し</button>
     <select id="redaction-color" class="toolbar-inline-select" disabled

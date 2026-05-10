@@ -15,6 +15,7 @@
 // the way a 300-dpi render would. M5 polish will let the user pick.
 
 import { canonicalPageSize } from "../domain/coord.js";
+import { getTextFontStack } from "./fonts.js";
 
 export const EXPORT_ZOOM = 2.0;
 
@@ -154,7 +155,7 @@ function drawOverlay(ctx, ov, zoom) {
   if (ov.type === "text") {
     const fontSize = (props.fontSize ?? 12) * zoom;
     ctx.fillStyle = props.color ?? "#000000";
-    ctx.font = `${fontSize}px "MS UI Gothic", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif`;
+    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId)}`;
     ctx.textBaseline = "top";
     // Match the viewer's white-space: pre-wrap behaviour so a long line
     // doesn't escape the overlay's bbox in the export.

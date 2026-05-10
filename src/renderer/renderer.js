@@ -14,6 +14,10 @@ import {
   RemoveOverlayCommand,
 } from "../domain/commands.js";
 import { composePagesForExport, composeSinglePageCanvas } from "./exporter.js";
+import {
+  TEXT_FONT_DEFAULT_ID,
+  TEXT_FONT_DEFAULT_SIZE,
+} from "./fonts.js";
 
 const { kpdf3 } = window;
 
@@ -35,6 +39,8 @@ const btnModeText = $("btn-mode-text");
 const btnModeStamp = $("btn-mode-stamp");
 const btnModeRedaction = $("btn-mode-redaction");
 const redactionColorSel = $("redaction-color");
+const textFontSel = $("text-font");
+const textSizeSel = $("text-size");
 const wsStatus = $("ws-status");
 const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
@@ -218,9 +224,18 @@ function placeRedaction(pageNo, x, y, w, h) {
   history.execute(cmd);
 }
 
+function currentTextFontId() {
+  return textFontSel?.value || TEXT_FONT_DEFAULT_ID;
+}
+function currentTextFontSize() {
+  const v = parseInt(textSizeSel?.value ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : TEXT_FONT_DEFAULT_SIZE;
+}
+
 function placeText(pageNo, x, y) {
-  const W = 100;
-  const H = 20;
+  const fontSize = currentTextFontSize();
+  const W = Math.max(100, fontSize * 8);
+  const H = Math.max(20, Math.round(fontSize * 1.6));
   // I-beam hot spot is the middle of the cursor — map the click point
   // to the text box's vertical center so the new text appears around
   // (rather than below) where the user clicked.
@@ -234,9 +249,9 @@ function placeText(pageNo, x, y) {
     zOrder: 0,
     properties: {
       text: "テキスト",
-      fontSize: 12,
+      fontSize,
       color: "#000000",
-      fontId: "default",
+      fontId: currentTextFontId(),
     },
   });
   history.execute(cmd);
@@ -402,6 +417,8 @@ function setOpen(open) {
   btnRotateLeft.disabled = !open;
   btnRotateRight.disabled = !open;
   if (redactionColorSel) redactionColorSel.disabled = !open;
+  if (textFontSel) textFontSel.disabled = !open;
+  if (textSizeSel) textSizeSel.disabled = !open;
   if (!open) {
     setPlacementMode("none");
     setSplitMode(false);
@@ -3022,6 +3039,52 @@ if (redactionColorSel) {
   redactionColorSel.addEventListener("change", () => {
     localStorage.setItem(REDACTION_COLOR_STORAGE_KEY, currentRedactionColor());
     if (isOpen && placementMode !== "redaction") setPlacementMode("redaction");
+  });
+}
+
+// ---- Text font / size selects (§17.9, §17.12) -----------------------
+// Drives placement defaults; if a text overlay is currently being
+// inline-edited we also push the change onto that overlay so the user
+// can adjust live.
+const TEXT_FONT_STORAGE_KEY = "kpdf3.textFontId";
+const TEXT_SIZE_STORAGE_KEY = "kpdf3.textFontSize";
+
+function applyFontSizeToEditingOverlay() {
+  const id = viewer._editingId;
+  if (!id) return;
+  const ov = projectStore.get(id);
+  if (!ov || ov.type !== "text") return;
+  const fontId = currentTextFontId();
+  const fontSize = currentTextFontSize();
+  projectStore.update(id, {
+    properties: { ...ov.properties, fontId, fontSize },
+  });
+  // Keep the inline-edit element visually in sync (the store update
+  // alone doesn't repaint the editing element — see viewer's preserve-
+  // editing logic).
+  viewer.applyEditingTextStyle({ fontId, fontSize });
+}
+
+if (textFontSel) {
+  const saved = localStorage.getItem(TEXT_FONT_STORAGE_KEY);
+  if (saved && saved !== "default") textFontSel.value = saved;
+  textFontSel.addEventListener("change", () => {
+    localStorage.setItem(TEXT_FONT_STORAGE_KEY, currentTextFontId());
+    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+      setPlacementMode("text");
+    }
+    applyFontSizeToEditingOverlay();
+  });
+}
+if (textSizeSel) {
+  const saved = localStorage.getItem(TEXT_SIZE_STORAGE_KEY);
+  if (saved) textSizeSel.value = saved;
+  textSizeSel.addEventListener("change", () => {
+    localStorage.setItem(TEXT_SIZE_STORAGE_KEY, String(currentTextFontSize()));
+    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+      setPlacementMode("text");
+    }
+    applyFontSizeToEditingOverlay();
   });
 }
 
