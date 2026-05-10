@@ -19,6 +19,10 @@ import {
   getAllOverlays,
   setExport,
   listExports,
+  setPageDeleted,
+  listInsertedPages,
+  addInsertedPage,
+  removeInsertedPage,
 } from "../backend/sqlite-store.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -119,9 +123,67 @@ export class Workspace {
     return getSourcePdfBlob(this.db);
   }
 
-  /** All page metrics, ordered by page number. */
-  getPages() {
-    return getAllPages(this.db);
+  /**
+   * Document-order page list = source PDF pages merged with user-inserted
+   * blank/text pages, in the slot order specified by `after_page_no` /
+   * `order_in_slot`. Inserted pages have a synthetic `pageNo = -id`
+   * (always negative). By default deleted source pages are excluded.
+   * Pass `{ includeDeleted: true }` to get every source row too.
+   */
+  getPages({ includeDeleted = false } = {}) {
+    const sourcePages = getAllPages(this.db);
+    const inserted = listInsertedPages(this.db);
+    const insertedBySlot = new Map(); // afterPageNo -> rows[]
+    for (const ins of inserted) {
+      const arr = insertedBySlot.get(ins.afterPageNo) ?? [];
+      arr.push(ins);
+      insertedBySlot.set(ins.afterPageNo, arr);
+    }
+    const out = [];
+    const flushSlot = (afterPageNo) => {
+      const rows = insertedBySlot.get(afterPageNo);
+      if (!rows) return;
+      for (const r of rows) {
+        out.push({
+          pageNo: -r.id, // synthetic — always negative
+          isSynthetic: true,
+          syntheticId: r.id,
+          syntheticText: r.text ?? "",
+          cropW: r.width,
+          cropH: r.height,
+          mediaW: r.width,
+          mediaH: r.height,
+          rotation: 0,
+          userRotation: 0,
+          isDeleted: false,
+        });
+      }
+    };
+    flushSlot(0); // pages inserted at the very start
+    for (const p of sourcePages) {
+      if (includeDeleted || !p.isDeleted) {
+        out.push({ ...p, isSynthetic: false });
+      }
+      flushSlot(p.pageNo);
+    }
+    return out;
+  }
+
+  /** Mark / unmark a SOURCE page as deleted at the workspace level. */
+  setPageDeleted(pageNo, deleted) {
+    setPageDeleted(this.db, pageNo, deleted);
+  }
+
+  /** Add a blank / text page. Returns the synthetic pageNo (negative). */
+  addInsertedPage({ afterPageNo, text = null, width = 595, height = 842 }) {
+    const id = addInsertedPage(this.db, { afterPageNo, text, width, height });
+    return -id;
+  }
+
+  /** Remove an inserted page by its synthetic pageNo (negative). */
+  removeInsertedPage(syntheticPageNo) {
+    if (syntheticPageNo >= 0) return;
+    removeInsertedPage(this.db, -syntheticPageNo);
   }
 
   /** Read a single metadata key. */

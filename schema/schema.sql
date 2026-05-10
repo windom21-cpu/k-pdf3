@@ -51,8 +51,25 @@ CREATE TABLE pages (
     -- rotation: 0 / 90 / 180 / 270
     rotation  INTEGER NOT NULL DEFAULT 0 CHECK(rotation IN (0, 90, 180, 270)),
     -- ユーザーが追加した「論理的な回転」（紙アナロジー、export 時に PDF rotation に合成）
-    user_rotation INTEGER NOT NULL DEFAULT 0 CHECK(user_rotation IN (0, 90, 180, 270))
+    user_rotation INTEGER NOT NULL DEFAULT 0 CHECK(user_rotation IN (0, 90, 180, 270)),
+    -- ページ削除フラグ。ソース PDF はそのまま、workspace 単位で表示・書き出しから除外
+    is_deleted INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1))
 );
+
+-- ===================================================================
+-- inserted_pages: 元 PDF にない、ユーザーが挿入した白紙ページ（任意のテキスト付き）
+-- 元ページとは別管理。getPages() 時に after_page_no / order_in_slot で間に並ぶ
+-- ===================================================================
+CREATE TABLE inserted_pages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    after_page_no   INTEGER NOT NULL,    -- 0 = 全ページの先頭、N = 元ページ N の直後
+    order_in_slot   INTEGER NOT NULL DEFAULT 0,
+    text            TEXT,                -- 72pt で表示するテキスト（NULL/空 = 純粋な白紙）
+    width           REAL NOT NULL DEFAULT 595,   -- A4 portrait, points
+    height          REAL NOT NULL DEFAULT 842,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_inserted_pages_slot ON inserted_pages(after_page_no, order_in_slot);
 
 -- ===================================================================
 -- overlays: 編集可能な overlay object

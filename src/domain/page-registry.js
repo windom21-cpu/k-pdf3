@@ -48,7 +48,10 @@ export class PageRegistry {
   constructor(pages) {
     /** @type {PageEntry[]} */
     this.entries = [];
-    for (const p of pages) {
+    /** @type {Map<number, number>} pageNo → position index */
+    this.pageNoToPos = new Map();
+    for (let i = 0; i < pages.length; i++) {
+      const p = pages[i];
       const { w, h } = canonicalPageSize({
         mediaX: 0,
         mediaY: 0,
@@ -66,6 +69,7 @@ export class PageRegistry {
         canonicalW: w,
         canonicalH: h,
       });
+      this.pageNoToPos.set(p.pageNo, i);
     }
   }
 
@@ -74,14 +78,28 @@ export class PageRegistry {
     return this.entries.length;
   }
 
+  /** Position (0-based) → pageNo (1-based, possibly sparse). */
+  pageNoAtPos(pos) {
+    const e = this.entries[pos];
+    return e ? e.pageNo : 0;
+  }
+
+  /** pageNo → position (0-based) in the visible list, or -1 if hidden. */
+  posOfPageNo(pageNo) {
+    return this.pageNoToPos.get(pageNo) ?? -1;
+  }
+
   /**
-   * Canonical (post-rotation) page size in PDF points.
+   * Canonical (post-rotation) page size in PDF points. Looks up by
+   * pageNo (sparse-safe — pageNo is the source PDF's number, not the
+   * position in the visible list).
    * @param {number} pageNo  1-based
    * @returns {{ w: number, h: number }}
    */
   getCanonicalSize(pageNo) {
-    const entry = this.entries[pageNo - 1];
-    if (!entry) throw new RangeError(`pageNo out of range: ${pageNo}`);
+    const pos = this.pageNoToPos.get(pageNo);
+    if (pos === undefined) throw new RangeError(`pageNo out of range: ${pageNo}`);
+    const entry = this.entries[pos];
     return { w: entry.canonicalW, h: entry.canonicalH };
   }
 

@@ -58,8 +58,40 @@ export function openWorkspace(filePath, opts = {}) {
   } else {
     verifyWorkspace(db, filePath);
     migrateExportsSchema(db);
+    migratePagesIsDeleted(db);
+    migrateInsertedPagesTable(db);
   }
   return { db, isNew };
+}
+
+/** Add the `inserted_pages` table to old workspaces (idempotent). */
+function migrateInsertedPagesTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS inserted_pages (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      after_page_no INTEGER NOT NULL,
+      order_in_slot INTEGER NOT NULL DEFAULT 0,
+      text          TEXT,
+      width         REAL NOT NULL DEFAULT 595,
+      height        REAL NOT NULL DEFAULT 842,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_inserted_pages_slot
+      ON inserted_pages(after_page_no, order_in_slot);
+  `);
+}
+
+/**
+ * Add the `is_deleted` column to `pages` if missing. Backfills 0 for
+ * existing rows. Idempotent — safe to run on every open.
+ */
+function migratePagesIsDeleted(db) {
+  const cols = db.pragma("table_info(pages)");
+  if (!cols.some((c) => c.name === "is_deleted")) {
+    db.exec(
+      "ALTER TABLE pages ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1))",
+    );
+  }
 }
 
 /**
@@ -202,9 +234,58 @@ export function getAllPages(db) {
       media_x AS mediaX, media_y AS mediaY, media_w AS mediaW, media_h AS mediaH,
       crop_x  AS cropX,  crop_y  AS cropY,  crop_w  AS cropW,  crop_h  AS cropH,
       rotation,
-      user_rotation AS userRotation
+      user_rotation AS userRotation,
+      is_deleted AS isDeleted
     FROM pages ORDER BY page_no
   `).all();
+}
+
+// ---- Inserted pages (white-with-text pages user adds between source pages) ---
+
+export function listInsertedPages(db) {
+  return db
+    .prepare(
+      `SELECT id, after_page_no AS afterPageNo, order_in_slot AS orderInSlot,
+              text, width, height, created_at AS createdAt
+       FROM inserted_pages
+       ORDER BY after_page_no, order_in_slot, id`,
+    )
+    .all();
+}
+
+/** Insert a new blank/text page after a given source page number.
+ *  `afterPageNo = 0` → before page 1. Returns the new row's id. */
+export function addInsertedPage(db, { afterPageNo, text = null, width = 595, height = 842 }) {
+  const orderRow = db
+    .prepare(
+      `SELECT COALESCE(MAX(order_in_slot), -1) + 1 AS nextOrder
+       FROM inserted_pages WHERE after_page_no = ?`,
+    )
+    .get(afterPageNo);
+  const nextOrder = orderRow?.nextOrder ?? 0;
+  const info = db
+    .prepare(
+      `INSERT INTO inserted_pages
+         (after_page_no, order_in_slot, text, width, height)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(afterPageNo, nextOrder, text, width, height);
+  return Number(info.lastInsertRowid);
+}
+
+export function removeInsertedPage(db, id) {
+  db.prepare("DELETE FROM inserted_pages WHERE id = ?").run(id);
+}
+
+/**
+ * Toggle the per-page is_deleted flag (workspace-level page hide).
+ * Source PDF bytes remain untouched; only this workspace excludes the
+ * page from viewer / thumbs / export / print output.
+ */
+export function setPageDeleted(db, pageNo, deleted) {
+  db.prepare(
+    "UPDATE pages SET is_deleted = ? WHERE page_no = ?",
+  ).run(deleted ? 1 : 0, pageNo);
 }
 
 // ---- Overlays ------------------------------------------------------------
