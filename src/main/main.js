@@ -112,6 +112,11 @@ function createMainWindow() {
     },
   });
   mainWindow.loadFile(join(__dirname, "..", "renderer", "index.html"));
+  // Hide the menu bar (Linux / Windows) while keeping the accelerators
+  // registered via setApplicationMenu — frame:false plus visible menu
+  // would double the title-bar height with the OS menu strip.
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.autoHideMenuBar = true;
   // Notify the renderer when maximize state changes so the
   // maximize/restore button glyph stays in sync.
   const broadcastMax = () => {
@@ -179,8 +184,37 @@ function createMainWindow() {
 // ---- App lifecycle -------------------------------------------------------
 
 app.whenReady().then(() => {
-  // No native menu in M1 (will be customized in M3 with Save/Export shortcuts).
-  Menu.setApplicationMenu(null);
+  // Set a "hidden" application menu — invisible on screen but still
+  // wires standard accelerators (F5 reload / F12 DevTools / Ctrl+R
+  // reload). frame:false means we never want the menu BAR drawn, but
+  // accelerators still need to be registered somewhere; null breaks
+  // them entirely (which was the original cause of "shortcuts don't
+  // work"). The renderer hides the bar on Linux/Windows via
+  // mainWindow.setMenuBarVisibility(false) after the window opens.
+  const reloadViaRenderer = () => {
+    const w = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (w) w.webContents.send("kpdf3:reload-request");
+  };
+  const toggleDevToolsForFocused = () => {
+    const w = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (!w) return;
+    const wc = w.webContents;
+    if (wc.isDevToolsOpened()) wc.closeDevTools();
+    else wc.openDevTools({ mode: "detach" });
+  };
+  const accelMenu = Menu.buildFromTemplate([
+    {
+      label: "_dev",
+      submenu: [
+        { label: "Reload", accelerator: "F5", click: reloadViaRenderer },
+        { label: "Reload", accelerator: "CommandOrControl+R", click: reloadViaRenderer },
+        { label: "Force Reload", accelerator: "CommandOrControl+Shift+R", click: reloadViaRenderer },
+        { label: "DevTools", accelerator: "F12", click: toggleDevToolsForFocused },
+        { label: "DevTools", accelerator: "CommandOrControl+Shift+I", click: toggleDevToolsForFocused },
+      ],
+    },
+  ]);
+  Menu.setApplicationMenu(accelMenu);
   createMainWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();

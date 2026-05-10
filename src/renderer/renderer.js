@@ -2280,6 +2280,11 @@ async function rotatePageBy(pageNo, delta) {
     // If the split view is open, rebuild it too so the rotated page
     // appears in the split-save thumbnails.
     if (isSplitMode) await refreshSplitView();
+    // Page canonical W/H may have swapped — re-apply fit if active.
+    // The ResizeObserver only fires on container resize, not page
+    // size, so this is needed to keep fit-mode tracking after rotate.
+    if (zoomMode === "fit-width") applyFitWidthNow();
+    else if (zoomMode === "fit-page") applyFitPageNow();
     wsStatus.textContent = `p.${pageNo} を ${next}° 回転`;
   } catch (err) {
     console.error("[rotate] failed", err);
