@@ -4,11 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>K-PDF3</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="./vendor/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="256x256" href="./vendor/app-icon.png" />
   <link rel="stylesheet" href="./vendor/98.css" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <div class="title-bar">
+    <img class="title-bar-icon" src="./vendor/favicon-32.png" alt="" width="16" height="16" draggable="false" />
     <div class="title-bar-text" id="app-title-text">K-PDF3 — 法律実務向け PDF Workspace</div>
     <div class="title-bar-controls">
       <button id="win-minimize" aria-label="Minimize"></button>
@@ -16,7 +19,6 @@
       <button id="win-close" aria-label="Close"></button>
     </div>
   </div>
-
   <div class="menu-bar" id="menu-bar">
     <div class="menu-bar-item" data-menu="file">ファイル(<u>F</u>)</div>
     <div class="menu-bar-item" data-menu="edit">編集(<u>E</u>)</div>
@@ -74,7 +76,7 @@
     <div class="menu-item" data-action="quality-max">表示解像度: 最高</div>
     <div class="menu-separator"></div>
     <div class="menu-item disabled" data-action="stamp-manager">スタンプ管理...</div>
-    <div class="menu-item disabled" data-action="font-settings">フォント設定...</div>
+    <div class="menu-item" data-action="font-settings">フォント設定...</div>
   </div>
 
   <div class="menu-dropdown" id="menu-help" hidden>
@@ -167,6 +169,37 @@
     </div>
   </div>
 
+  <!-- フォント設定 dialog (stamp-wide defaults, ADR-0019 後半 MVP) -->
+  <div class="busy-modal" id="stamp-font-dialog" hidden>
+    <div class="window stamp-reg-window" style="min-width:340px">
+      <div class="title-bar"><div class="title-bar-text">スタンプのフォント設定</div></div>
+      <div class="window-body">
+        <p style="margin:4px 0 8px;color:#444;font-size:11px">
+          日付・テキストスタンプを描画するときに使う既定フォント。<br>
+          全角文字（漢字・かな）と半角文字（数字・英字）に別々のフォントを割り当てられます。
+        </p>
+        <div class="stamp-reg-row">
+          <label>全角フォント:
+            <select id="stamp-font-full"></select>
+          </label>
+        </div>
+        <div class="stamp-reg-row">
+          <label>半角フォント:
+            <select id="stamp-font-half"></select>
+          </label>
+        </div>
+        <div class="stamp-reg-preview-row">
+          <span>プレビュー:</span>
+          <canvas id="stamp-font-preview" width="240" height="46"></canvas>
+        </div>
+        <div class="dialog-buttons">
+          <button id="stamp-font-ok" class="default">保存</button>
+          <button id="stamp-font-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- スタンプ管理 dialog (top-level) -->
   <div class="busy-modal" id="stamp-manager-dialog" hidden>
     <div class="window stamp-mgr-window">
@@ -177,7 +210,7 @@
           <button id="stamp-mgr-date">日付スタンプ…</button>
           <button id="stamp-mgr-text">テキストスタンプ…</button>
           <button id="stamp-mgr-image">画像スタンプ…</button>
-          <button id="stamp-mgr-font" disabled title="M6 後半で対応予定">フォント設定…</button>
+          <button id="stamp-mgr-font" title="日付スタンプの全角・半角フォント既定">フォント設定…</button>
         </div>
         <hr style="margin:12px 0 6px">
         <div style="font-weight:bold">登録済みのスタンプ:</div>
@@ -202,8 +235,13 @@
           <label for="stamp-date-fmt-2">-8．-5．-9 (ピリオド全角)</label>
           <input type="radio" id="stamp-date-fmt-3" name="stamp-date-format" value="date-kanji-dash">
           <label for="stamp-date-fmt-3">令和-8年-5月-9日</label>
+          <input type="radio" id="stamp-date-fmt-4" name="stamp-date-format" value="date-numeric-spaced">
+          <label for="stamp-date-fmt-4" title="紙の「　年　月　日」に合わせて 3 つの数字を等間隔で配置。横ドラッグで字間を調整、ピリオドは描画しません。">-8 -5 -9 (年月日に揃える / 字間調整)</label>
         </fieldset>
         <div class="stamp-reg-row">
+          <label>サイズ (pt):
+            <input type="number" id="stamp-reg-date-fontsize" value="14" min="6" max="72" style="width:60px">
+          </label>
           <label>色:
             <select id="stamp-reg-date-color">
               <option value="#cc0000">朱</option>
@@ -289,6 +327,14 @@
           <span style="color:#555;font-size:11px">(縦横比固定)</span>
         </div>
         <div class="stamp-reg-row">
+          <label>色:
+            <select id="stamp-reg-image-color">
+              <option value="">そのまま（無加工）</option>
+              <option value="#cc0000">朱</option>
+              <option value="#000000">黒</option>
+              <option value="#1f4ea1">青</option>
+            </select>
+          </label>
           <input type="checkbox" id="stamp-reg-image-frame">
           <label for="stamp-reg-image-frame">枠あり</label>
         </div>
@@ -413,6 +459,7 @@
       </div>
       <div class="window-body">
         <div class="about-header">
+          <img class="about-icon" src="./vendor/app-icon.png" alt="K-PDF3 logo" width="64" height="64" />
           <div class="about-title">K-PDF3</div>
           <div class="about-subtitle">法律実務向け PDF Workspace</div>
           <div class="about-version" id="about-version">v—</div>
@@ -522,6 +569,7 @@
     <button id="btn-mode-redaction" disabled>墨消し</button>
     <button id="btn-mode-marker" disabled title="ドラッグで半透明マーカーを引きます">マーカー</button>
     <button id="btn-mode-callout" disabled title="クリック→ドラッグで矢印付き吹き出しテキストを配置します">吹き出し</button>
+    <button id="btn-page-numbers" disabled title="全ページのフッターにページ番号を一括追加">＋ページ番号</button>
     <span class="toolbar-sep"></span>
     <button id="btn-split" disabled>分割保存</button>
     <span class="toolbar-sep"></span>
@@ -557,6 +605,17 @@
         disabled
       >🔍</button>
     </div>
+  </div>
+
+  <!-- Tab bar (ADR-0015) — sits below the toolbar so the buttons row
+       (open / save / mode toggles / zoom / search) stays the visual
+       primary, and the tabs read as a per-document strip just above
+       the page area. The + button on the right opens a new tab via
+       the file picker; the × on each tab closes it (with dirty
+       confirmation). -->
+  <div class="tab-bar" id="tab-bar">
+    <div class="tab-list" id="tab-list"></div>
+    <button class="tab-add" id="tab-add" title="新しいタブで PDF を開く (Ctrl+T)">+</button>
   </div>
 
   <!-- Mode options bar — appears below the main toolbar when a
@@ -631,6 +690,8 @@
           <div class="bookmark-toolbar">
             <button id="bookmark-add" disabled title="現在のページにしおりを追加">+</button>
             <button id="bookmark-remove" disabled title="選択中のしおりを削除">−</button>
+            <button id="bookmark-outdent" disabled title="選択中のしおりを上の階層へ (Shift+Tab)">←</button>
+            <button id="bookmark-indent" disabled title="選択中のしおりを直前のしおりの下にぶら下げる (Tab)">→</button>
             <button id="bookmark-import" disabled title="元 PDF のしおりを取り込んで編集可能にする">取込</button>
             <span class="bookmark-hint" id="bookmark-source-label"></span>
           </div>
@@ -668,6 +729,51 @@
     <p class="status-bar-field" id="ws-status">PDF を「開く」で読み込みます</p>
     <p class="status-bar-field status-bar-page" id="page-indicator"></p>
     <p class="status-bar-field" id="appinfo"></p>
+  </div>
+
+  <!-- ＋ページ番号 dialog — applies a footer text overlay to every
+       non-deleted page. Position / format / starting number are
+       configurable; the result is plain text overlays so the user
+       can drag / resize / delete individual ones afterwards. -->
+  <div class="busy-modal" id="page-numbers-dialog" hidden>
+    <div class="window stamp-reg-window" style="min-width:340px">
+      <div class="title-bar"><div class="title-bar-text">ページ番号を追加</div></div>
+      <div class="window-body">
+        <p style="margin:4px 0 8px;color:#444;font-size:11px">
+          全ページのフッターに連番テキストを配置します。<br>
+          配置後は通常のテキスト overlay として個別に編集できます。
+        </p>
+        <div class="stamp-reg-row">
+          <label>位置:
+            <select id="page-numbers-position">
+              <option value="center">中央</option>
+              <option value="left">左寄せ</option>
+              <option value="right">右寄せ</option>
+            </select>
+          </label>
+          <label>形式:
+            <select id="page-numbers-format">
+              <option value="N">N</option>
+              <option value="-N-">- N -</option>
+              <option value="p.N">p.N</option>
+              <option value="N/T">N / total</option>
+            </select>
+          </label>
+        </div>
+        <div class="stamp-reg-row">
+          <label>開始番号:
+            <input type="number" id="page-numbers-start" value="1" min="1" max="9999" style="width:60px">
+          </label>
+          <label>サイズ (pt):
+            <input type="number" id="page-numbers-fontsize" value="11" min="6" max="36" style="width:60px">
+          </label>
+        </div>
+        <div class="dialog-buttons">
+          <button id="page-numbers-ok" class="default">配置</button>
+          <button id="page-numbers-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="./renderer.js"></script>

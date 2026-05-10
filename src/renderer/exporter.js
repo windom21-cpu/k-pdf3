@@ -15,7 +15,12 @@
 // the way a 300-dpi render would. M5 polish will let the user pick.
 
 import { canonicalPageSize } from "../domain/coord.js";
-import { getTextFontStack } from "./fonts.js";
+import {
+  getTextFontStack,
+  getStampFontDefaults,
+  getStampFontStack,
+  splitStampRuns,
+} from "./fonts.js";
 
 /**
  * In-memory cache: assetId → ImageBitmap. The bitmap survives the
@@ -42,6 +47,139 @@ export function invalidateAssetBitmap(assetId) {
   const bm = _assetBitmapCache.get(assetId);
   if (bm) bm.close?.();
   _assetBitmapCache.delete(assetId);
+  for (const k of [..._tintedAssetCache.keys()]) {
+    if (k.startsWith(`${assetId} `)) _tintedAssetCache.delete(k);
+  }
+}
+
+/**
+ * Cache for color-tinted variants used at export time. The tinted
+ * canvas matches the source bitmap's natural size; drawImage scales it
+ * to the overlay box exactly like the untinted path. Mirrors the
+ * viewer's `_tintedStampUrl` logic but keeps a HTMLCanvasElement
+ * (drawImage source) instead of an object URL.
+ */
+const _tintedAssetCache = new Map();
+async function getTintedAssetCanvas(assetId, color) {
+  if (!color) return null;
+  const key = `${assetId} ${color}`;
+  if (_tintedAssetCache.has(key)) return _tintedAssetCache.get(key);
+  const bitmap = await getAssetBitmap(assetId);
+  if (!bitmap) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data;
+  const [tr, tg, tb] = parseHexColor(color);
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    d[i + 3] = Math.round(d[i + 3] * (1 - lum));
+    d[i] = tr;
+    d[i + 1] = tg;
+    d[i + 2] = tb;
+  }
+  ctx.putImageData(img, 0, 0);
+  _tintedAssetCache.set(key, canvas);
+  return canvas;
+}
+
+/**
+ * Draw stamp text centred on (cx, cy) with per-run fonts. Mirrors
+ * `splitStampRuns` so 全角/半角 alternation lines up exactly between
+ * the on-screen viewer and the exported canvas (no drift between
+ * preview and rasterized output).
+ */
+/** 不動文字フィット rendering: distribute n tokens across a width-w
+ *  band centred at (cx, cy). First token left-anchored, last right-
+ *  anchored, middle ones at evenly-spaced midpoints. Tokens are the
+ *  digits already split out of the rendered date string — separators
+ *  are not drawn (matches preprinted「  年    月    日」forms). */
+function drawSpacedTokensOnCanvas(ctx, tokens, cx, cy, width, fontSize, color, halfStack) {
+  if (!tokens || tokens.length === 0) return;
+  ctx.fillStyle = color;
+  ctx.font = `bold ${fontSize}px ${halfStack}`;
+  ctx.textBaseline = "middle";
+  const left = cx - width / 2;
+  const right = cx + width / 2;
+  if (tokens.length === 1) {
+    ctx.textAlign = "center";
+    ctx.fillText(tokens[0], cx, cy);
+    return;
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (i === 0) {
+      ctx.textAlign = "left";
+      ctx.fillText(tok, left, cy);
+    } else if (i === tokens.length - 1) {
+      ctx.textAlign = "right";
+      ctx.fillText(tok, right, cy);
+    } else {
+      ctx.textAlign = "center";
+      const tcx = left + (width * i) / (tokens.length - 1);
+      ctx.fillText(tok, tcx, cy);
+    }
+  }
+}
+
+function drawStampMixedTextOnCanvas(ctx, text, cx, cy, fontSize, color, fullStack, halfStack) {
+  const runs = splitStampRuns(text);
+  const widths = [];
+  let total = 0;
+  for (const run of runs) {
+    ctx.font = `bold ${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
+    const m = ctx.measureText(run.text);
+    widths.push(m.width);
+    total += m.width;
+  }
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  let pen = cx - total / 2;
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    ctx.font = `bold ${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
+    ctx.fillText(run.text, pen, cy);
+    pen += widths[i];
+  }
+}
+
+/** Wait until custom @font-face declarations (currently
+ *  CrashNumberingSerif) are available to Canvas. document.fonts.ready
+ *  resolves after every face declared on the page has either loaded
+ *  or failed; for an early-export (e.g. first action after launch) we
+ *  also explicitly request the family so the @font-face is triggered
+ *  even if no DOM element used it yet. */
+let _fontsReadyPromise = null;
+async function ensureCustomFontsReady() {
+  if (typeof document === "undefined") return; // node-side tests
+  if (_fontsReadyPromise) return _fontsReadyPromise;
+  _fontsReadyPromise = (async () => {
+    try {
+      // Force a load attempt — `document.fonts.ready` only awaits
+      // already-pending loads, not fonts that haven't been requested yet.
+      await document.fonts?.load?.('12px "CrashNumberingSerif"').catch(() => {});
+      await document.fonts?.ready;
+    } catch {
+      // Best effort; fall back to the next font in the stack on failure.
+    }
+  })();
+  return _fontsReadyPromise;
+}
+
+function parseHexColor(s) {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(s ?? ""));
+  if (!m) return [0, 0, 0];
+  const v = m[1];
+  return [
+    parseInt(v.slice(0, 2), 16),
+    parseInt(v.slice(2, 4), 16),
+    parseInt(v.slice(4, 6), 16),
+  ];
 }
 
 export const EXPORT_ZOOM = 2.0;
@@ -63,6 +201,12 @@ export async function composePagesForExport({
   renderSyntheticPage, // optional: (row, zoom) => {width,height,channels,pixels}
   onProgress,
 }) {
+  // Ensure custom @font-face faces (CrashNumberingSerif etc.) are loaded
+  // before Canvas tries to use them — Canvas falls back to the next
+  // font in the stack if the requested face isn't ready, which would
+  // silently swap the date stamp's 半角 face on the very first export
+  // after launch.
+  await ensureCustomFontsReady();
   const out = [];
   const total = pages.length;
   for (let i = 0; i < total; i++) {
@@ -114,6 +258,7 @@ export async function composePagesForExport({
  * @param {number} zoom
  */
 export async function composeSinglePageCanvas(pageRow, renderPage, projectStore, zoom, renderSyntheticPage) {
+  await ensureCustomFontsReady();
   let result;
   if (pageRow.isSynthetic || pageRow.pageNo < 0) {
     if (typeof renderSyntheticPage !== "function") {
@@ -234,18 +379,23 @@ async function drawOverlay(ctx, ov, zoom) {
   if (ov.type === "stamp" && props.kind === "image" && props.assetId) {
     // Image stamp — fetch the asset blob and drawImage. Cached so
     // multiple stamps using the same asset don't re-fetch. Apply
-    // userRotation around the box center (paper metaphor).
+    // userRotation around the box center (paper metaphor). When
+    // props.color is set we draw the tinted variant (luminance →
+    // alpha + RGB ← color); empty color = image as-is.
     try {
-      const bitmap = await getAssetBitmap(props.assetId);
-      if (bitmap) {
+      const tinted = props.color
+        ? await getTintedAssetCanvas(props.assetId, props.color)
+        : null;
+      const src = tinted || (await getAssetBitmap(props.assetId));
+      if (src) {
         const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
         if (rot === 0) {
-          ctx.drawImage(bitmap, x, y, w, h);
+          ctx.drawImage(src, x, y, w, h);
         } else {
           ctx.save();
           ctx.translate(x + w / 2, y + h / 2);
           ctx.rotate((rot * Math.PI) / 180);
-          ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
+          ctx.drawImage(src, -w / 2, -h / 2, w, h);
           ctx.restore();
         }
       }
@@ -276,18 +426,43 @@ async function drawOverlay(ctx, ov, zoom) {
     } else if (frame === "rect") {
       ctx.strokeRect(x + 1, y + 1, Math.max(w - 2, 1), Math.max(h - 2, 1));
     }
-    ctx.fillStyle = color;
-    ctx.font = `bold ${fontSize}px "MS UI Gothic", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif`;
-    ctx.textBaseline = "middle";
-    ctx.textAlign = "center";
+    // Per-run fonts (ADR-0019 後半): full-width chars in the user's
+    // 全角 stack, half-width in the 半角 stack. Measure runs first so
+    // we can place the whole string centred, then draw left-to-right.
+    const { full, half } = getStampFontDefaults();
+    const fullStack = getStampFontStack(full);
+    const halfStack = getStampFontStack(half);
     const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+    // 不動文字フィット: 3 numbers distributed across the box width;
+    // separator characters from the source format are dropped.
+    if (props.spacingMode === "distribute-3") {
+      const tokens = String(props.text ?? "").split(/\s+/).filter(Boolean);
+      const drawSpaced = (cx, cy) => {
+        drawSpacedTokensOnCanvas(ctx, tokens, cx, cy, w, fontSize, color, halfStack);
+      };
+      if (rot === 0) drawSpaced(x + w / 2, y + h / 2);
+      else {
+        ctx.save();
+        ctx.translate(x + w / 2, y + h / 2);
+        ctx.rotate((rot * Math.PI) / 180);
+        drawSpaced(0, 0);
+        ctx.restore();
+      }
+      ctx.textAlign = "start";
+      return;
+    }
+    const drawAt = (cx, cy) => {
+      drawStampMixedTextOnCanvas(
+        ctx, props.text ?? "", cx, cy, fontSize, color, fullStack, halfStack,
+      );
+    };
     if (rot === 0) {
-      ctx.fillText(props.text ?? "", x + w / 2, y + h / 2);
+      drawAt(x + w / 2, y + h / 2);
     } else {
       ctx.save();
       ctx.translate(x + w / 2, y + h / 2);
       ctx.rotate((rot * Math.PI) / 180);
-      ctx.fillText(props.text ?? "", 0, 0);
+      drawAt(0, 0);
       ctx.restore();
     }
     ctx.textAlign = "start";

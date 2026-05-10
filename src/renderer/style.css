@@ -3,6 +3,19 @@
  * adds the viewer layout and page placeholder bits.
  */
 
+/* CrashNumberingSerif — bundled numeric-serif used by date stamps.
+ * PSY/OPS Freeware via FontSpace; license lives next to the .ttf in
+ * vendor/. The font-family name matches the one in fonts.js
+ * (STAMP_FONT_STACKS.numeric) so Canvas / DOM both resolve to this
+ * exact face when the user picks "数字明朝" for the stamp's 半角. */
+@font-face {
+  font-family: "CrashNumberingSerif";
+  font-style: normal;
+  font-weight: normal;
+  font-display: block; /* avoid FOUT — date stamp is identity-bearing */
+  src: url("vendor/CrashNumberingSerif.ttf") format("truetype");
+}
+
 /* UI font override (一旦 MS UI Gothic に統一して評価中).
  * 98.css のデフォルト "Pixelated MS Sans Serif" を上書きする。
  * 同じセレクタを後勝ちで指定し、font-smoothing も復活させる。 */
@@ -85,6 +98,135 @@ body {
 .title-bar-controls button {
   -webkit-app-region: no-drag;
 }
+/* Win95-style 16x16 app icon inside the blue title bar, sitting just
+ * to the left of the title text. The 32px source PNG is downscaled by
+ * the browser; image-rendering: pixelated keeps the script-K crisp at
+ * the small size instead of going blurry from bilinear downsampling. */
+.title-bar-icon {
+  width: 16px;
+  height: 16px;
+  margin: 0 4px 0 2px;
+  flex: 0 0 auto;
+  align-self: center;
+  image-rendering: -webkit-optimize-contrast;
+  pointer-events: none; /* don't steal drag from the title bar */
+}
+
+/* ---- Tab bar (ADR-0015) ---- */
+.tab-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  background: #c0c0c0;
+  border-bottom: 1px solid #808080;
+  padding: 2px 2px 0;
+  user-select: none;
+}
+.tab-list {
+  display: flex;
+  /* `0 1 auto` so the list shrinks to its content width — that puts
+   * the + button immediately after the last tab instead of at the
+   * far right of the bar. min-width: 0 keeps it shrinkable when many
+   * tabs need to scroll. */
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Visible scrollbars under the tab strip looked busy and the user
+   * asked them gone. Hide the chrome but keep `overflow: auto` so
+   * many tabs can still be reached via wheel / keyboard / drag. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;        /* Firefox */
+  -ms-overflow-style: none;     /* legacy Edge */
+}
+.tab-list::-webkit-scrollbar {
+  display: none;                 /* Chromium / Electron */
+}
+.tab-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  margin-right: 2px;
+  background: silver;
+  /* Win95 inactive tab: bevel down at the bottom (looks recessed) */
+  box-shadow:
+    inset -1px 0 #0a0a0a,
+    inset 1px 1px #dfdfdf,
+    inset -2px 0 grey;
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+  font-size: 12px;
+  cursor: default;
+  max-width: 220px;
+  min-width: 90px;
+  white-space: nowrap;
+  position: relative;
+  top: 1px;
+}
+.tab-item:hover:not(.is-active) {
+  background: #d4d4d4;
+}
+.tab-item.is-active {
+  /* Active tab raises slightly above the divider */
+  background: #c0c0c0;
+  font-weight: bold;
+  margin-top: -1px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  z-index: 2;
+  box-shadow:
+    inset -1px 0 #0a0a0a,
+    inset 1px 1px #ffffff,
+    inset -2px 0 grey;
+}
+.tab-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-dirty-mark {
+  flex: 0 0 auto;
+  color: #cc0000;
+  margin-right: 2px;
+}
+.tab-dirty-mark[hidden] {
+  display: none;
+}
+.tab-close {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  min-height: 14px;
+  min-width: 14px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  margin-left: 2px;
+}
+.tab-add {
+  flex: 0 0 auto;
+  width: 22px;
+  min-width: 22px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  margin: 1px 2px 0 2px;
+  font-size: 14px;
+  line-height: 1;
+  align-self: flex-end;
+}
+/* Drag-reorder visuals — the dragged tab dims, and the drop target
+ * gets a vertical navy bar on the left or right edge to preview where
+ * it'll land when released. */
+.tab-item.is-dragging {
+  opacity: 0.4;
+}
+.tab-item.drop-before {
+  box-shadow: inset 2px 0 0 0 #000080;
+}
+.tab-item.drop-after {
+  box-shadow: inset -2px 0 0 0 #000080;
+}
 
 /* ---- Menu bar ---- */
 .menu-bar {
@@ -117,6 +259,11 @@ body {
   width: 180px;
   padding: 1px 4px;
   font-size: 12px;
+}
+/* Hidden until the user clicks 🔍 (or hits Ctrl+F). is-open is added
+ * by the renderer to slide it in. */
+.toolbar-search:not(.is-open) .menu-search-input {
+  display: none;
 }
 .menu-search-btn {
   min-width: 0;
@@ -197,6 +344,13 @@ body {
   border-bottom: 1px solid #808080;
   font-size: 12px;
   min-height: 24px;
+}
+/* `display: flex` above wins against the browser default
+ * `[hidden] { display: none }`, so without this rule the empty bar
+ * would always show as a 24-px beige strip even with no mode active.
+ * Mirrors the existing rule for the inner `.mode-options` panels. */
+.mode-options-bar[hidden] {
+  display: none !important;
 }
 .mode-options {
   display: flex;
@@ -410,6 +564,23 @@ button.toggled {
   padding: 0 4px;
 }
 
+/* ---- Drag-and-drop reordering of workspace bookmarks ---- */
+.bookmark-item.is-workspace.is-dragging {
+  opacity: 0.4;
+}
+/* Drop indicators: thin colored line above/below for sibling insertion,
+ * background tint for child-of (drop on the row itself). */
+.bookmark-item.is-workspace.drop-before {
+  box-shadow: inset 0 2px 0 0 #000080;
+}
+.bookmark-item.is-workspace.drop-after {
+  box-shadow: inset 0 -2px 0 0 #000080;
+}
+.bookmark-item.is-workspace.drop-into {
+  outline: 1px dashed #000080;
+  outline-offset: -1px;
+}
+
 /* ---- Thumbnail tab ---- */
 .thumb-list {
   display: flex;
@@ -448,12 +619,55 @@ button.toggled {
   display: block;
   width: 100%;
   max-width: 180px;
+  height: auto;
   background: #ffffff;
   border: 1px solid #404040;
   box-shadow: 1px 1px 0 #808080;
 }
+/* Default aspect when row metrics aren't available (rebuildThumbs
+ * normally overrides this with the actual page's canonical w:h). */
 .thumb-placeholder {
-  aspect-ratio: 1 / 1.414; /* A4 default until real metrics arrive */
+  aspect-ratio: 1 / 1.414;
+}
+/* Thumbnail size badge — small Win95-styled pill in the top-right
+ * corner of the thumb-item, only shown for non-A4 pages. */
+.thumb-item {
+  position: relative;
+}
+.thumb-size-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 1px 4px;
+  background: #ffffe0;
+  color: #404040;
+  border: 1px solid #808080;
+  font-size: 10px;
+  line-height: 1.1;
+  pointer-events: none;
+  user-select: none;
+}
+/* Drag-reorder indicators. Sidebar (vertical list) uses top/bottom
+ * navy bars; split-save (horizontal grid) uses left/right bars. */
+.thumb-item.is-dragging,
+.split-thumb.is-dragging {
+  opacity: 0.4;
+}
+.thumb-item.drop-before-v,
+.split-thumb.drop-before-v {
+  box-shadow: inset 0 3px 0 0 #000080;
+}
+.thumb-item.drop-after-v,
+.split-thumb.drop-after-v {
+  box-shadow: inset 0 -3px 0 0 #000080;
+}
+.thumb-item.drop-before-h,
+.split-thumb.drop-before-h {
+  box-shadow: inset 3px 0 0 0 #000080;
+}
+.thumb-item.drop-after-h,
+.split-thumb.drop-after-h {
+  box-shadow: inset -3px 0 0 0 #000080;
 }
 .thumb-label {
   margin-top: 4px;
@@ -507,13 +721,24 @@ button.toggled {
   line-height: 1;
   white-space: pre-wrap;
   user-select: none;
-  /* Light dotted outline so empty / placement-sized overlays are visible
-   * during M3-3 development. M3-6 will make this conditional on selection. */
-  outline: 1px dotted rgba(0, 0, 128, 0.4);
+  /* No always-on frame: legal-practice users find a perpetual outline
+   * around every text/stamp overlay distracting. The is-selected and
+   * editing states still show their own outlines (see below) so the
+   * editor can tell when an overlay is the active target. */
 }
 .overlay-text {
   display: flex;
   align-items: flex-start;
+  /* Pin the visible frame to the stored 1-line height. Without this
+   * the contentEditable element grows visually below its border as
+   * the user types, which makes the edit frame look multi-line even
+   * when the box itself is one line tall. */
+  overflow: hidden;
+}
+/* While inline-editing, reveal a thin scroll if the user has typed
+ * past the visible 1-line box so they aren't typing into a void. */
+.overlay-text.editing {
+  overflow-y: auto;
 }
 
 /* ----- Redaction overlays (墨消し) ----- */
@@ -1014,14 +1239,30 @@ button.toggled {
 .split-thumbs-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: stretch;
-  padding: 4px 0;
+  /* `flex-start` instead of `stretch` so the leading insert gap (and
+   * any inner separators) don't stretch to the tallest thumb. With
+   * `stretch` the leading gap's height pushed the first thumb's
+   * cross-axis alignment off by a few pixels relative to the rest —
+   * visually the page-1 thumbnail looked vertically lower than its
+   * siblings. */
+  align-items: flex-start;
+  /* Reserve 18px of left padding (= leading +gap width 16 + a 2px
+   * shadow allowance) so every wrapped row's first thumb lands at
+   * the same x as row-1's first thumb, which sits *after* the
+   * leading +gap. The leading gap itself uses a negative margin
+   * (rule below) to slide back into the reserved padding band, so
+   * it's visually flush with the row's outer-left edge. */
+  padding: 4px 0 4px 18px;
   gap: 0;
+}
+.split-thumbs-row > .thumb-insert-gap-vertical:first-child {
+  margin-left: -18px;
 }
 .split-thumb {
   display: flex;
   flex-direction: column;
   align-items: center;
+  align-self: flex-start;
   margin: 4px;
   background: #ffffff;
   padding: 3px;
@@ -1537,6 +1778,19 @@ button.toggled {
   border-bottom-color: #000080;
   background: #d8e0ff;
 }
+/* While a sidebar thumb is being dragged, suppress the +gap hover
+ * styling — without this, the row-hover rule above lit up every gap
+ * with navy borders, so the user saw 3 stacked blue lines around any
+ * targeted thumb (gap-above, thumb's drop-before-v, gap-below). The
+ * remaining one is the thumb's own indicator, which is what the user
+ * expects to see. */
+body.thumb-dragging .thumb-insert-gap,
+body.thumb-dragging .thumb-insert-gap-vertical,
+body.thumb-dragging .thumb-insert-gap.drop-target {
+  opacity: 0 !important;
+  border-color: transparent !important;
+  background: transparent !important;
+}
 .thumb-insert-gap.drop-target {
   opacity: 1;
   border-top: 2px solid #008800;
@@ -1544,11 +1798,16 @@ button.toggled {
   background: #d4f4d4;
 }
 
-/* Split-save row uses horizontal flex; override to be a vertical bar */
+/* Split-save row uses horizontal flex; override to be a vertical bar.
+ * `align-self: center` + a fixed cap on height so the bar sits visually
+ * tied to a single thumb pair instead of stretching the full wrapped
+ * row — that stretch was what made the gaps look like a continuous
+ * vertical channel running through every visual line. */
 .thumb-insert-gap-vertical {
   width: 16px;
-  height: auto;
-  align-self: stretch;
+  align-self: center;
+  height: 60%;
+  min-height: 40px;
   margin: 0 1px;
   border-top: none;
   border-bottom: none;
@@ -1558,9 +1817,14 @@ button.toggled {
   color: #000080;
   font-weight: bold;
 }
-.split-thumbs-row:hover .thumb-insert-gap-vertical,
+/* Row-level hover dims them slightly so the user knows they exist;
+ * the gap's own hover/focus brightens just that one. */
+.split-thumbs-row:hover .thumb-insert-gap-vertical {
+  opacity: 0.35;
+}
 .thumb-insert-gap-vertical:hover,
 .thumb-insert-gap-vertical:focus {
+  opacity: 1;
   border-left-color: #000080;
   border-right-color: #000080;
 }
@@ -1575,6 +1839,11 @@ button.toggled {
 .about-header {
   text-align: center;
   margin-bottom: 14px;
+}
+.about-icon {
+  display: block;
+  margin: 0 auto 8px;
+  image-rendering: -webkit-optimize-contrast; /* keep the script-K crisp */
 }
 .about-title {
   font-size: 20px;

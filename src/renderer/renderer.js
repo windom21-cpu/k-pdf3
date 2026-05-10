@@ -22,17 +22,74 @@ import {
   TEXT_FONT_DEFAULT_ID,
   TEXT_FONT_DEFAULT_SIZE,
   getTextFontStack,
+  STAMP_FONT_STACKS,
+  STAMP_FONT_LABELS,
+  getStampFontDefaults,
+  setStampFontDefaults,
+  getStampFontStack,
+  splitStampRuns,
 } from "./fonts.js";
 
 const { kpdf3 } = window;
 
 /**
- * Renderer-side overlay store (M3 architecture: ProjectStore lives in the
- * renderer; main process only handles SQLite I/O on save / load). Reset
- * to the saved snapshot whenever a PDF is opened.
+ * Per-tab state container — ADR-0015 introduced multi-workspace tabs;
+ * the renderer's "active tab" data is bundled here so a tab switch
+ * is a single applyTab() call that re-points all the module-level
+ * aliases (projectStore / history / isOpen / placementMode / ...).
+ *
+ * Phase 1 (this commit): the structure exists, but only one tab is
+ * created at boot. Phase 2 introduces `tabs: Map<id, TabState>` and
+ * the actual switching logic. ADR-0015 §1 documents the full plan.
  */
-const projectStore = new ProjectStore();
-const history = new HistoryStack();
+let _tabIdCounter = 0;
+function genTabId() {
+  return `tab-${Date.now().toString(36)}-${(++_tabIdCounter).toString(36)}`;
+}
+function createTabState() {
+  return {
+    id: genTabId(),
+    projectStore: new ProjectStore(),
+    history: new HistoryStack(),
+    isOpen: false,
+    activeSourcePdfPath: null,
+    activeSourceName: "",
+    activeOutline: null,
+    pages: [],
+    pendingDeletedPages: new Set(),
+    workspaceMutated: false,
+    placementMode: "none",
+    scrollPosition: 0,
+    zoom: null,
+    selectedBookmarkId: null,
+    bookmarkSource: "outline",
+    workspaceBookmarksCache: [],
+    thumbCache: new Map(),
+    inFlightThumbs: new Set(),
+    currentSidebarTab: "thumbs",
+  };
+}
+
+/** @type {Map<string, ReturnType<typeof createTabState>>} */
+const tabs = new Map();
+let activeTabId = null;
+
+const _bootTab = createTabState();
+tabs.set(_bootTab.id, _bootTab);
+activeTabId = _bootTab.id;
+
+function getActiveTab() {
+  return activeTabId ? tabs.get(activeTabId) : null;
+}
+
+// Module-level aliases — mutable so applyTab() can rebind them on
+// tab switch. Existing call sites continue to use bare names
+// (projectStore, history, ...) so the diff stays small; only the
+// declarations changed from const → let. Tab-specific scalars
+// (isOpen, placementMode, ...) keep their own module-level lets and
+// are pushed into the active TabState by saveActiveTabSnapshot().
+let projectStore = _bootTab.projectStore;
+let history = _bootTab.history;
 
 const $ = (id) => document.getElementById(id);
 const btnOpen = $("btn-open");
@@ -104,13 +161,351 @@ function updatePageIndicator(current, total) {
     pageIndicator.textContent = "";
     return;
   }
-  pageIndicator.textContent = `${current} / ${total}`;
+  // `current` is the active pageNo (negative for inserted pages,
+  // possibly non-sequential after reorder), so it can't be shown
+  // verbatim — the user expects 1-indexed visual positions. Look up
+  // the position via the registry; fall back to the raw value if
+  // the registry isn't available yet.
+  let displayPos = current;
+  if (viewer.registry && typeof viewer.registry.posOfPageNo === "function") {
+    const pos = viewer.registry.posOfPageNo(current);
+    if (pos >= 0) displayPos = pos + 1;
+  }
+  pageIndicator.textContent = `${displayPos} / ${total}`;
 }
 
 let isOpen = false;
 /** @type {'none' | 'text' | 'stamp' | 'redaction'} */
 let placementMode = "none";
 let activeSourceName = "";
+
+// ---- Tab management (ADR-0015 Phase 2/3) ------------------------------
+//
+// `tabs` (Map) is the canonical owner of per-tab state; the module-
+// level aliases (projectStore / history / pendingDeletedPages /
+// isOpen / placementMode / activeSourceName / workspaceMutated /
+// selectedBookmarkId / ...) are scratch slots that hold the *active*
+// tab's values for the duration it is selected. saveActiveTabSnapshot
+// pushes them back into the TabState before a switch; applyTab pulls
+// the new tab's values into the slots.
+//
+// The viewer is a single DOM-bound instance shared across tabs —
+// viewer.setProjectStore() rewires its subscription, viewer.load()
+// rebuilds the page list. scrollPosition is captured/restored
+// per tab so flipping back to a tab returns to where you were.
+
+/** Push the live module-level state into the active tab so it can be
+ *  restored later. Called immediately before applyTab() switches. */
+function saveActiveTabSnapshot() {
+  const tab = getActiveTab();
+  if (!tab) return;
+  tab.isOpen = isOpen;
+  tab.placementMode = placementMode;
+  tab.activeSourceName = activeSourceName;
+  tab.workspaceMutated = workspaceMutated;
+  tab.selectedBookmarkId = selectedBookmarkId;
+  tab.bookmarkSource = bookmarkSource;
+  tab.workspaceBookmarksCache = workspaceBookmarksCache;
+  tab.currentSidebarTab = currentSidebarTab;
+  tab.scrollPosition = viewerContainer.scrollTop;
+  tab.zoom = viewer.zoom;
+  // projectStore / history / pendingDeletedPages / thumbCache are
+  // reference-shared with the tab record, no copy needed.
+}
+
+/** Make `tabId` the active tab — drops the viewer's current pages,
+ *  rewires module aliases to that tab's stores, reloads the viewer.
+ *  Skipping work when the tab is already active. */
+async function applyTab(tabId) {
+  if (!tabs.has(tabId)) return;
+  if (tabId === activeTabId) {
+    renderTabBar();
+    return;
+  }
+  saveActiveTabSnapshot();
+  // Tear down the viewer's overlay edit state etc. before swapping.
+  viewer.unload();
+  activeTabId = tabId;
+  const tab = tabs.get(tabId);
+  // Rebind module aliases to the new tab.
+  projectStore = tab.projectStore;
+  history = tab.history;
+  pendingDeletedPages = tab.pendingDeletedPages;
+  isOpen = tab.isOpen;
+  placementMode = tab.placementMode;
+  activeSourceName = tab.activeSourceName;
+  workspaceMutated = tab.workspaceMutated;
+  selectedBookmarkId = tab.selectedBookmarkId;
+  bookmarkSource = tab.bookmarkSource;
+  workspaceBookmarksCache = tab.workspaceBookmarksCache;
+  currentSidebarTab = tab.currentSidebarTab;
+  viewer.setProjectStore(projectStore);
+  // Notify main of the switch so render-page / save-overlays / etc.
+  // resolve against the right workspace handle. For empty tabs (no
+  // PDF yet) we clear main's active workspace too so a stray IPC
+  // doesn't hit the previously-active workspace by accident.
+  if (tab.isOpen) {
+    try {
+      await kpdf3.switchTab(tabId);
+    } catch (err) {
+      console.warn("[tabs] switchTab failed (tab may not be opened on main side):", err);
+    }
+    await refreshViewer();
+    // Restore scroll after layout settles.
+    requestAnimationFrame(() => {
+      viewerContainer.scrollTop = tab.scrollPosition || 0;
+    });
+  } else {
+    try { await kpdf3.switchTab(null); } catch { /* noop */ }
+    setOpen(false);
+  }
+  renderTabBar();
+}
+
+/** Open a new tab and (optionally) prompt the user to pick a PDF for it. */
+async function newTabAndOpen(pdfPath = null) {
+  saveActiveTabSnapshot();
+  const tab = createTabState();
+  tabs.set(tab.id, tab);
+  // Switch the bare aliases to the new tab. Doing it inline (rather
+  // than via applyTab) because the new tab has no main-side handle
+  // yet — applyTab would call switchTab and fail.
+  viewer.unload();
+  activeTabId = tab.id;
+  projectStore = tab.projectStore;
+  history = tab.history;
+  pendingDeletedPages = tab.pendingDeletedPages;
+  isOpen = false;
+  placementMode = "none";
+  activeSourceName = "";
+  workspaceMutated = false;
+  selectedBookmarkId = null;
+  bookmarkSource = "outline";
+  workspaceBookmarksCache = [];
+  currentSidebarTab = "thumbs";
+  viewer.setProjectStore(projectStore);
+  setOpen(false);
+  renderTabBar();
+  if (pdfPath) {
+    await openPdfPath(pdfPath);
+  } else {
+    // Trigger the file picker. Reuses the existing actionOpen flow so
+    // recent-files / D&D / browser dialog all work.
+    await actionOpen();
+  }
+}
+
+/** Close a tab. If it's the active one, switch to a neighbour first.
+ *  Honours the tab's dirty flag — caller should handle confirmation
+ *  upstream (closeTabWithConfirm). */
+async function closeTab(tabId) {
+  if (!tabs.has(tabId)) return;
+  // Disposal on main side. Best-effort — if the tab never opened a
+  // PDF (no main-side handle), close-tab will silently no-op.
+  try {
+    await kpdf3.closeTab(tabId);
+  } catch (err) {
+    console.warn("[tabs] main close-tab failed:", err);
+  }
+  if (tabId === activeTabId) {
+    // Pick a neighbour to activate. Prefer the tab to the left.
+    const order = [...tabs.keys()];
+    const idx = order.indexOf(tabId);
+    const nextId = order[idx - 1] ?? order[idx + 1] ?? null;
+    tabs.delete(tabId);
+    if (nextId) {
+      // Treat as cold switch since module aliases still point at the
+      // (now-deleted) tab's projectStore. activeTabId set to null
+      // first so applyTab takes the loading path.
+      activeTabId = null;
+      await applyTab(nextId);
+    } else {
+      // No tabs left — recreate a blank boot tab so the renderer
+      // never has activeTabId === null (lots of code assumes a tab).
+      const blank = createTabState();
+      tabs.set(blank.id, blank);
+      activeTabId = blank.id;
+      projectStore = blank.projectStore;
+      history = blank.history;
+      pendingDeletedPages = blank.pendingDeletedPages;
+      isOpen = false;
+      placementMode = "none";
+      activeSourceName = "";
+      workspaceMutated = false;
+      selectedBookmarkId = null;
+      bookmarkSource = "outline";
+      workspaceBookmarksCache = [];
+      viewer.setProjectStore(projectStore);
+      viewer.unload();
+      setOpen(false);
+    }
+  } else {
+    tabs.delete(tabId);
+  }
+  renderTabBar();
+}
+
+/** Compute a tab's display name. PDF basename when one is open; "(新規タブ)"
+ *  for an empty tab. */
+function tabDisplayTitle(tab) {
+  if (tab.activeSourceName) return tab.activeSourceName;
+  return "(新規タブ)";
+}
+
+/** Compute whether a tab has unsaved changes. For the active tab we
+ *  consult the live state (projectStore.isDirty()), for inactive ones
+ *  the snapshot saved at last switch. */
+function tabIsDirty(tab) {
+  if (tab.id === activeTabId) {
+    return (
+      projectStore.isDirty() ||
+      pendingDeletedPages.size > 0 ||
+      workspaceMutated
+    );
+  }
+  return (
+    tab.projectStore.isDirty() ||
+    tab.pendingDeletedPages.size > 0 ||
+    tab.workspaceMutated
+  );
+}
+
+/** Rebuild the tab-bar DOM from the current `tabs` map. */
+function renderTabBar() {
+  const list = document.getElementById("tab-list");
+  if (!list) return;
+  list.innerHTML = "";
+  for (const [id, tab] of tabs) {
+    const item = document.createElement("div");
+    item.className = "tab-item";
+    if (id === activeTabId) item.classList.add("is-active");
+    item.dataset.tabId = id;
+    item.title = tab.activeSourcePdfPath ?? tabDisplayTitle(tab);
+    item.draggable = true;
+    const dirty = document.createElement("span");
+    dirty.className = "tab-dirty-mark";
+    dirty.textContent = "●";
+    if (!tabIsDirty(tab)) dirty.hidden = true;
+    item.appendChild(dirty);
+    const title = document.createElement("span");
+    title.className = "tab-title";
+    title.textContent = tabDisplayTitle(tab);
+    item.appendChild(title);
+    const close = document.createElement("button");
+    close.className = "tab-close";
+    close.title = "タブを閉じる";
+    close.textContent = "×";
+    close.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await closeTabWithConfirm(id);
+    });
+    item.appendChild(close);
+    item.addEventListener("click", () => {
+      void applyTab(id);
+    });
+    attachTabDragHandlers(item, id);
+    list.appendChild(item);
+  }
+}
+
+const TAB_DND_MIME = "application/x-kpdf3-tab-id";
+
+/** Wire HTML5 drag-and-drop on a tab item so the user can reorder the
+ *  tab-list by dragging. Drop position is computed from cursor X
+ *  relative to the target tab's midpoint: left half → insert before,
+ *  right half → insert after. Map preserves insertion order, so a
+ *  reorder is "rebuild the Map with entries in the new sequence". */
+function attachTabDragHandlers(item, tabId) {
+  item.addEventListener("dragstart", (e) => {
+    if (!e.dataTransfer) return;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData(TAB_DND_MIME, tabId);
+    e.dataTransfer.setData("text/plain", tabId);
+    item.classList.add("is-dragging");
+  });
+  item.addEventListener("dragend", () => {
+    item.classList.remove("is-dragging");
+    clearTabDropIndicators();
+  });
+  item.addEventListener("dragover", (e) => {
+    if (!hasTabPayload(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const r = item.getBoundingClientRect();
+    const before = e.clientX < r.left + r.width / 2;
+    setTabDropIndicator(item, before);
+  });
+  item.addEventListener("dragleave", (e) => {
+    if (!item.contains(e.relatedTarget)) {
+      item.classList.remove("drop-before", "drop-after");
+    }
+  });
+  item.addEventListener("drop", (e) => {
+    if (!hasTabPayload(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const draggedId = e.dataTransfer.getData(TAB_DND_MIME);
+    clearTabDropIndicators();
+    if (!draggedId || draggedId === tabId) return;
+    const r = item.getBoundingClientRect();
+    const before = e.clientX < r.left + r.width / 2;
+    reorderTab(draggedId, tabId, before);
+  });
+}
+
+function hasTabPayload(dt) {
+  if (!dt) return false;
+  return Array.from(dt.types || []).includes(TAB_DND_MIME);
+}
+
+function setTabDropIndicator(el, before) {
+  clearTabDropIndicators();
+  el.classList.add(before ? "drop-before" : "drop-after");
+}
+
+function clearTabDropIndicators() {
+  const list = document.getElementById("tab-list");
+  if (!list) return;
+  for (const el of list.querySelectorAll(".drop-before, .drop-after")) {
+    el.classList.remove("drop-before", "drop-after");
+  }
+}
+
+/** Move `draggedId` to be immediately before / after `targetId`. Map
+ *  preserves insertion order so we rebuild it from a re-ordered array
+ *  of entries. Active tab + state are unaffected — this is purely a
+ *  visual reorder. */
+function reorderTab(draggedId, targetId, before) {
+  if (!tabs.has(draggedId) || !tabs.has(targetId)) return;
+  const entries = [...tabs.entries()];
+  const fromIdx = entries.findIndex(([id]) => id === draggedId);
+  if (fromIdx < 0) return;
+  const [moved] = entries.splice(fromIdx, 1);
+  let toIdx = entries.findIndex(([id]) => id === targetId);
+  if (toIdx < 0) return;
+  if (!before) toIdx += 1;
+  entries.splice(toIdx, 0, moved);
+  tabs.clear();
+  for (const [id, tab] of entries) tabs.set(id, tab);
+  renderTabBar();
+}
+
+/** Close-with-confirmation: dirty tabs get a 「破棄しますか」 dialog. */
+async function closeTabWithConfirm(tabId) {
+  const tab = tabs.get(tabId);
+  if (!tab) return;
+  if (tabIsDirty(tab)) {
+    const ok = await customConfirm({
+      title: "タブを閉じる",
+      message: `「${tabDisplayTitle(tab)}」に未保存の変更があります。\n破棄して閉じますか？`,
+      okLabel: "破棄して閉じる",
+      cancelLabel: "キャンセル",
+    });
+    if (!ok) return;
+  }
+  await closeTab(tabId);
+}
 
 function handlePagePointerDown(pageNo, x, y, evt, div) {
   if (!isOpen) return;
@@ -514,6 +909,98 @@ function placeText(pageNo, x, y) {
   }
 }
 
+// ---- ＋ページ番号: bulk add page-number text overlays ------------------
+//
+// One-shot operation that drops a small text overlay at the footer of
+// every non-deleted page. Each overlay is a regular `text` overlay so
+// the user can drag / resize / delete individual ones afterwards. The
+// whole insertion is a single Undo step (history.execute on a batch
+// of AddOverlayCommands inside one history transaction is overkill —
+// for now we push them as individual commands and merge later if the
+// undo experience demands it).
+
+const pageNumDialog = () => $("page-numbers-dialog");
+
+function openPageNumbersDialog() {
+  if (!isOpen) return;
+  pageNumDialog().hidden = false;
+}
+function closePageNumbersDialog() {
+  pageNumDialog().hidden = true;
+}
+
+/** Format a single page number per the chosen template. */
+function formatPageNumber(format, n, total) {
+  switch (format) {
+    case "-N-":  return `- ${n} -`;
+    case "p.N":  return `p.${n}`;
+    case "N/T":  return `${n} / ${total}`;
+    case "N":
+    default:     return String(n);
+  }
+}
+
+async function applyPageNumbers() {
+  const position = $("page-numbers-position").value;
+  const format   = $("page-numbers-format").value;
+  const start    = Math.max(1, Number($("page-numbers-start").value) || 1);
+  const fontSize = Math.max(6, Math.min(36, Number($("page-numbers-fontsize").value) || 11));
+  const allPages = await kpdf3.getPages();
+  const visible  = allPages.filter((p) => !pendingDeletedPages.has(p.pageNo));
+  if (visible.length === 0) {
+    wsStatus.textContent = "ページがありません";
+    closePageNumbersDialog();
+    return;
+  }
+  // Footer y = paper height − margin. Margin held to ~24pt so the
+  // number sits inside the bottom margin without pushing into body.
+  const FOOTER_MARGIN = 24;
+  const W = Math.max(60, fontSize * 8); // wider than placeText default — page-numbers tend to be longer ("23 / 312")
+  const H = Math.max(fontSize, Math.round(fontSize * 1.4));
+
+  let added = 0;
+  for (let i = 0; i < visible.length; i++) {
+    const row  = visible[i];
+    const cw   = row.cropW ?? row.width ?? 595;
+    const ch   = row.cropH ?? row.height ?? 842;
+    const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
+    const swap = userRot === 90 || userRot === 270;
+    // Canonical (post-rotation) page extents.
+    const pageW = swap ? ch : cw;
+    const pageH = swap ? cw : ch;
+    // x by alignment; y from bottom.
+    let x;
+    if (position === "left")        x = 36;
+    else if (position === "right")  x = pageW - 36 - W;
+    else                            x = (pageW - W) / 2;
+    const y = pageH - FOOTER_MARGIN - H;
+    const text = formatPageNumber(format, start + i, visible.length);
+    const cmd = new AddOverlayCommand(projectStore, {
+      pageNo: row.pageNo,
+      type: "text",
+      x, y, w: W, h: H, zOrder: 0,
+      properties: {
+        text,
+        fontSize,
+        color: "#000000",
+        fontId: currentTextFontId(),
+        rotation: 0,
+      },
+    });
+    history.execute(cmd);
+    added += 1;
+  }
+  wsStatus.textContent = `${added} ページにページ番号を追加`;
+  closePageNumbersDialog();
+}
+
+$("btn-page-numbers")?.addEventListener("click", openPageNumbersDialog);
+$("page-numbers-ok")?.addEventListener("click", () => { void applyPageNumbers(); });
+$("page-numbers-cancel")?.addEventListener("click", closePageNumbersDialog);
+pageNumDialog()?.addEventListener("click", (e) => {
+  if (e.target === pageNumDialog()) closePageNumbersDialog();
+});
+
 /** Active preset id — drives currentStampPreset(). null when nothing
  *  is registered yet. Persisted across sessions via localStorage. */
 const STAMP_ACTIVE_PRESET_KEY = "kpdf3.activeStampPresetId";
@@ -545,7 +1032,18 @@ function currentStampPreset() {
     color: p.color,
     label: p.label,
   };
-  if (p.kind === "date") return { ...base, text: renderDateText(p.text) };
+  if (p.kind === "date") {
+    // The date-numeric-spaced format is a unique distribution-rendered
+    // variant: 3 numbers spaced across the box, with separator chars
+    // dropped. spacingMode flag is plumbed through to the overlay so
+    // the viewer / exporter pick the alternate render path.
+    const isSpaced = p.text === "date-numeric-spaced";
+    return {
+      ...base,
+      text: renderDateText(p.text),
+      spacingMode: isSpaced ? "distribute-3" : undefined,
+    };
+  }
   if (p.kind === "text") return { ...base, text: p.text ?? "" };
   if (p.kind === "image") return { ...base, kind: "image", assetId: p.assetId, text: "" };
   return null;
@@ -567,6 +1065,9 @@ function placeStamp(pageNo, x, y) {
     frame: preset.frame,
     fontSize: preset.fontSize,
     rotation: 0,
+    // Plumb the date-numeric-spaced "distribute" flag through so the
+    // viewer + exporter pick the special rendering path.
+    spacingMode: preset.spacingMode,
   };
   if (preset.kind === "image" && preset.assetId) {
     properties.assetId = preset.assetId;
@@ -1131,9 +1632,20 @@ function renderDateText(formatKey) {
   const reiwa = d.getFullYear() - 2018;
   const m = d.getMonth() + 1;
   const day = d.getDate();
-  if (formatKey === "date-numeric-fw") return `-${reiwa}．-${m}．-${day}`;
-  if (formatKey === "date-kanji-dash") return `令和-${reiwa}年-${m}月-${day}日`;
-  return `-${reiwa}.-${m}.-${day}`; // default = numeric-dash
+  // Hyphen-as-zero-fill: only single-digit values get the leading "-".
+  // Two-digit values (10..99) print as-is. So 令和8年5月10日 →
+  // "-8.-5.10", not "-8.-5.-10".
+  const dp = (n) => (n < 10 ? `-${n}` : String(n));
+  if (formatKey === "date-numeric-fw") return `${dp(reiwa)}．${dp(m)}．${dp(day)}`;
+  if (formatKey === "date-kanji-dash") return `令和${dp(reiwa)}年${dp(m)}月${dp(day)}日`;
+  if (formatKey === "date-numeric-spaced") {
+    // Three numbers, each zero-fill-as-hyphen. Separator dots are
+    // not drawn — placement adds spacingMode='distribute-3' so the
+    // renderer distributes the three tokens across the box width
+    // instead of laying them out as a single text line.
+    return `${dp(reiwa)} ${dp(m)} ${dp(day)}`;
+  }
+  return `${dp(reiwa)}.${dp(m)}.${dp(day)}`; // default = numeric-dash
 }
 
 // ---- Stamp manager dialog ---------------------------------------------
@@ -1153,6 +1665,90 @@ stampMgrDialog?.addEventListener("click", (e) => {
 $("stamp-mgr-date")?.addEventListener("click", () => openStampRegisterDate());
 $("stamp-mgr-text")?.addEventListener("click", () => openStampRegisterText());
 $("stamp-mgr-image")?.addEventListener("click", () => openStampRegisterImage());
+$("stamp-mgr-font")?.addEventListener("click", () => openStampFontDialog());
+
+/** Mirrors `drawStampMixedTextOnCanvas` in exporter.js — kept local so
+ *  the font dialog preview stays self-contained. */
+function drawStampMixedText(ctx, text, cx, cy, fontSize, color, fullStack, halfStack) {
+  const runs = splitStampRuns(text);
+  const widths = [];
+  let total = 0;
+  for (const run of runs) {
+    ctx.font = `bold ${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
+    const m = ctx.measureText(run.text);
+    widths.push(m.width);
+    total += m.width;
+  }
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  let pen = cx - total / 2;
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    ctx.font = `bold ${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
+    ctx.fillText(run.text, pen, cy);
+    pen += widths[i];
+  }
+}
+
+// ---- スタンプ用フォント設定 dialog (ADR-0019 後半 MVP) ------------------
+const stampFontDialog = $("stamp-font-dialog");
+const stampFontFullSel = $("stamp-font-full");
+const stampFontHalfSel = $("stamp-font-half");
+const stampFontPreview = $("stamp-font-preview");
+function populateStampFontSelects() {
+  if (!stampFontFullSel || !stampFontHalfSel) return;
+  for (const sel of [stampFontFullSel, stampFontHalfSel]) {
+    sel.innerHTML = "";
+    for (const id of Object.keys(STAMP_FONT_STACKS)) {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = STAMP_FONT_LABELS[id] ?? id;
+      sel.appendChild(opt);
+    }
+  }
+}
+function openStampFontDialog() {
+  populateStampFontSelects();
+  const cur = getStampFontDefaults();
+  stampFontFullSel.value = cur.full;
+  stampFontHalfSel.value = cur.half;
+  paintStampFontPreview();
+  stampFontDialog.hidden = false;
+}
+function closeStampFontDialog() { stampFontDialog.hidden = true; }
+function paintStampFontPreview() {
+  if (!stampFontPreview) return;
+  const ctx = stampFontPreview.getContext("2d");
+  const W = stampFontPreview.width;
+  const H = stampFontPreview.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = "#cccccc";
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+  const fullStack = getStampFontStack(stampFontFullSel.value);
+  const halfStack = getStampFontStack(stampFontHalfSel.value);
+  const sample = "令和8年5月10日";
+  drawStampMixedText(ctx, sample, W / 2, H / 2, 22, "#cc0000", fullStack, halfStack);
+}
+stampFontFullSel?.addEventListener("change", paintStampFontPreview);
+stampFontHalfSel?.addEventListener("change", paintStampFontPreview);
+$("stamp-font-cancel")?.addEventListener("click", closeStampFontDialog);
+stampFontDialog?.addEventListener("click", (e) => {
+  if (e.target === stampFontDialog) closeStampFontDialog();
+});
+$("stamp-font-ok")?.addEventListener("click", () => {
+  setStampFontDefaults({
+    full: stampFontFullSel.value,
+    half: stampFontHalfSel.value,
+  });
+  closeStampFontDialog();
+  // Re-render the viewer so existing stamp overlays pick up the new
+  // font defaults immediately. exporter & ghost preview re-read on
+  // next call so they don't need explicit invalidation.
+  if (viewer) viewer.refreshAllOverlays?.();
+});
 
 async function populateStampMgrList() {
   stampMgrList.innerHTML = "";
@@ -1204,6 +1800,26 @@ async function populateStampMgrList() {
 }
 
 // ---- Generic stamp preview painter (used by all 3 register dialogs) ----
+function tintCanvasInPlace(ctx, hex) {
+  const w = ctx.canvas.width, h = ctx.canvas.height;
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex ?? ""));
+  if (!m) return;
+  const v = m[1];
+  const tr = parseInt(v.slice(0, 2), 16);
+  const tg = parseInt(v.slice(2, 4), 16);
+  const tb = parseInt(v.slice(4, 6), 16);
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+    d[i + 3] = Math.round(d[i + 3] * (1 - lum));
+    d[i] = tr;
+    d[i + 1] = tg;
+    d[i + 2] = tb;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 function paintStampPreview(canvas, props) {
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1225,15 +1841,28 @@ function paintStampPreview(canvas, props) {
     const bw = props.bitmap.width, bh = props.bitmap.height;
     const scale = Math.min(innerW / bw, innerH / bh);
     const w = bw * scale, h = bh * scale;
-    ctx.drawImage(props.bitmap, (W - w) / 2, (H - h) / 2, w, h);
+    const dx = (W - w) / 2, dy = (H - h) / 2;
+    if (props.color) {
+      // Draw a tinted preview by composing onto an offscreen canvas
+      // (luminance → alpha + RGB ← color), then copying the result.
+      const off = document.createElement("canvas");
+      off.width = bw;
+      off.height = bh;
+      const octx = off.getContext("2d");
+      octx.drawImage(props.bitmap, 0, 0);
+      tintCanvasInPlace(octx, props.color);
+      ctx.drawImage(off, dx, dy, w, h);
+    } else {
+      ctx.drawImage(props.bitmap, dx, dy, w, h);
+    }
     if (props.frame === "rect") {
-      ctx.strokeStyle = props.color;
+      ctx.strokeStyle = props.color || "#000000";
       ctx.lineWidth = 1.5;
-      ctx.strokeRect((W - w) / 2, (H - h) / 2, w, h);
+      ctx.strokeRect(dx, dy, w, h);
     } else if (props.frame === "circle") {
       ctx.beginPath();
       ctx.ellipse(W / 2, H / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
-      ctx.strokeStyle = props.color;
+      ctx.strokeStyle = props.color || "#000000";
       ctx.lineWidth = 1.5;
       ctx.stroke();
     }
@@ -1276,6 +1905,7 @@ const stampRegDateDialog = $("stamp-register-date");
 const stampRegDateColor = $("stamp-reg-date-color");
 const stampRegDateFrame = $("stamp-reg-date-frame");
 const stampRegDateLabel = $("stamp-reg-date-label");
+const stampRegDateFontSize = $("stamp-reg-date-fontsize");
 const stampRegDatePreview = $("stamp-reg-date-preview");
 // id of the preset currently being edited (vs. created); null on create.
 let _editingPresetId = null;
@@ -1289,6 +1919,9 @@ function openStampRegisterDate(prefill = null) {
   stampRegDateColor.value = prefill?.color ?? "#cc0000";
   stampRegDateFrame.checked = prefill ? prefill.frame !== "none" : true;
   stampRegDateLabel.value = prefill?.label ?? "";
+  if (stampRegDateFontSize) {
+    stampRegDateFontSize.value = String(prefill?.fontSize ?? 14);
+  }
   stampRegDateDialog.hidden = false;
   paintStampRegDatePreview();
 }
@@ -1307,11 +1940,12 @@ function getDateRegFormatKey() {
 }
 function paintStampRegDatePreview() {
   const formatKey = getDateRegFormatKey();
+  const fs = Math.max(6, Math.min(72, Number(stampRegDateFontSize?.value) || 14));
   paintStampPreview(stampRegDatePreview, {
     text: renderDateText(formatKey),
     color: stampRegDateColor.value,
     frame: stampRegDateFrame.checked ? "rect" : "none",
-    fontSize: 14,
+    fontSize: fs,
   });
 }
 stampRegDateDialog?.addEventListener("change", paintStampRegDatePreview);
@@ -1326,18 +1960,31 @@ $("stamp-reg-date-ok")?.addEventListener("click", async () => {
     "date-numeric-dash": "-8.-5.-9",
     "date-numeric-fw": "-8．-5．-9",
     "date-kanji-dash": "令和-8年-5月-9日",
+    "date-numeric-spaced": "-8 -5 -9 (字間調整)",
   };
   const label = stampRegDateLabel.value.trim() || formatLabels[formatKey] || "日付";
+  const fontSize = Math.max(6, Math.min(72, Number(stampRegDateFontSize?.value) || 14));
+  // Box width scales with fontSize so a 24pt date doesn't overflow a
+  // 14pt-sized box. The base widths below were tuned for fontSize 14.
+  const baseWidth = formatKey === "date-kanji-dash"
+    ? 140
+    : formatKey === "date-numeric-spaced"
+      ? 90
+      : 105;
   await kpdf3.addStampPreset({
     id: _editingPresetId, // null on create, existing id on edit (upsert)
     kind: "date",
     label,
     color: stampRegDateColor.value,
     frame: stampRegDateFrame.checked ? "rect" : "none",
-    fontSize: 14,
+    fontSize,
     text: formatKey, // store the format spec, render the date at placement
-    width: formatKey === "date-kanji-dash" ? 140 : 105,
-    height: 40,
+    // distribute-3 default = the natural "compact" width, matching
+    // what the preview shows. Users WIDEN the box by dragging the
+    // resize handle to fit the preprinted year/month/day positions
+    // on the underlying paper.
+    width: Math.round(baseWidth * (fontSize / 14)),
+    height: Math.round(40 * (fontSize / 14)),
   });
   _editingPresetId = null;
   closeStampRegisterDate();
@@ -1415,6 +2062,7 @@ const stampRegImageName = $("stamp-reg-image-name");
 const stampRegImageW = $("stamp-reg-image-w");
 const stampRegImageH = $("stamp-reg-image-h");
 const stampRegImageFrame = $("stamp-reg-image-frame");
+const stampRegImageColor = $("stamp-reg-image-color");
 const stampRegImageLabel = $("stamp-reg-image-label");
 const stampRegImagePreview = $("stamp-reg-image-preview");
 const stampRegImageOk = $("stamp-reg-image-ok");
@@ -1426,6 +2074,9 @@ async function openStampRegisterImage(prefill = null) {
   stampRegImageW.value = String(prefill?.width ?? 80);
   stampRegImageH.value = String(prefill?.height ?? 80);
   stampRegImageFrame.checked = prefill ? prefill.frame !== "none" : false;
+  // Tint color: empty string means "no tint" (image as-is). Persisted
+  // as "" in stamp_presets.color so existing presets keep working.
+  if (stampRegImageColor) stampRegImageColor.value = prefill?.color ?? "";
   stampRegImageLabel.value = prefill?.label ?? "";
   stampRegImageOk.disabled = !prefill?.assetId;
   // If editing, fetch the existing asset bitmap for the preview.
@@ -1460,7 +2111,7 @@ function paintStampRegImagePreview() {
   paintStampPreview(stampRegImagePreview, {
     kind: "image",
     bitmap: _stampRegImageState?.bitmap,
-    color: "#cc0000",
+    color: stampRegImageColor?.value || "",
     frame: stampRegImageFrame.checked ? "rect" : "none",
   });
 }
@@ -1513,6 +2164,7 @@ stampRegImageW?.addEventListener("input", () => {
   stampRegImageH.value = String(h);
 });
 stampRegImageFrame?.addEventListener("change", paintStampRegImagePreview);
+stampRegImageColor?.addEventListener("change", paintStampRegImagePreview);
 $("stamp-reg-image-cancel")?.addEventListener("click", closeStampRegisterImage);
 stampRegImageDialog?.addEventListener("click", (e) => {
   if (e.target === stampRegImageDialog) closeStampRegisterImage();
@@ -1525,7 +2177,7 @@ stampRegImageOk?.addEventListener("click", async () => {
     id: _editingPresetId,
     kind: "image",
     label: stampRegImageLabel.value.trim() || _stampRegImageState.label || "image",
-    color: "#cc0000",
+    color: stampRegImageColor?.value || "",
     frame: stampRegImageFrame.checked ? "rect" : "none",
     fontSize: 14,
     assetId: _stampRegImageState.assetId,
@@ -1576,7 +2228,7 @@ function updateStampGhostPreset() {
     img.style.objectFit = "contain";
     img.draggable = false;
     img.style.pointerEvents = "none";
-    _stampGhostAssetUrl(preset.assetId).then((url) => {
+    _stampGhostAssetUrl(preset.assetId, preset.color).then((url) => {
       if (url) img.src = url;
     });
     stampGhostEl.appendChild(img);
@@ -1598,16 +2250,34 @@ function updateStampGhostPreset() {
 
 // Reuse viewer's blob-URL cache for the ghost (so we don't double-fetch).
 const _stampGhostUrlCache = new Map();
-async function _stampGhostAssetUrl(assetId) {
-  if (_stampGhostUrlCache.has(assetId)) return _stampGhostUrlCache.get(assetId);
+async function _stampGhostAssetUrl(assetId, color) {
+  const key = color ? `${assetId} ${color}` : assetId;
+  if (_stampGhostUrlCache.has(key)) return _stampGhostUrlCache.get(key);
   try {
     const data = await kpdf3.getAsset(assetId);
     if (!data?.blob) return null;
     const u8 = data.blob instanceof Uint8Array
       ? data.blob
       : new Uint8Array(data.blob.buffer ?? data.blob);
-    const url = URL.createObjectURL(new Blob([u8], { type: data.mime || "image/png" }));
-    _stampGhostUrlCache.set(assetId, url);
+    const blob = new Blob([u8], { type: data.mime || "image/png" });
+    if (!color) {
+      const url = URL.createObjectURL(blob);
+      _stampGhostUrlCache.set(key, url);
+      return url;
+    }
+    // Tinted variant — paint into a canvas, encode to PNG.
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close?.();
+    tintCanvasInPlace(ctx, color);
+    const url = await new Promise((resolve) =>
+      canvas.toBlob((b) => resolve(b ? URL.createObjectURL(b) : null), "image/png"),
+    );
+    if (url) _stampGhostUrlCache.set(key, url);
     return url;
   } catch {
     return null;
@@ -1660,7 +2330,11 @@ function syncStampGhostMode() {
 
 function setOpen(open) {
   isOpen = open;
-  btnOpen.disabled = open;
+  // The toolbar 開く button stays enabled across PDFs so the user can
+  // load another file immediately (replacing the active tab's PDF
+  // through the existing confirmDiscardIfDirty path) without having
+  // to close-then-open.
+  btnOpen.disabled = false;
   btnExport.disabled = !open;
   btnPrint.disabled = !open;
   zoomSelect.disabled = !open;
@@ -1676,17 +2350,32 @@ function setOpen(open) {
   if (btnModeMarker) btnModeMarker.disabled = !open;
   if (markerColorSel) markerColorSel.disabled = !open;
   if (btnModeCallout) btnModeCallout.disabled = !open;
+  const btnPageNums = $("btn-page-numbers");
+  if (btnPageNums) btnPageNums.disabled = !open;
   // (stampTemplateSel / stampColorSel removed — palette buttons are
   // managed by rebuildStampPalette + the mode-options bar visibility.)
   if (!open) {
     setPlacementMode("none");
     setSplitMode(false);
+    // Clear sidebar artifacts that survive across close paths. Some
+    // close routes (tab × button when no other tabs remain, switching
+    // to a fresh blank tab) bypass refreshViewer's `!isOpen` cleanup,
+    // which left stale thumbnails and bookmarks visible after the
+    // workspace was actually gone.
+    if (typeof clearThumbs === "function") clearThumbs();
+    if (bookmarkTree) bookmarkTree.innerHTML = "";
+    if (sidebar) sidebar.hidden = true;
+    if (wsStatus) wsStatus.textContent = "PDF を「開く」で読み込みます";
   }
   refreshMenuState();
   refreshDirtyIndicator();
   refreshSidebarToggle();
   refreshZoomSelect();
   refreshSearchEnabled();
+  // Mirror onto the active tab so the tab bar's dirty mark + close
+  // confirmation reflect reality.
+  const tab = getActiveTab();
+  if (tab) tab.isOpen = open;
 }
 
 /** Refresh the title bar / file label / status bar to reflect the dirty flag. */
@@ -1700,7 +2389,15 @@ const winCloseBtn = $("win-close");
 
 winMinimizeBtn.addEventListener("click", () => kpdf3.windowMinimize());
 winMaximizeBtn.addEventListener("click", () => kpdf3.windowMaximizeToggle());
-winCloseBtn.addEventListener("click", () => kpdf3.windowClose());
+winCloseBtn.addEventListener("click", async () => {
+  // Aggregate-confirm across all tabs first. main's WM-close path
+  // (e.g. Alt+F4) already triggers `beforeunload`, but the custom
+  // title-bar X bypasses that — handle it here so the user always
+  // gets the multi-tab summary dialog before losing work.
+  if (!(await confirmDiscardAcrossAllTabs())) return;
+  _reloadingRenderer = true; // disable beforeunload check
+  kpdf3.windowClose();
+});
 
 // Double-click on title bar toggles maximize (Windows convention).
 $("app-title-text").addEventListener("dblclick", () => {
@@ -1725,6 +2422,9 @@ function refreshDirtyIndicator() {
     appTitleText.textContent = APP_TITLE_DEFAULT;
   }
   btnSave.disabled = !dirty;
+  // Re-render the tab bar so its dirty-mark dot updates as the user
+  // edits. Cheap (Map iteration + DOM rebuild for 1-5 tabs).
+  renderTabBar();
 }
 
 /**
@@ -1736,7 +2436,8 @@ const ZOOM_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 function refreshMenuState() {
   const z = viewer.zoom;
   menuBar.setEnabled({
-    open: !isOpen,
+    // Always enabled — see toolbar comment in setOpen().
+    open: true,
     close: isOpen,
     save: isOpen && isWorkspaceDirty(),
     undo: isOpen && history.canUndo(),
@@ -1768,7 +2469,7 @@ function refreshMenuState() {
     "mode-callout": isOpen,
     // Future tools — kept disabled until M6 (placeholder slots)
     "stamp-manager": isOpen,
-    "font-settings": false,
+    "font-settings": true, // available even with no PDF open (workspace-wide)
     // Still M5+ stubs (clipboard)
     cut: false,
     copy: false,
@@ -1875,10 +2576,15 @@ async function refreshViewer() {
   activeSourceName = meta.fileName ?? "";
   wsStatus.textContent = `${pages.length} ページ`;
   viewer.load(pages);
+  // Apply the active fit mode so a fresh PDF lands at the user's
+  // chosen sizing instead of the viewer's intrinsic default zoom.
+  if (zoomMode === "fit-width") applyFitWidthNow();
+  else if (zoomMode === "fit-page") applyFitPageNow();
   refreshBookmarks();
   rebuildThumbs(pages);
   refreshStampPresetCacheAndSelect();
   refreshDirtyIndicator();
+  refreshZoomSelect();
 }
 
 async function confirmDiscardIfDirty() {
@@ -1887,6 +2593,27 @@ async function confirmDiscardIfDirty() {
     title: "未保存の変更",
     message: "未保存の変更があります。\n変更を破棄して続行しますか？",
     okLabel: "破棄して続行",
+  });
+}
+
+/** Aggregate-confirm across every tab (used on app-window close).
+ *  Returns true to proceed, false to cancel. Snapshots the active
+ *  tab first so its live edits are visible to tabIsDirty(). */
+async function confirmDiscardAcrossAllTabs() {
+  saveActiveTabSnapshot();
+  const dirtyTabs = [];
+  for (const [, tab] of tabs) {
+    if (tabIsDirty(tab)) dirtyTabs.push(tab);
+  }
+  if (dirtyTabs.length === 0) return true;
+  const lines = dirtyTabs.map((t) => `  • ${tabDisplayTitle(t)}`).join("\n");
+  return customConfirm({
+    title: "未保存のタブがあります",
+    message:
+      `${dirtyTabs.length} 個のタブに未保存の変更があります:\n${lines}\n\n` +
+      "破棄してすべて閉じますか？",
+    okLabel: "破棄して閉じる",
+    cancelLabel: "キャンセル",
   });
 }
 
@@ -2067,7 +2794,7 @@ async function actionShowRecent() {
       li.appendChild(meta);
       li.addEventListener("click", () => {
         hideRecentDialog();
-        openPdfPath(r.sourcePdfPath);
+        openPdfSmart(r.sourcePdfPath);
       });
       recentList.appendChild(li);
     }
@@ -2083,13 +2810,25 @@ recentDialog.addEventListener("click", (e) => {
 async function openPdfPath(pdfPath) {
   if (!pdfPath) return;
   try {
-    const result = await kpdf3.openPdfFile(pdfPath);
+    // ADR-0015: bind the workspace handle on the main side to the
+    // active tab's id. Phase 4's "+ button" creates a fresh TabState
+    // first, so this same path also opens into NEW tabs.
+    const result = await kpdf3.openPdfFile(pdfPath, activeTabId);
     projectStore.reset(result.overlays ?? []);
     pendingDeletedPages.clear();
     workspaceMutated = false;
     history.clear();
+    // Push the source-PDF metadata onto the active tab so the tab bar
+    // labels it correctly and so a future tab switch returns here.
+    const tab = getActiveTab();
+    if (tab) {
+      tab.activeSourcePdfPath = pdfPath;
+      const fname = pdfPath.split(/[\\/]/).pop() ?? "";
+      tab.activeSourceName = fname;
+    }
     setOpen(true);
     await refreshViewer();
+    renderTabBar();
   } catch (err) {
     console.error("[renderer] openPdfFile (recent) failed:", err);
     wsStatus.textContent = `エラー: ${err.message ?? err}`;
@@ -2429,10 +3168,25 @@ openDialog.addEventListener("keydown", (e) => {
 });
 
 async function actionOpen() {
-  if (!(await confirmDiscardIfDirty())) return;
+  // No dirty check: with tabs, opening a new PDF doesn't have to
+  // discard the current one. If the active tab already has a PDF,
+  // route the new file into a fresh tab (preserves the user's
+  // editing context). Empty active tab → fill it directly.
   const path = await showFileBrowser({ mode: "open" });
   if (!path) return;
-  await openPdfPath(path);
+  await openPdfSmart(path);
+}
+
+/** Open `path` in the active tab when it's empty, or in a fresh tab
+ *  when the active one already has a workspace loaded. Used by the
+ *  toolbar 開く button, the file menu, the recents dialog and the
+ *  global PDF drop handler so they all behave consistently. */
+async function openPdfSmart(path) {
+  if (isOpen) {
+    await newTabAndOpen(path);
+  } else {
+    await openPdfPath(path);
+  }
 }
 
 async function actionClose() {
@@ -2848,21 +3602,27 @@ function rebuildSplitUI(pages) {
       row.appendChild(makeSplitInsertGap(anchor));
     }
     for (let i = part.start; i <= part.end; i++) {
-      const thumb = createThumbElement(pages[i]);
+      // Visual position passed in 1-indexed across the WHOLE document
+      // so split-save labels match the sidebar / page-indicator
+      // numbering even when the part doesn't start at page 1.
+      const thumb = createThumbElement(pages[i], i + 1);
       row.appendChild(thumb);
-      // Trailing insert gap — anchored to this source page (or its
-      // preceding source page when this thumb is synthetic).
-      let anchor = pages[i].pageNo;
+      // Trailing insert gap — anchored to this source page, or to the
+      // synthetic's slot anchor + (orderInSlot+1) when this thumb is
+      // a synthetic. Without orderInSlot a click on the gap right
+      // after a mid-slot synthetic clobbered the slot ordering, which
+      // is the "末尾の挿入で挙動がおかしくなる" bug — last-tail clicks
+      // re-anchored to the wrong slot position. Mirrors the sidebar
+      // rebuildThumbs logic.
+      let anchor;
+      let orderInSlot = null;
       if (pages[i].isSynthetic) {
-        for (let k = i - 1; k >= 0; k--) {
-          if (!pages[k].isSynthetic) {
-            anchor = pages[k].pageNo;
-            break;
-          }
-        }
-        if (anchor < 0) anchor = 0;
+        anchor = pages[i].syntheticAfterPageNo ?? 0;
+        orderInSlot = (pages[i].syntheticOrderInSlot ?? 0) + 1;
+      } else {
+        anchor = pages[i].pageNo;
       }
-      row.appendChild(makeSplitInsertGap(anchor));
+      row.appendChild(makeSplitInsertGap(anchor, orderInSlot));
       if (i < part.end) {
         // Inner separator — click to split here.
         const sep = document.createElement("div");
@@ -2897,7 +3657,7 @@ function rebuildSplitUI(pages) {
   });
 }
 
-function createThumbElement(pageRow) {
+function createThumbElement(pageRow, visualPos) {
   const wrap = document.createElement("div");
   wrap.className = "split-thumb";
   wrap.dataset.pageNo = String(pageRow.pageNo);
@@ -2917,12 +3677,20 @@ function createThumbElement(pageRow) {
     placeholder.style.display = "flex";
     placeholder.style.alignItems = "center";
     placeholder.style.justifyContent = "center";
-    placeholder.textContent = String(pageRow.pageNo);
+    placeholder.textContent = typeof visualPos === "number" && visualPos > 0
+      ? String(visualPos)
+      : String(pageRow.pageNo);
     wrap.appendChild(placeholder);
   }
   const lbl = document.createElement("span");
   lbl.className = "split-thumb-label";
-  lbl.textContent = `p.${pageRow.pageNo}`;
+  // Visual page number (1-indexed across the whole document) so it
+  // matches the sidebar thumbs + bottom indicator. Synthetic rows
+  // get a leading ✎ marker so they're still distinguishable.
+  const labelNum = typeof visualPos === "number" && visualPos > 0
+    ? String(visualPos)
+    : String(pageRow.pageNo);
+  lbl.textContent = pageRow.isSynthetic ? `✎ ${labelNum}` : labelNum;
   wrap.appendChild(lbl);
   wrap.addEventListener("click", (e) => {
     const ordered = getOrderedThumbPageNos(splitFlow, ".split-thumb[data-page-no]");
@@ -2930,6 +3698,10 @@ function createThumbElement(pageRow) {
     wrap.focus();
   });
   attachThumbContextMenu(wrap, pageRow.pageNo);
+  // Same D&D handler as the sidebar thumbs — a single mechanism for
+  // page reordering means split-save view picks up the same display_
+  // order machinery, including synthetic-page support.
+  attachThumbDragHandlers(wrap, pageRow.pageNo);
   return wrap;
 }
 
@@ -3196,8 +3968,10 @@ async function actionExport() {
     // created.
     updateBusy("新しいファイルに切り替え中...", 95);
     try {
-      await kpdf3.closeWorkspace();
-      const opened = await kpdf3.openPdfFile(savePath);
+      // ADR-0015: Save As replaces the active tab's workspace handle —
+      // we reuse activeTabId so other tabs (when they exist in
+      // Phase 4+) aren't disturbed.
+      const opened = await kpdf3.openPdfFile(savePath, activeTabId);
       projectStore.reset(opened.overlays ?? []);
       pendingDeletedPages.clear();
       workspaceMutated = false;
@@ -3394,11 +4168,23 @@ function applyZoom(z) {
 
 function refreshZoomSelect() {
   if (!zoomSelect) return;
-  const z = viewer.zoom;
   // Strip any prior dynamic "current %" entry so we don't accumulate them.
   for (const opt of [...zoomSelect.querySelectorAll("option[data-dynamic]")]) {
     opt.remove();
   }
+  // When in a fit mode, show the named fit option (the user picked a
+  // *mode*, not a literal zoom %, so reflecting the underlying numeric
+  // zoom would be misleading). Otherwise pick the matching preset, or
+  // inject a dynamic "<NN>%" entry.
+  if (zoomMode === "fit-width" || zoomMode === "fit-page") {
+    const target = zoomMode;
+    const match = [...zoomSelect.options].find((opt) => opt.value === target);
+    if (match) {
+      zoomSelect.value = target;
+      return;
+    }
+  }
+  const z = viewer.zoom;
   const match = [...zoomSelect.options].find((opt) => {
     const v = parseFloat(opt.value);
     return Number.isFinite(v) && Math.abs(v - z) < 1e-3;
@@ -3407,8 +4193,6 @@ function refreshZoomSelect() {
     zoomSelect.value = match.value;
     return;
   }
-  // No preset matches — inject a dynamic option showing the actual
-  // percentage so the dropdown isn't blank after fit / Ctrl+wheel zoom.
   const opt = document.createElement("option");
   opt.value = String(z);
   opt.dataset.dynamic = "1";
@@ -3464,7 +4248,11 @@ function actionZoom100() {
 // re-applies the fit on every window / sidebar resize so the page
 // keeps tracking the viewport. Picking a fixed percentage (or
 // Ctrl+wheel) drops back to "fixed".
-let zoomMode = "fixed";
+//
+// Default is fit-width so a fresh-opened PDF reads as wide as the
+// viewer permits — matches Adobe / Preview default and what the
+// user explicitly asked for.
+let zoomMode = "fit-width";
 
 function applyFitWidthNow() {
   if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return false;
@@ -3559,26 +4347,41 @@ async function actionPageGoto() {
 // list is showing read-only /Outlines from the source PDF.
 let selectedBookmarkId = null;
 let bookmarkSource = "outline"; // "outline" | "workspace"
+// Flat list cached so indent / outdent can compute the new parent /
+// sibling without an extra round-trip to the DB.
+let workspaceBookmarksCache = [];
 
 async function refreshBookmarks() {
   bookmarkTree.innerHTML = "";
-  selectedBookmarkId = null;
   refreshBookmarkToolbarState();
-  if (!isOpen) return;
+  if (!isOpen) {
+    selectedBookmarkId = null;
+    workspaceBookmarksCache = [];
+    return;
+  }
   // Workspace bookmarks override the source PDF /Outlines once any
   // exist. Empty workspace list → show /Outlines (read-only).
   const ws = await kpdf3.listBookmarks();
   const sourceLabel = $("bookmark-source-label");
   if (Array.isArray(ws) && ws.length > 0) {
     bookmarkSource = "workspace";
-    if (sourceLabel) sourceLabel.textContent = "(編集可能)";
-    for (const b of ws) {
-      bookmarkTree.appendChild(createWorkspaceBookmarkNode(b));
+    workspaceBookmarksCache = ws;
+    if (sourceLabel) sourceLabel.textContent = "";
+    const tree = buildBookmarkTree(ws);
+    for (const node of tree) {
+      bookmarkTree.appendChild(createWorkspaceBookmarkNode(node));
     }
+    // Selection may now refer to a still-existing id; if not, drop it.
+    if (selectedBookmarkId && !ws.some((b) => b.id === selectedBookmarkId)) {
+      selectedBookmarkId = null;
+    }
+    if (selectedBookmarkId) selectBookmark(selectedBookmarkId);
     refreshBookmarkToolbarState();
     return;
   }
   bookmarkSource = "outline";
+  workspaceBookmarksCache = [];
+  selectedBookmarkId = null;
   if (sourceLabel) sourceLabel.textContent = "(元 PDF / 編集不可)";
   const outline = await kpdf3.getOutline();
   if (!outline || outline.length === 0) {
@@ -3593,6 +4396,22 @@ async function refreshBookmarks() {
     bookmarkTree.appendChild(createBookmarkNode(item));
   }
   refreshBookmarkToolbarState();
+}
+
+/** Group flat workspace bookmarks (already sorted by sortOrder) into a
+ *  tree by parentId. Orphans (parentId pointing nowhere) are promoted
+ *  to top level so they remain visible / editable. */
+function buildBookmarkTree(flat) {
+  const byId = new Map();
+  for (const b of flat) byId.set(b.id, { ...b, children: [] });
+  const top = [];
+  for (const b of flat) {
+    const node = byId.get(b.id);
+    const parent = b.parentId && byId.get(b.parentId);
+    if (parent) parent.children.push(node);
+    else top.push(node);
+  }
+  return top;
 }
 
 function createBookmarkNode(item) {
@@ -3620,33 +4439,170 @@ function createBookmarkNode(item) {
   return li;
 }
 
-/** Workspace-side bookmarks: clickable + selectable + double-click rename. */
-function createWorkspaceBookmarkNode(b) {
+/** Workspace-side bookmarks: clickable + selectable + double-click rename
+ *  + draggable for reorder/reparent. Walks `node.children` recursively. */
+function createWorkspaceBookmarkNode(node) {
   const li = document.createElement("li");
   li.className = "bookmark-item is-workspace";
-  li.dataset.bookmarkId = b.id;
-  li.dataset.pageNo = String(b.pageNo);
-  li.title = `${b.title} (p.${b.pageNo})`;
+  li.dataset.bookmarkId = node.id;
+  li.dataset.pageNo = String(node.pageNo);
+  li.title = `${node.title} (p.${node.pageNo})`;
   li.tabIndex = 0;
+  li.draggable = true;
   const label = document.createElement("span");
   label.className = "bookmark-label";
-  label.textContent = b.title || "(無題)";
+  label.textContent = node.title || "(無題)";
   li.appendChild(label);
   const pageTag = document.createElement("span");
   pageTag.className = "bookmark-page-tag";
-  pageTag.textContent = b.pageNo > 0 ? `p.${b.pageNo}` : "挿入";
+  pageTag.textContent = node.pageNo > 0 ? `p.${node.pageNo}` : "挿入";
   li.appendChild(pageTag);
   li.addEventListener("click", (e) => {
     e.stopPropagation();
-    selectBookmark(b.id);
-    if (typeof b.pageNo === "number") viewer.scrollToPage(b.pageNo);
+    selectBookmark(node.id);
+    if (typeof node.pageNo === "number") viewer.scrollToPage(node.pageNo);
   });
   li.addEventListener("dblclick", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    startInlineRenameBookmark(li, b);
+    startInlineRenameBookmark(li, node);
   });
+  attachBookmarkDnd(li, node);
+
+  if (Array.isArray(node.children) && node.children.length > 0) {
+    const ul = document.createElement("ul");
+    ul.className = "bookmark-children";
+    for (const child of node.children) {
+      ul.appendChild(createWorkspaceBookmarkNode(child));
+    }
+    li.appendChild(ul);
+  }
   return li;
+}
+
+/** HTML5 drag handlers on a bookmark <li>. Computes the drop intent
+ *  (drop-before / drop-into / drop-after) from cursor Y within the row,
+ *  then asks main to move the dragged bookmark. */
+function attachBookmarkDnd(li, node) {
+  const MIME = "application/x-kpdf3-bookmark-id";
+  li.addEventListener("dragstart", (e) => {
+    if (!e.dataTransfer) return;
+    e.stopPropagation();
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData(MIME, node.id);
+    // text/plain fallback so the OS doesn't treat it as a no-op.
+    e.dataTransfer.setData("text/plain", node.title || node.id);
+    li.classList.add("is-dragging");
+  });
+  li.addEventListener("dragend", () => {
+    li.classList.remove("is-dragging");
+    clearBookmarkDropIndicators();
+  });
+  li.addEventListener("dragover", (e) => {
+    if (!hasBookmarkPayload(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const draggedId = e.dataTransfer?.getData(MIME) || dragInFlightId;
+    if (draggedId === node.id || isAncestorOf(draggedId, node.id)) {
+      // Disallow dropping a node onto itself or a descendant.
+      clearBookmarkDropIndicators();
+      return;
+    }
+    const zone = bookmarkDropZone(li, e.clientY);
+    setBookmarkDropIndicator(li, zone);
+  });
+  li.addEventListener("dragleave", (e) => {
+    // Only clear if we left this row entirely (relatedTarget outside it).
+    if (!li.contains(e.relatedTarget)) {
+      li.classList.remove("drop-before", "drop-into", "drop-after");
+    }
+  });
+  li.addEventListener("drop", async (e) => {
+    if (!hasBookmarkPayload(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const draggedId = e.dataTransfer.getData(MIME);
+    clearBookmarkDropIndicators();
+    if (!draggedId || draggedId === node.id) return;
+    if (isAncestorOf(draggedId, node.id)) return;
+    const zone = bookmarkDropZone(li, e.clientY);
+    const target = workspaceBookmarksCache.find((b) => b.id === node.id);
+    if (!target) return;
+    let parentId, beforeId;
+    if (zone === "into") {
+      parentId = node.id;
+      beforeId = null;
+    } else if (zone === "before") {
+      parentId = target.parentId ?? null;
+      beforeId = node.id;
+    } else { // after
+      parentId = target.parentId ?? null;
+      beforeId = nextSiblingId(target);
+    }
+    try {
+      await kpdf3.moveBookmark({ id: draggedId, parentId, beforeId });
+      selectedBookmarkId = draggedId;
+      await refreshBookmarks();
+    } catch (err) {
+      console.error("[bookmark] move failed", err);
+      wsStatus.textContent = `しおり移動失敗: ${err.message ?? err}`;
+    }
+  });
+}
+
+let dragInFlightId = null; // fallback when dataTransfer is read-only mid-drag
+
+function hasBookmarkPayload(dt) {
+  if (!dt) return false;
+  return Array.from(dt.types || []).includes("application/x-kpdf3-bookmark-id");
+}
+
+function bookmarkDropZone(li, clientY) {
+  const r = li.getBoundingClientRect();
+  // Use the row band only (children sub-list is excluded).
+  const rowBottom = r.top + Math.min(r.height, 24);
+  const y = clientY;
+  const band = (rowBottom - r.top) / 3;
+  if (y < r.top + band) return "before";
+  if (y < r.top + band * 2) return "into";
+  return "after";
+}
+
+function setBookmarkDropIndicator(li, zone) {
+  clearBookmarkDropIndicators();
+  if (zone === "before") li.classList.add("drop-before");
+  else if (zone === "into") li.classList.add("drop-into");
+  else if (zone === "after") li.classList.add("drop-after");
+}
+
+function clearBookmarkDropIndicators() {
+  for (const el of bookmarkTree.querySelectorAll(".drop-before, .drop-into, .drop-after")) {
+    el.classList.remove("drop-before", "drop-into", "drop-after");
+  }
+}
+
+/** True if `ancestorId` is an ancestor of `descendantId` in the cached
+ *  flat list. Cheap O(depth) walk via parentId. */
+function isAncestorOf(ancestorId, descendantId) {
+  if (!ancestorId || !descendantId) return false;
+  let cur = workspaceBookmarksCache.find((b) => b.id === descendantId);
+  while (cur && cur.parentId) {
+    if (cur.parentId === ancestorId) return true;
+    cur = workspaceBookmarksCache.find((b) => b.id === cur.parentId);
+  }
+  return false;
+}
+
+/** Find the next sibling id (same parent) of `b` in the cached list,
+ *  or null if `b` is the last sibling. */
+function nextSiblingId(b) {
+  const siblings = workspaceBookmarksCache
+    .filter((x) => (x.parentId ?? null) === (b.parentId ?? null))
+    .sort((a, c) => a.sortOrder - c.sortOrder);
+  const idx = siblings.findIndex((x) => x.id === b.id);
+  if (idx < 0 || idx === siblings.length - 1) return null;
+  return siblings[idx + 1].id;
 }
 
 function selectBookmark(id) {
@@ -3661,12 +4617,79 @@ function refreshBookmarkToolbarState() {
   const addBtn = $("bookmark-add");
   const rmBtn = $("bookmark-remove");
   const impBtn = $("bookmark-import");
+  const indentBtn = $("bookmark-indent");
+  const outdentBtn = $("bookmark-outdent");
   if (addBtn) addBtn.disabled = !isOpen;
   if (rmBtn) rmBtn.disabled = !isOpen || !selectedBookmarkId || bookmarkSource !== "workspace";
   // Import only useful when source-PDF /Outlines exist AND workspace
   // is empty (otherwise there'd be duplicate entries; user can − the
   // existing workspace ones first if they really want to re-import).
   if (impBtn) impBtn.disabled = !isOpen || bookmarkSource !== "outline";
+  const sel = selectedBookmarkId
+    ? workspaceBookmarksCache.find((b) => b.id === selectedBookmarkId)
+    : null;
+  if (indentBtn) {
+    indentBtn.disabled = !sel || !canIndentBookmark(sel);
+  }
+  if (outdentBtn) {
+    outdentBtn.disabled = !sel || !canOutdentBookmark(sel);
+  }
+}
+
+function canIndentBookmark(b) {
+  // Indent = move under the previous sibling (which must exist).
+  return !!previousSiblingId(b);
+}
+
+function canOutdentBookmark(b) {
+  // Outdent = promote to grandparent. Only valid when current parent
+  // exists (otherwise we're already at top level).
+  return !!b.parentId;
+}
+
+function previousSiblingId(b) {
+  const siblings = workspaceBookmarksCache
+    .filter((x) => (x.parentId ?? null) === (b.parentId ?? null))
+    .sort((a, c) => a.sortOrder - c.sortOrder);
+  const idx = siblings.findIndex((x) => x.id === b.id);
+  if (idx <= 0) return null;
+  return siblings[idx - 1].id;
+}
+
+async function actionIndentBookmark() {
+  const sel = selectedBookmarkId
+    ? workspaceBookmarksCache.find((b) => b.id === selectedBookmarkId)
+    : null;
+  if (!sel) return;
+  const prevId = previousSiblingId(sel);
+  if (!prevId) return;
+  try {
+    await kpdf3.moveBookmark({ id: sel.id, parentId: prevId, beforeId: null });
+    await refreshBookmarks();
+  } catch (err) {
+    console.error("[bookmark] indent failed", err);
+  }
+}
+
+async function actionOutdentBookmark() {
+  const sel = selectedBookmarkId
+    ? workspaceBookmarksCache.find((b) => b.id === selectedBookmarkId)
+    : null;
+  if (!sel || !sel.parentId) return;
+  const parent = workspaceBookmarksCache.find((b) => b.id === sel.parentId);
+  if (!parent) return;
+  // Place after parent (= before parent's next sibling).
+  const beforeId = nextSiblingId(parent);
+  try {
+    await kpdf3.moveBookmark({
+      id: sel.id,
+      parentId: parent.parentId ?? null,
+      beforeId,
+    });
+    await refreshBookmarks();
+  } catch (err) {
+    console.error("[bookmark] outdent failed", err);
+  }
 }
 
 function startInlineRenameBookmark(li, b) {
@@ -3736,6 +4759,17 @@ async function actionRemoveBookmark() {
 
 $("bookmark-add")?.addEventListener("click", actionAddBookmark);
 $("bookmark-remove")?.addEventListener("click", actionRemoveBookmark);
+$("bookmark-indent")?.addEventListener("click", actionIndentBookmark);
+$("bookmark-outdent")?.addEventListener("click", actionOutdentBookmark);
+
+// Tab / Shift+Tab when focus is inside the bookmark sidebar.
+bookmarkTree.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab") return;
+  if (bookmarkSource !== "workspace" || !selectedBookmarkId) return;
+  e.preventDefault();
+  if (e.shiftKey) actionOutdentBookmark();
+  else actionIndentBookmark();
+});
 
 /** Flatten the source-PDF /Outlines tree into workspace bookmarks so the
  *  user can edit / extend them. The tree is walked depth-first; titles
@@ -3755,27 +4789,29 @@ async function actionImportOutlines() {
     wsStatus.textContent = "取り込めるしおりがありません";
     return;
   }
-  // Depth-first flatten; nodes without a pageNo get the parent's pageNo
-  // (or 1 if absent) so they're still navigable.
-  const flat = [];
-  const walk = (nodes, fallbackPage) => {
+  // Depth-first walk that preserves the source PDF's hierarchy. Nodes
+  // without a pageNo of their own inherit the parent's (or 1 if absent)
+  // so they're still navigable.
+  let added = 0;
+  const walk = async (nodes, fallbackPage, parentId) => {
     for (const n of nodes) {
       const pageNo = typeof n.pageNo === "number" && n.pageNo > 0 ? n.pageNo : fallbackPage;
-      flat.push({ title: n.title || "(無題)", pageNo });
+      const id =
+        crypto?.randomUUID?.() ?? `bm-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      await kpdf3.addBookmark({
+        id,
+        title: n.title || "(無題)",
+        pageNo,
+        parentId,
+      });
+      added += 1;
       if (Array.isArray(n.children) && n.children.length > 0) {
-        walk(n.children, pageNo);
+        await walk(n.children, pageNo, id);
       }
     }
   };
-  walk(outline, 1);
-  let added = 0;
   try {
-    for (const b of flat) {
-      const id =
-        crypto?.randomUUID?.() ?? `bm-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      await kpdf3.addBookmark({ id, title: b.title, pageNo: b.pageNo });
-      added += 1;
-    }
+    await walk(outline, 1, null);
     await refreshBookmarks();
     wsStatus.textContent = `${added} 件のしおりを取り込みました`;
   } catch (err) {
@@ -3858,6 +4894,249 @@ function ensureThumbObserver() {
 /** Build thumb items for the given pages array (already filtered to
  *  non-deleted by main). Pass the visible pageNos so click→scroll uses
  *  the actual page index in the viewer. */
+// ---- Thumbnail drag-and-drop reorder (#23 / #32) ----------------------
+//
+// HTML5 D&D on each sidebar thumb. Both source AND synthetic pages
+// can be reordered freely (positional `display_order` shared between
+// pages + inserted_pages — see ADR-0015 / sqlite-store.reorderAllPages).
+
+const THUMB_DND_MIME = "application/x-kpdf3-page-no";
+// Closure-captured page number for the thumb being dragged. We use
+// this instead of relying on `dataTransfer.types` during dragover,
+// because some Chromium drag scenarios (notably the very first drag
+// in a fresh session) didn't surface the custom MIME on dragover,
+// which made our preventDefault/dropEffect path skip and the OS
+// rejected the drop.
+let _draggingThumbPN = null;
+
+function attachThumbDragHandlers(item, pageNo) {
+  // Both source (positive pageNo) and synthetic (negative) thumbs are
+  // draggable — they share a positional display_order so reordering
+  // either one is symmetric. Layout direction is detected from the
+  // element's class so the split-save horizontal grid uses left/right
+  // drop indicators while the vertical sidebar uses top/bottom.
+  const isHorizontal = item.classList.contains("split-thumb");
+  item.draggable = true;
+  item.addEventListener("dragstart", (e) => {
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData(THUMB_DND_MIME, String(pageNo));
+      e.dataTransfer.setData("text/plain", String(pageNo));
+    }
+    _draggingThumbPN = pageNo;
+    item.classList.add("is-dragging");
+    // Multi-select drag: mark every selected sibling thumb as also
+    // being dragged so the user sees them dim together.
+    const selectionSet = movingKeysForDrag(pageNo);
+    if (selectionSet) {
+      for (const sib of document.querySelectorAll(".thumb-item, .split-thumb")) {
+        const sibPN = Number(sib.dataset.pageNo);
+        if (selectionSet.has(sibPN)) sib.classList.add("is-dragging");
+      }
+    }
+    // Body-level marker — CSS hides the +gaps' default hover styling
+    // while a thumb drag is in flight so only the active drop target
+    // shows an indicator (avoids the "3 stacked blue lines" look).
+    document.body.classList.add("thumb-dragging");
+  });
+  item.addEventListener("dragend", () => {
+    _draggingThumbPN = null;
+    document.body.classList.remove("thumb-dragging");
+    // Sweep all `is-dragging` marks regardless of which thumb started
+    // the drag — covers the multi-select fan-out above.
+    for (const el of document.querySelectorAll(".is-dragging")) {
+      el.classList.remove("is-dragging");
+    }
+    clearThumbDropIndicators();
+  });
+  item.addEventListener("dragover", (e) => {
+    if (_draggingThumbPN === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    showBoundaryIndicator(item, e, isHorizontal);
+  });
+  item.addEventListener("dragleave", (e) => {
+    if (!item.contains(e.relatedTarget)) {
+      item.classList.remove(
+        "drop-before-v", "drop-after-v",
+        "drop-before-h", "drop-after-h",
+      );
+    }
+  });
+  item.addEventListener("drop", async (e) => {
+    if (_draggingThumbPN === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const draggedPN = _draggingThumbPN;
+    clearThumbDropIndicators();
+    if (!Number.isFinite(draggedPN) || draggedPN === pageNo) return;
+    const r = item.getBoundingClientRect();
+    const before = isHorizontal
+      ? e.clientX < r.left + r.width / 2
+      : e.clientY < r.top + r.height / 2;
+    await applyThumbReorder(draggedPN, pageNo, before);
+  });
+}
+
+/** Boundary-aware indicator: only ever shows ONE blue line at the
+ *  drop boundary, even when the cursor is right on the seam between
+ *  two adjacent thumbs. "Cursor on right half of N" and "cursor on
+ *  left half of N+1" both resolve to the same boundary, which we
+ *  display as a single drop-before-* on N+1. The trailing-edge case
+ *  (cursor past the very last thumb) keeps drop-after-* on N. */
+function showBoundaryIndicator(item, evt, isHorizontal) {
+  const r = item.getBoundingClientRect();
+  const before = isHorizontal
+    ? evt.clientX < r.left + r.width / 2
+    : evt.clientY < r.top + r.height / 2;
+  if (before) {
+    setThumbDropIndicator(item, true, isHorizontal);
+    return;
+  }
+  // "after" — collapse to next thumb's "before" so the indicator
+  // sits in the gap once, not as two adjacent half-edges.
+  const next = nextThumbSibling(item);
+  if (next) {
+    setThumbDropIndicator(next, true, isHorizontal);
+  } else {
+    setThumbDropIndicator(item, false, isHorizontal);
+  }
+}
+
+/** Walk forward through DOM siblings until we hit another thumb-like
+ *  element (sidebar `.thumb-item` or split `.split-thumb`). Skips
+ *  intervening gaps / separators / labels. */
+function nextThumbSibling(el) {
+  let cur = el.nextElementSibling;
+  while (cur) {
+    if (
+      cur.classList.contains("thumb-item") ||
+      cur.classList.contains("split-thumb")
+    ) {
+      return cur;
+    }
+    cur = cur.nextElementSibling;
+  }
+  return null;
+}
+
+function hasThumbPagePayload(dt) {
+  if (!dt) return false;
+  return Array.from(dt.types || []).includes(THUMB_DND_MIME);
+}
+
+function setThumbDropIndicator(el, before, horizontal = false) {
+  clearThumbDropIndicators();
+  if (horizontal) {
+    el.classList.add(before ? "drop-before-h" : "drop-after-h");
+  } else {
+    el.classList.add(before ? "drop-before-v" : "drop-after-v");
+  }
+}
+
+function clearThumbDropIndicators() {
+  // Sweep both sidebar and split-view thumb lists since either may
+  // host the drag/drop interaction.
+  const els = document.querySelectorAll(
+    ".drop-before-v, .drop-after-v, .drop-before-h, .drop-after-h",
+  );
+  for (const el of els) {
+    el.classList.remove(
+      "drop-before-v", "drop-after-v",
+      "drop-before-h", "drop-after-h",
+    );
+  }
+}
+
+/** Pick the selection set that owns `draggedKey` so a multi-select
+ *  drag picks up the right sidebar/split context. Returns the page-
+ *  Nos Set or null when the drag is a single-thumb drag (no
+ *  selection or selection doesn't include the dragged page). */
+function movingKeysForDrag(draggedKey) {
+  for (const sel of [sidebarThumbSelection, splitThumbSelection]) {
+    if (sel.pageNos.size > 1 && sel.pageNos.has(draggedKey)) {
+      return sel.pageNos;
+    }
+  }
+  return null;
+}
+
+/** Reorder via positional display_order across both source +
+ *  synthetic pages. Pulls the current visible page list, moves the
+ *  dragged key (or, when multi-selected, every selected key) to
+ *  before/after the target, and pushes the new order to main. After
+ *  the reorder we scroll to the *dragged* page so the user can
+ *  immediately verify its new position. */
+async function applyThumbReorder(draggedKey, targetKey, before) {
+  const pages = await kpdf3.getPages();
+  const allKeys = pages.map((p) => p.pageNo);
+
+  // Multi-select-aware moving set. Preserves the relative order of
+  // selected pages so they land as a contiguous block at the drop
+  // site. A single-page drag falls back to the original behaviour.
+  const selectionSet = movingKeysForDrag(draggedKey);
+  let movingKeys;
+  if (selectionSet) {
+    movingKeys = allKeys.filter((k) => selectionSet.has(k));
+  } else {
+    movingKeys = [draggedKey];
+  }
+  // No-op if the user dropped onto one of the selected pages.
+  if (movingKeys.includes(targetKey)) return;
+
+  const remaining = allKeys.filter((k) => !movingKeys.includes(k));
+  let toIdx = remaining.indexOf(targetKey);
+  if (toIdx < 0) return;
+  if (!before) toIdx += 1;
+  remaining.splice(toIdx, 0, ...movingKeys);
+
+  try {
+    await kpdf3.reorderAllPages(remaining);
+    markWorkspaceMutated();
+    await refreshViewer();
+    // The split view has its own DOM tree; refreshViewer doesn't
+    // rebuild it. Without this call the split-save area would keep
+    // showing the pre-reorder thumbs even after the DB updated.
+    if (isSplitMode) await refreshSplitView();
+    // Jump to the page that was just moved so the user can verify
+    // where it landed. Keeps the operation visually "self-confirming".
+    viewer.scrollToPage(draggedKey);
+    wsStatus.textContent =
+      movingKeys.length > 1
+        ? `${movingKeys.length} ページを移動`
+        : `ページ順を更新`;
+  } catch (err) {
+    console.error("[thumb-reorder] failed", err);
+    wsStatus.textContent = `並び替え失敗: ${err.message ?? err}`;
+  }
+}
+
+/** Identify a standard paper size from canonical (pre-rotation) point
+ *  dimensions. Returns the JIS / ISO / US Letter family name when the
+ *  dims are within ~1.5pt of the spec; null otherwise. The returned
+ *  name is shown as a small badge on the thumbnail when ≠ A4 so the
+ *  user can spot mixed-paper PDFs at a glance. */
+function detectPaperSize(w, h) {
+  // Compare both portrait and landscape orientations to one canonical.
+  const W = Math.min(w, h), H = Math.max(w, h);
+  // Each row: [name, portraitW, portraitH] in PDF points (1pt = 1/72in).
+  const SIZES = [
+    ["A3",     841.89, 1190.55],
+    ["A4",     595.28,  841.89],
+    ["A5",     419.53,  595.28],
+    ["B4",     728.50, 1031.81],
+    ["B5",     515.91,  728.50],
+    ["Letter", 612.00,  792.00],
+    ["Legal",  612.00, 1008.00],
+  ];
+  const TOL = 2.0; // 2pt fudge ≈ 0.7mm — covers rounding in source PDFs
+  for (const [name, pw, ph] of SIZES) {
+    if (Math.abs(W - pw) < TOL && Math.abs(H - ph) < TOL) return name;
+  }
+  return null;
+}
+
 function rebuildThumbs(pages) {
   clearThumbs();
   const list = Array.isArray(pages)
@@ -3874,7 +5153,8 @@ function rebuildThumbs(pages) {
     thumbList.appendChild(makeInsertGap(0));
   }
 
-  for (const row of list) {
+  for (let visualIdx = 0; visualIdx < list.length; visualIdx++) {
+    const row = list[visualIdx];
     const i = row.pageNo;
     const item = document.createElement("div");
     item.className = "thumb-item";
@@ -3883,10 +5163,33 @@ function rebuildThumbs(pages) {
     if (row.isSynthetic) item.classList.add("is-synthetic");
     const ph = document.createElement("div");
     ph.className = "thumb-placeholder";
+    // Per-page aspect ratio — without this the slot is locked to A4
+    // portrait, so a 90° rotated page renders into a tall slot and
+    // ends up squashed to ~half the available width. cropW/H land in
+    // the canonical (pre-rotation) frame; userRotation is what
+    // actually determines whether the displayed paper is landscape.
+    const cw = row.cropW ?? row.width ?? 595;
+    const ch = row.cropH ?? row.height ?? 842;
+    const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
+    const swap = userRot === 90 || userRot === 270;
+    ph.style.aspectRatio = swap ? `${ch} / ${cw}` : `${cw} / ${ch}`;
     item.appendChild(ph);
     const label = document.createElement("div");
     label.className = "thumb-label";
-    label.textContent = row.isSynthetic ? "✎ 挿入" : String(i);
+    // Show the *visual* position (1-indexed, matches the page count
+    // indicator at the bottom). Synthetic pages get a tiny ✎ marker
+    // before the number so the user can still tell which were
+    // user-inserted, but they share the same numbering scheme.
+    const visualPos = visualIdx + 1;
+    label.textContent = row.isSynthetic ? `✎ ${visualPos}` : String(visualPos);
+    // Paper-size badge for non-A4 sources (A3/A5/B4/B5/Letter/Legal).
+    const sizeName = detectPaperSize(cw, ch);
+    if (sizeName && sizeName !== "A4") {
+      const badge = document.createElement("span");
+      badge.className = "thumb-size-badge";
+      badge.textContent = sizeName;
+      item.appendChild(badge);
+    }
     item.appendChild(label);
     item.addEventListener("click", (e) => {
       const ordered = getOrderedThumbPageNos(thumbList, ".thumb-item");
@@ -3903,6 +5206,7 @@ function rebuildThumbs(pages) {
       viewer.scrollToPage(i);
     });
     attachThumbContextMenu(item, i);
+    attachThumbDragHandlers(item, i);
     thumbList.appendChild(item);
     obs.observe(item);
 
@@ -3933,7 +5237,16 @@ function rebuildThumbs(pages) {
 function attachInsertGapDrop(gap, afterPageNo) {
   gap.addEventListener("dragover", (e) => {
     if (!e.dataTransfer) return;
-    if ([...e.dataTransfer.types].includes("Files")) {
+    const types = [...e.dataTransfer.types];
+    // Sidebar page reorder takes precedence over file drop so we don't
+    // mis-display "copy" cursor while a thumb is in flight. Use the
+    // JS closure var because dragover types may be empty/unreliable.
+    if (_draggingThumbPN !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      gap.classList.add("drop-target");
+    } else if (types.includes("Files")) {
       e.preventDefault();
       e.stopPropagation();
       e.dataTransfer.dropEffect = "copy";
@@ -3943,7 +5256,18 @@ function attachInsertGapDrop(gap, afterPageNo) {
   gap.addEventListener("dragleave", () => gap.classList.remove("drop-target"));
   gap.addEventListener("drop", async (e) => {
     gap.classList.remove("drop-target");
-    if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return;
+    if (!e.dataTransfer) return;
+    // Sidebar-page reorder via gap drop.
+    if (_draggingThumbPN !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      const draggedPN = _draggingThumbPN;
+      if (!Number.isFinite(draggedPN) || draggedPN <= 0) return;
+      await applyThumbReorderToGap(draggedPN, afterPageNo);
+      return;
+    }
+    // External file drop = insert-from-PDF (legacy behaviour).
+    if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
     e.preventDefault();
     e.stopPropagation();
     const file = e.dataTransfer.files[0];
@@ -3966,6 +5290,50 @@ function attachInsertGapDrop(gap, afterPageNo) {
       wsStatus.textContent = `挿入失敗: ${err.message ?? err}`;
     }
   });
+}
+
+/** Reorder helper invoked when a thumb is dropped onto an insert
+ *  gap. afterPageNo = the source page directly before the gap (or 0
+ *  when dropping at the very top of the list). The dragged page ends
+ *  up immediately after afterPageNo in display order, sharing the
+ *  positional ordering with synthetic pages. */
+async function applyThumbReorderToGap(draggedKey, afterPageNo) {
+  const pages = await kpdf3.getPages();
+  const allKeys = pages.map((p) => p.pageNo);
+
+  // Same multi-select handling as applyThumbReorder so a Shift-
+  // selected block dragged onto a +gap moves as one unit.
+  const selectionSet = movingKeysForDrag(draggedKey);
+  let movingKeys;
+  if (selectionSet) {
+    movingKeys = allKeys.filter((k) => selectionSet.has(k));
+  } else {
+    movingKeys = [draggedKey];
+  }
+
+  const remaining = allKeys.filter((k) => !movingKeys.includes(k));
+  let toIdx;
+  if (afterPageNo === 0 || afterPageNo == null) {
+    toIdx = 0;
+  } else {
+    const anchor = remaining.indexOf(afterPageNo);
+    toIdx = anchor < 0 ? remaining.length : anchor + 1;
+  }
+  remaining.splice(toIdx, 0, ...movingKeys);
+  try {
+    await kpdf3.reorderAllPages(remaining);
+    markWorkspaceMutated();
+    await refreshViewer();
+    if (isSplitMode) await refreshSplitView();
+    viewer.scrollToPage(draggedKey);
+    wsStatus.textContent =
+      movingKeys.length > 1
+        ? `${movingKeys.length} ページを移動`
+        : `ページ順を更新`;
+  } catch (err) {
+    console.error("[thumb-reorder] gap drop failed", err);
+    wsStatus.textContent = `並び替え失敗: ${err.message ?? err}`;
+  }
 }
 
 function makeInsertGap(afterPageNo, orderInSlot = null) {
@@ -4015,9 +5383,12 @@ const thumbSelection = sidebarThumbSelection;
 
 function getOrderedThumbPageNos(rootEl, selector) {
   if (!rootEl) return [];
+  // Include synthetic (negative pageNo) pages too so Shift+click can
+  // span across inserted blank pages — the selection set + downstream
+  // delete handler already split source vs synthetic correctly.
   return [...rootEl.querySelectorAll(selector)]
     .map((el) => Number(el.dataset.pageNo))
-    .filter((n) => Number.isFinite(n) && n > 0);
+    .filter((n) => Number.isFinite(n) && n !== 0);
 }
 
 function handleThumbSelectionClick(state, orderedPageNos, pageNo, evt) {
@@ -4066,8 +5437,9 @@ function clearThumbSelection() {
 /** Pages the user has marked for deletion in this session, not yet
  *  persisted. Flushed to SQLite on Ctrl+S. Until then, viewer / thumbs /
  *  export / print all filter via this set so the deletion is purely
- *  in-memory. Reset on close / new PDF open. */
-const pendingDeletedPages = new Set();
+ *  in-memory. Reset on close / new PDF open.
+ *  Initialised from the boot tab; rebound by applyTab() on switch. */
+let pendingDeletedPages = _bootTab.pendingDeletedPages;
 
 /** Workspace got changed via a path that already persisted to DB
  *  (page insertions/removals). Flagging this lets Ctrl+S behave
@@ -4396,6 +5768,7 @@ const menuBar = new MenuBar({
     "mode-callout": () =>
       setPlacementMode(placementMode === "callout" ? "none" : "callout"),
     "stamp-manager": () => openStampManagerDialog(),
+    "font-settings": () => openStampFontDialog(),
     "quality-standard": () => setRenderQuality("standard"),
     "quality-high": () => setRenderQuality("high"),
     "quality-max": () => setRenderQuality("max"),
@@ -4511,12 +5884,9 @@ window.addEventListener("keydown", (e) => {
     setTimeout(() => actionExport(), 0);
     return;
   } else if (key === "f") {
-    // Ctrl+F → focus the menu-bar search box
+    // Ctrl+F → reveal + focus the search box (collapsed by default)
     e.preventDefault();
-    if (!menuSearchInput.disabled) {
-      menuSearchInput.focus();
-      menuSearchInput.select();
-    }
+    if (!menuSearchInput.disabled) openSearchBox();
     return;
   } else if (key === "p") {
     e.preventDefault();
@@ -4605,14 +5975,40 @@ async function runSearch() {
   }
 }
 
-menuSearchBtn.addEventListener("click", runSearch);
+/** Reveal the search input next to the magnifier button and focus it.
+ *  Idempotent — calling twice while already open just re-focuses. */
+function openSearchBox() {
+  const wrap = menuSearchBtn.closest(".toolbar-search");
+  if (wrap) wrap.classList.add("is-open");
+  menuSearchInput.focus();
+  menuSearchInput.select();
+}
+function closeSearchBox() {
+  const wrap = menuSearchBtn.closest(".toolbar-search");
+  if (wrap) wrap.classList.remove("is-open");
+}
+
+menuSearchBtn.addEventListener("click", () => {
+  // Closed → open + focus. Open with text → run search. Open with
+  // empty box → close again (toggle behaviour).
+  const wrap = menuSearchBtn.closest(".toolbar-search");
+  if (!wrap?.classList.contains("is-open")) {
+    openSearchBox();
+    return;
+  }
+  if (menuSearchInput.value.trim() === "") {
+    closeSearchBox();
+    return;
+  }
+  runSearch();
+});
 menuSearchInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     runSearch();
   } else if (e.key === "Escape") {
     e.preventDefault();
-    menuSearchInput.blur();
+    closeSearchBox();
   }
 });
 
@@ -4620,6 +6016,7 @@ menuSearchInput.addEventListener("keydown", (e) => {
 function refreshSearchEnabled() {
   menuSearchInput.disabled = !isOpen;
   menuSearchBtn.disabled = !isOpen;
+  if (!isOpen) closeSearchBox();
 }
 
 // ---- Sidebar splitter (drag to resize) -------------------------------
@@ -4712,7 +6109,7 @@ const MENU_HINTS = {
   "quality-high": "PDF 表示解像度: 高 (推奨)",
   "quality-max": "PDF 表示解像度: 最高 (重め)",
   "stamp-manager": "印影テンプレート（toolbar select）— フル UI は M6 後半",
-  "font-settings": "フォント設定 — 将来対応",
+  "font-settings": "スタンプの全角・半角フォント既定を設定",
   about: "K-PDF3 のバージョン情報",
 };
 const DEFAULT_STATUS = "PDF を「開く」で読み込みます";
@@ -4769,8 +6166,9 @@ document.addEventListener("drop", async (e) => {
     wsStatus.textContent = "PDF ファイルを指定してください";
     return;
   }
-  if (!(await confirmDiscardIfDirty())) return;
-  await openPdfPath(path);
+  // No dirty check — drop opens in a fresh tab when the active one is
+  // already busy, mirroring the toolbar 開く button.
+  await openPdfSmart(path);
 });
 
 // Ctrl + mouse wheel zooms the viewer (Adobe / browser convention).
@@ -4817,11 +6215,27 @@ window.addEventListener("keydown", (e) => {
 // silently swallow F5 / Ctrl+R / About → リロード button — the dialog is
 // shown there manually instead.
 let _reloadingRenderer = false;
+// Cached at boot via getAppInfo() — distinguishes packaged builds
+// from dev (electronmon) so the beforeunload dirty-check doesn't
+// block hot-reload during development.
+let _isDevMode = false;
+kpdf3.getAppInfo?.().then((info) => { _isDevMode = !info?.isPackaged; }).catch(() => {});
+
 window.addEventListener("beforeunload", (e) => {
   if (_reloadingRenderer) return;
-  if (projectStore.isDirty()) {
-    e.preventDefault();
-    e.returnValue = "";
+  // In dev (electronmon), let renderer file-change reloads sail
+  // through. Otherwise the unsaved-tab guard below would silently
+  // block every hot-reload after the user starts editing.
+  if (_isDevMode) return;
+  // Block window close if any tab has unsaved changes — including
+  // inactive ones whose dirty state lives only in their TabState.
+  saveActiveTabSnapshot();
+  for (const [, tab] of tabs) {
+    if (tabIsDirty(tab)) {
+      e.preventDefault();
+      e.returnValue = "";
+      return;
+    }
   }
 });
 
@@ -4848,6 +6262,27 @@ async function reloadRenderer() {
 // main process kicks reloads via this IPC (globalShortcut handler) so
 // they go through the same dirty-check + beforeunload-bypass path.
 kpdf3.onReloadRequest?.(() => reloadRenderer());
+
+// ---- Tab bar (ADR-0015 Phase 3) --------------------------------------
+$("tab-add")?.addEventListener("click", () => {
+  void newTabAndOpen(null);
+});
+// Ctrl+T = new tab + open. Ctrl+W = close the active tab.
+window.addEventListener("keydown", (e) => {
+  // Skip when typing into an input/textarea/contenteditable.
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key === "t") {
+    e.preventDefault();
+    void newTabAndOpen(null);
+  } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key === "w") {
+    e.preventDefault();
+    if (activeTabId) void closeTabWithConfirm(activeTabId);
+  }
+});
+// Render the initial bar so the boot tab shows up before the user
+// opens anything.
+renderTabBar();
 
 // ---- Toolbar buttons --------------------------------------------------
 btnOpen.addEventListener("click", actionOpen);
