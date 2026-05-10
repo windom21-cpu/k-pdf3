@@ -1001,6 +1001,53 @@ pageNumDialog()?.addEventListener("click", (e) => {
   if (e.target === pageNumDialog()) closePageNumbersDialog();
 });
 
+// ---- Page popup (別窓 / §17.4 prelim) ----------------------------------
+//
+// Re-renders the active page (with overlays) at 2× and ships a PNG
+// to a frameless BrowserWindow for side-by-side comparison.
+async function actionOpenPagePopup() {
+  if (!isOpen) return;
+  const pageNo = viewer.currentPage;
+  if (!pageNo) return;
+  const row = viewer._pages?.find((p) => p.pageNo === pageNo);
+  if (!row) {
+    wsStatus.textContent = "ポップアップ対象のページが見つかりません";
+    return;
+  }
+  showBusy("別窓を開く", "ページを描画中...", 30);
+  try {
+    const renderSyntheticPage = async (r, z) => renderSyntheticPagePixels(r, z);
+    const canvas = await composeSinglePageCanvas(
+      row,
+      kpdf3.renderPage,
+      projectStore,
+      2.0,
+      renderSyntheticPage,
+    );
+    const pngDataUrl = canvas.toDataURL("image/png");
+    const visualPos = viewer.registry?.posOfPageNo?.(pageNo) >= 0
+      ? viewer.registry.posOfPageNo(pageNo) + 1
+      : null;
+    const totalPages = viewer.registry?.count?.() ?? null;
+    await kpdf3.openPagePopup({
+      pngDataUrl,
+      fileName: activeSourceName || "K-PDF3",
+      pageNo,
+      visualPos,
+      totalPages,
+      width: canvas.width,
+      height: canvas.height,
+    });
+    hideBusy();
+    wsStatus.textContent = `別窓で p.${visualPos ?? pageNo} を表示`;
+  } catch (err) {
+    hideBusy();
+    console.error("[page-popup] failed", err);
+    wsStatus.textContent = `別窓を開けませんでした: ${err.message ?? err}`;
+  }
+}
+$("btn-page-popup")?.addEventListener("click", actionOpenPagePopup);
+
 /** Active preset id — drives currentStampPreset(). null when nothing
  *  is registered yet. Persisted across sessions via localStorage. */
 const STAMP_ACTIVE_PRESET_KEY = "kpdf3.activeStampPresetId";
@@ -2352,6 +2399,8 @@ function setOpen(open) {
   if (btnModeCallout) btnModeCallout.disabled = !open;
   const btnPageNums = $("btn-page-numbers");
   if (btnPageNums) btnPageNums.disabled = !open;
+  const btnPagePopup = $("btn-page-popup");
+  if (btnPagePopup) btnPagePopup.disabled = !open;
   // (stampTemplateSel / stampColorSel removed — palette buttons are
   // managed by rebuildStampPalette + the mode-options bar visibility.)
   if (!open) {

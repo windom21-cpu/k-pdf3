@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld("kpdf3", {
   windowIsMaximized:  ()        => ipcRenderer.invoke("kpdf3:window-is-maximized"),
   onWindowState:      (cb)      => ipcRenderer.on("kpdf3:window-state", (_, s) => cb(s)),
   toggleDevTools:     ()        => ipcRenderer.invoke("kpdf3:toggle-devtools"),
+  // Page popup (single-page comparison window, §17.4 prelim)
+  openPagePopup:      (data)    => ipcRenderer.invoke("kpdf3:open-page-popup", data),
+  onPopupData:        (cb)      => ipcRenderer.on("kpdf3:popup-data", (_, d) => cb(d)),
+  toggleAlwaysOnTop:  (on)      => ipcRenderer.invoke("kpdf3:toggle-always-on-top", on),
+  resizePopupToFit:   (opts)    => ipcRenderer.invoke("kpdf3:resize-popup-to-fit", opts),
   onReloadRequest:    (cb)      => ipcRenderer.on("kpdf3:reload-request", () => cb()),
   // Drag&drop helper — Electron 32+ removed File.path from the renderer,
   // so dropped files now need webUtils.getPathForFile() (preload-only).

@@ -484,11 +484,72 @@ ipcMain.handle("kpdf3:window-maximize-toggle", async () => {
   else mainWindow.maximize();
   return mainWindow.isMaximized();
 });
-ipcMain.handle("kpdf3:window-close", async () => {
-  if (mainWindow) mainWindow.close();
+// Sender-aware so popup windows can also close themselves via the
+// same IPC. For the main window this resolves identically to
+// `mainWindow.close()`.
+ipcMain.handle("kpdf3:window-close", async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isDestroyed()) win.close();
 });
 ipcMain.handle("kpdf3:window-is-maximized", async () => {
   return mainWindow ? mainWindow.isMaximized() : false;
+});
+
+ipcMain.handle("kpdf3:toggle-always-on-top", async (event, on) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return false;
+  win.setAlwaysOnTop(!!on);
+  return win.isAlwaysOnTop();
+});
+
+ipcMain.handle("kpdf3:resize-popup-to-fit", async (event, opts) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isDestroyed()) return;
+  const { width: imgW, height: imgH } = opts ?? {};
+  if (!imgW || !imgH) return;
+  // Pick a reasonable default size: 75% of screen height, scaled to
+  // the page's aspect, then add the 22-px popup-bar.
+  const display = require("electron").screen.getPrimaryDisplay();
+  const targetH = Math.max(400, Math.round(display.workAreaSize.height * 0.75));
+  const aspect = imgW / imgH;
+  const targetW = Math.round(targetH * aspect) + 16; // tiny padding
+  const cappedW = Math.min(targetW, display.workAreaSize.width - 40);
+  const cappedH = Math.min(targetH + 22, display.workAreaSize.height - 40);
+  win.setSize(cappedW, cappedH);
+  win.center();
+});
+
+/**
+ * Open a frameless popup BrowserWindow that displays a single
+ * pre-rendered page PNG. Used by ツール > 別窓で表示 / toolbar 別窓
+ * for side-by-side comparison with another file.
+ */
+const popupWindows = new Set();
+ipcMain.handle("kpdf3:open-page-popup", async (_event, payload) => {
+  const win = new BrowserWindow({
+    width: 800,
+    height: 1000,
+    title: "K-PDF3 ポップアップ",
+    icon: join(__dirname, "..", "renderer", "vendor", "app-icon.png"),
+    frame: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  popupWindows.add(win);
+  win.on("closed", () => popupWindows.delete(win));
+  win.loadFile(join(__dirname, "..", "renderer", "page-popup.html"));
+  // Wait for the renderer to finish booting, then push the payload.
+  win.webContents.once("did-finish-load", () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send("kpdf3:popup-data", payload);
+    }
+  });
+  return { ok: true };
 });
 
 ipcMain.handle("kpdf3:toggle-devtools", async () => {
