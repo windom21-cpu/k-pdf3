@@ -468,6 +468,34 @@ button.toggled {
   background: rgba(255, 255, 255, 0.7);
 }
 
+/* ----- Callout (吹き出し) overlays ----- */
+.overlay-callout {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1.5px solid currentColor;
+  outline: none;
+  box-sizing: border-box;
+}
+.overlay-callout.editing {
+  background: rgba(255, 255, 255, 1);
+}
+.callout-arrow {
+  /* Anchored absolutely; positioned by JS so the line spans
+   * (box edge → arrow tip). Pointer events disabled so drag /
+   * select happens on the box. */
+}
+.callout-text {
+  display: block;
+  font-weight: normal;
+}
+/* Drag preview while defining a new callout. */
+.callout-preview {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.4);
+  border: 1.5px dashed #ff8000;
+  pointer-events: none;
+  z-index: 999;
+}
+
 /* ----- Marker (highlighter) overlays ----- */
 /* Marker stripe — semi-transparent so underlying text shows through. */
 .overlay-marker {

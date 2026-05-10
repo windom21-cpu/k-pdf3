@@ -253,6 +253,51 @@ function drawOverlay(ctx, ov, zoom) {
     return;
   }
 
+  if (ov.type === "rect" && props.kind === "callout") {
+    // Callout: white-fill box + outline + arrow line + text inside.
+    const color = props.color ?? "#000000";
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.fillRect(x, y, w, h);
+    ctx.lineWidth = Math.max(1.5 * zoom * 0.5, 1);
+    ctx.strokeStyle = color;
+    ctx.strokeRect(x, y, w, h);
+    // Arrow: arrowDx/Dy are relative to BOX TOP-LEFT (matches viewer).
+    const arrowDx = (props.arrowDx ?? -30) * zoom;
+    const arrowDy = (props.arrowDy ?? ov.h + 25) * zoom;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const tipX = x + arrowDx;
+    const tipY = y + arrowDy;
+    let edgeX = cx, edgeY = cy;
+    const dx = tipX - cx, dy = tipY - cy;
+    if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6) {
+      const tx = dx === 0 ? Infinity : (dx > 0 ? (w / 2) / dx : (-w / 2) / dx);
+      const ty = dy === 0 ? Infinity : (dy > 0 ? (h / 2) / dy : (-h / 2) / dy);
+      const t = Math.min(tx, ty);
+      edgeX = cx + dx * t;
+      edgeY = cy + dy * t;
+    }
+    ctx.beginPath();
+    ctx.moveTo(edgeX, edgeY);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+    ctx.restore();
+    // Text inside the box.
+    const fontSize = (props.fontSize ?? 12) * zoom;
+    ctx.fillStyle = color;
+    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId)}`;
+    ctx.textBaseline = "top";
+    const text = props.text ?? "";
+    const padding = 3 * zoom;
+    const lineHeight = fontSize * (props.lineHeight ?? 1);
+    const lines = wrapCanvasText(ctx, text, w - padding * 2);
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], x + padding, y + padding + i * lineHeight);
+    }
+    return;
+  }
+
   if (ov.type === "line" && (props.kind ?? "marker") === "marker") {
     // Highlighter marker — semi-transparent fill so the underlying
     // text remains readable through the marker color.

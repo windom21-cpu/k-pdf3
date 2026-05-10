@@ -541,6 +541,91 @@ export class Viewer {
       return el;
     }
 
+    // Callout (吹き出し) — type='rect' kind='callout' (the rect type
+    // already passes the schema CHECK, kind discriminates).
+    if (ov.type === "rect" && ov.properties?.kind === "callout") {
+      const props = ov.properties ?? {};
+      const color = props.color ?? "#000000";
+      el.classList.add("overlay-callout");
+      el.style.color = color;
+      el.style.borderColor = color;
+      const fontSize = (props.fontSize ?? 12) * z;
+      el.style.fontSize = `${fontSize}px`;
+      el.style.fontFamily = getTextFontStack(props.fontId);
+      // Arrow line drawn as an SVG that overflows the box. Position the
+      // SVG at (arrowDx, arrowDy) relative to box top-left in canonical
+      // points × zoom; the SVG end is at the box center / nearest edge.
+      const arrowDx = (props.arrowDx ?? -30) * z;
+      const arrowDy = (props.arrowDy ?? ov.h + 25) * z;
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.classList.add("callout-arrow");
+      // Make the SVG large enough to cover the arrow vector regardless
+      // of direction.
+      const minX = Math.min(0, arrowDx) - 6;
+      const minY = Math.min(0, arrowDy) - 6;
+      const maxX = Math.max(ov.w * z, arrowDx) + 6;
+      const maxY = Math.max(ov.h * z, arrowDy) + 6;
+      svg.style.position = "absolute";
+      svg.style.left = `${minX}px`;
+      svg.style.top = `${minY}px`;
+      svg.style.width = `${maxX - minX}px`;
+      svg.style.height = `${maxY - minY}px`;
+      svg.style.pointerEvents = "none";
+      svg.style.overflow = "visible";
+      // Box edge nearest to the arrow tip.
+      const cx = ov.w * z / 2;
+      const cy = ov.h * z / 2;
+      const tipX = arrowDx;
+      const tipY = arrowDy;
+      // Project from box-center toward tip; clip to box bounds.
+      let edgeX = cx, edgeY = cy;
+      const dx = tipX - cx, dy = tipY - cy;
+      if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6) {
+        const tx = dx === 0 ? Infinity : (dx > 0 ? (ov.w * z - cx) / dx : (-cx) / dx);
+        const ty = dy === 0 ? Infinity : (dy > 0 ? (ov.h * z - cy) / dy : (-cy) / dy);
+        const t = Math.min(tx, ty);
+        edgeX = cx + dx * t;
+        edgeY = cy + dy * t;
+      }
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", String(edgeX - minX));
+      line.setAttribute("y1", String(edgeY - minY));
+      line.setAttribute("x2", String(tipX - minX));
+      line.setAttribute("y2", String(tipY - minY));
+      line.setAttribute("stroke", color);
+      line.setAttribute("stroke-width", "1.5");
+      svg.appendChild(line);
+      el.appendChild(svg);
+
+      // Text content (rotation handled like text overlays).
+      const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+      const textNode = document.createElement("span");
+      textNode.className = "callout-text";
+      textNode.style.position = "absolute";
+      textNode.style.inset = "0";
+      textNode.style.padding = "2px 4px";
+      textNode.style.boxSizing = "border-box";
+      textNode.style.whiteSpace = "pre-wrap";
+      textNode.style.overflow = "hidden";
+      if (rot !== 0) {
+        const isVert = rot === 90 || rot === 270;
+        textNode.style.left = "50%";
+        textNode.style.top = "50%";
+        textNode.style.inset = "auto";
+        const naturalW = (isVert ? ov.h : ov.w) * z;
+        const naturalH = (isVert ? ov.w : ov.h) * z;
+        textNode.style.width = `${naturalW}px`;
+        textNode.style.height = `${naturalH}px`;
+        textNode.style.transformOrigin = "center center";
+        textNode.style.transform = `translate(-50%, -50%) rotate(${rot}deg)`;
+      }
+      textNode.textContent = props.text ?? "";
+      el.appendChild(textNode);
+      this._attachOverlayPointer(el, ov);
+      this._attachResizeHandles(el, ov);
+      return el;
+    }
+
     // Marker (highlighter) overlays — currently stored as type='line'
     // with properties.kind='marker' so the existing overlay CHECK
     // constraint (which lists 'line' but not 'marker') stays valid.
@@ -827,7 +912,8 @@ export class Viewer {
     // kind). Image / signature stamps without text are skipped.
     const isEditable =
       ov.type === "text" ||
-      (ov.type === "stamp" && (ov.properties?.kind ?? "text-frame") !== "image");
+      (ov.type === "stamp" && (ov.properties?.kind ?? "text-frame") !== "image") ||
+      (ov.type === "rect" && ov.properties?.kind === "callout");
     if (!isEditable) return;
     const el = this.container.querySelector(
       `.overlay[data-overlay-id="${cssEscape(id)}"]`,

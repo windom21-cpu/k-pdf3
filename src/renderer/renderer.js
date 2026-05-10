@@ -47,6 +47,7 @@ const textFontSel = $("text-font");
 const textSizeSel = $("text-size");
 const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
+const btnModeCallout = $("btn-mode-callout");
 const wsStatus = $("ws-status");
 const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
@@ -120,6 +121,8 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
     startRedactionDrag(pageNo, x, y, evt, div);
   } else if (placementMode === "marker") {
     startMarkerDrag(pageNo, x, y, evt, div);
+  } else if (placementMode === "callout") {
+    startCalloutDrag(pageNo, x, y, evt, div);
   }
 }
 
@@ -315,6 +318,106 @@ function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
   function onCancel(e) {
     if (e.pointerId !== pointerId) return;
     cleanup();
+  }
+
+  div.addEventListener("pointermove", onMove);
+  div.addEventListener("pointerup", onUp);
+  div.addEventListener("pointercancel", onCancel);
+}
+
+// ---- Callout (吹き出し) — text box + arrow line (§17.7) ----------------
+function placeCallout(pageNo, x, y, w, h) {
+  if (w < 20 || h < 15) return; // ignore micro drags
+  const fontSize = currentTextFontSize();
+  // Default arrow tip: 30pt below-left of the box. User can drag the
+  // tip later (handle wired in viewer for kind='callout').
+  const cmd = new AddOverlayCommand(projectStore, {
+    pageNo,
+    type: "rect", // 'rect' is in the schema CHECK; kind='callout' discriminates
+    x,
+    y,
+    w,
+    h,
+    zOrder: 30,
+    properties: {
+      kind: "callout",
+      text: "吹き出し",
+      fontSize,
+      color: "#000000",
+      fontId: currentTextFontId(),
+      rotation: 0,
+      arrowDx: -30,
+      arrowDy: h + 25,
+    },
+  });
+  history.execute(cmd);
+  setPlacementMode("none");
+  if (cmd._snapshot) {
+    setTimeout(() => viewer.enterTextEdit(cmd._snapshot.id), 0);
+  }
+}
+
+function startCalloutDrag(pageNo, startX, startY, downEvt, div) {
+  if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
+    placeCallout(pageNo, startX, startY, 120, 40);
+    return;
+  }
+  const pointerId = downEvt.pointerId;
+  const z = viewer.zoom;
+  const preview = document.createElement("div");
+  preview.className = "callout-preview";
+  preview.style.left = `${startX * z}px`;
+  preview.style.top = `${startY * z}px`;
+  preview.style.width = "0px";
+  preview.style.height = "0px";
+  div.appendChild(preview);
+
+  let curX = startX;
+  let curY = startY;
+  try { div.setPointerCapture(pointerId); } catch { /* ignore */ }
+
+  function onMove(e) {
+    if (e.pointerId !== pointerId) return;
+    const rect = div.getBoundingClientRect();
+    curX = (e.clientX - rect.left) / z;
+    curY = (e.clientY - rect.top) / z;
+    const x = Math.min(startX, curX);
+    const y = Math.min(startY, curY);
+    const w = Math.abs(curX - startX);
+    const h = Math.abs(curY - startY);
+    preview.style.left = `${x * z}px`;
+    preview.style.top = `${y * z}px`;
+    preview.style.width = `${w * z}px`;
+    preview.style.height = `${h * z}px`;
+  }
+
+  function cleanup() {
+    div.removeEventListener("pointermove", onMove);
+    div.removeEventListener("pointerup", onUp);
+    div.removeEventListener("pointercancel", onCancel);
+    try { div.releasePointerCapture(pointerId); } catch { /* ignore */ }
+    preview.remove();
+  }
+
+  function onUp(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+    const x = Math.min(startX, curX);
+    const y = Math.min(startY, curY);
+    const w = Math.abs(curX - startX);
+    const h = Math.abs(curY - startY);
+    if (w < 5 && h < 5) {
+      // Click without drag — drop a default-sized callout centered on click
+      placeCallout(pageNo, startX - 60, startY - 20, 120, 40);
+    } else {
+      placeCallout(pageNo, x, y, w, h);
+    }
+  }
+
+  function onCancel(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+    setPlacementMode("none");
   }
 
   div.addEventListener("pointermove", onMove);
@@ -570,6 +673,7 @@ function setPlacementMode(mode) {
   btnModeStamp.classList.toggle("toggled", mode === "stamp");
   btnModeRedaction.classList.toggle("toggled", mode === "redaction");
   btnModeMarker.classList.toggle("toggled", mode === "marker");
+  if (btnModeCallout) btnModeCallout.classList.toggle("toggled", mode === "callout");
   syncStampGhostMode();
   refreshMenuState();
 }
@@ -649,6 +753,7 @@ function setOpen(open) {
   if (textSizeSel) textSizeSel.disabled = !open;
   if (btnModeMarker) btnModeMarker.disabled = !open;
   if (markerColorSel) markerColorSel.disabled = !open;
+  if (btnModeCallout) btnModeCallout.disabled = !open;
   if (!open) {
     setPlacementMode("none");
     setSplitMode(false);
@@ -736,6 +841,7 @@ function refreshMenuState() {
     "mode-stamp": isOpen,
     "mode-redaction": isOpen,
     "mode-marker": isOpen,
+    "mode-callout": isOpen,
     // Future tools — kept disabled until M6 (placeholder slots)
     "stamp-manager": false,
     "font-settings": false,
@@ -750,6 +856,7 @@ function refreshMenuState() {
     "mode-stamp": placementMode === "stamp",
     "mode-redaction": placementMode === "redaction",
     "mode-marker": placementMode === "marker",
+    "mode-callout": placementMode === "callout",
     "quality-standard": q === "standard",
     "quality-high": q === "high",
     "quality-max": q === "max",
@@ -3055,6 +3162,8 @@ const menuBar = new MenuBar({
       setPlacementMode(placementMode === "redaction" ? "none" : "redaction"),
     "mode-marker": () =>
       setPlacementMode(placementMode === "marker" ? "none" : "marker"),
+    "mode-callout": () =>
+      setPlacementMode(placementMode === "callout" ? "none" : "callout"),
     "quality-standard": () => setRenderQuality("standard"),
     "quality-high": () => setRenderQuality("high"),
     "quality-max": () => setRenderQuality("max"),
@@ -3320,6 +3429,7 @@ const STATUS_HINTS = {
   "btn-mode-stamp": "印影を配置するモードに切り替えます",
   "btn-mode-redaction": "墨消し範囲を配置するモードに切り替えます",
   "btn-mode-marker": "ドラッグで横方向の半透明マーカーを引きます",
+  "btn-mode-callout": "ドラッグで吹き出し（矢印付きテキストボックス）を配置します",
   "btn-split": "PDF をパートごとに分割保存します",
   "btn-rotate-left": "現在のページを左に 90° 回転します",
   "btn-rotate-right": "現在のページを右に 90° 回転します",
@@ -3512,6 +3622,11 @@ btnModeRedaction.addEventListener("click", () =>
 if (btnModeMarker) {
   btnModeMarker.addEventListener("click", () =>
     setPlacementMode(placementMode === "marker" ? "none" : "marker"),
+  );
+}
+if (btnModeCallout) {
+  btnModeCallout.addEventListener("click", () =>
+    setPlacementMode(placementMode === "callout" ? "none" : "callout"),
   );
 }
 btnRotateLeft.addEventListener("click", actionRotateLeft);
