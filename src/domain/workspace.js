@@ -21,6 +21,7 @@ import {
   listExports,
   setPageDeleted,
   setPageUserRotation,
+  setInsertedPageUserRotation,
   listInsertedPages,
   addInsertedPage,
   removeInsertedPage,
@@ -155,7 +156,7 @@ export class Workspace {
           mediaW: r.width,
           mediaH: r.height,
           rotation: 0,
-          userRotation: 0,
+          userRotation: r.userRotation ?? 0,
           isDeleted: false,
         });
       }
@@ -175,9 +176,17 @@ export class Workspace {
     setPageDeleted(this.db, pageNo, deleted);
   }
 
-  /** Set the user-applied rotation (0/90/180/270) for a SOURCE page. */
+  /**
+   * Set the user-applied rotation (0/90/180/270) for any page —
+   * routes by sign of `pageNo`. Negative pageNo = synthetic
+   * (inserted_pages.id = -pageNo).
+   */
   setPageUserRotation(pageNo, userRotation) {
-    setPageUserRotation(this.db, pageNo, userRotation);
+    if (pageNo < 0) {
+      setInsertedPageUserRotation(this.db, -pageNo, userRotation);
+    } else {
+      setPageUserRotation(this.db, pageNo, userRotation);
+    }
   }
 
   /** Add a blank / text page. Returns the synthetic pageNo (negative). */

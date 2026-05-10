@@ -67,6 +67,7 @@ CREATE TABLE inserted_pages (
     text            TEXT,                -- 72pt で表示するテキスト（NULL/空 = 純粋な白紙）
     width           REAL NOT NULL DEFAULT 595,   -- A4 portrait, points
     height          REAL NOT NULL DEFAULT 842,
+    user_rotation   INTEGER NOT NULL DEFAULT 0 CHECK(user_rotation IN (0, 90, 180, 270)),
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_inserted_pages_slot ON inserted_pages(after_page_no, order_in_slot);

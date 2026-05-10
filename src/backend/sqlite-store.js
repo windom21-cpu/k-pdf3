@@ -64,7 +64,9 @@ export function openWorkspace(filePath, opts = {}) {
   return { db, isNew };
 }
 
-/** Add the `inserted_pages` table to old workspaces (idempotent). */
+/** Add the `inserted_pages` table to old workspaces (idempotent).
+ *  Also adds the `user_rotation` column on second-pass migration so
+ *  workspaces created before §17.11-on-synthetic-pages still work. */
 function migrateInsertedPagesTable(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS inserted_pages (
@@ -79,6 +81,12 @@ function migrateInsertedPagesTable(db) {
     CREATE INDEX IF NOT EXISTS idx_inserted_pages_slot
       ON inserted_pages(after_page_no, order_in_slot);
   `);
+  const cols = db.pragma("table_info(inserted_pages)");
+  if (!cols.some((c) => c.name === "user_rotation")) {
+    db.exec(
+      "ALTER TABLE inserted_pages ADD COLUMN user_rotation INTEGER NOT NULL DEFAULT 0 CHECK(user_rotation IN (0, 90, 180, 270))",
+    );
+  }
 }
 
 /**
@@ -246,11 +254,28 @@ export function listInsertedPages(db) {
   return db
     .prepare(
       `SELECT id, after_page_no AS afterPageNo, order_in_slot AS orderInSlot,
-              text, width, height, created_at AS createdAt
+              text, width, height,
+              user_rotation AS userRotation,
+              created_at AS createdAt
        FROM inserted_pages
        ORDER BY after_page_no, order_in_slot, id`,
     )
     .all();
+}
+
+/**
+ * Set the user-applied rotation on an inserted page (synthetic). Same
+ * semantics as setPageUserRotation for source pages, but on the
+ * `inserted_pages` table.
+ */
+export function setInsertedPageUserRotation(db, id, userRotation) {
+  const r = ((Math.round(userRotation) % 360) + 360) % 360;
+  if (![0, 90, 180, 270].includes(r)) {
+    throw new RangeError(`Invalid userRotation: ${userRotation}`);
+  }
+  db.prepare(
+    "UPDATE inserted_pages SET user_rotation = ? WHERE id = ?",
+  ).run(r, id);
 }
 
 /** Insert a new blank/text page after a given source page number.

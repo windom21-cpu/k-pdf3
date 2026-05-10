@@ -2059,11 +2059,7 @@ function actionRedo() {
 async function rotateCurrentPage(delta) {
   if (!isOpen) return;
   const pageNo = viewer.currentPage;
-  if (!pageNo || pageNo < 0) {
-    // Synthetic pages can't rotate (always portrait blanks for now).
-    if (pageNo < 0) wsStatus.textContent = "挿入ページは回転できません";
-    return;
-  }
+  if (!pageNo) return;
   const row = viewer._pages?.find((p) => p.pageNo === pageNo);
   if (!row) return;
   const next = (((row.userRotation ?? 0) + delta) % 360 + 360) % 360;
