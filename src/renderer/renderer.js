@@ -4871,8 +4871,36 @@ async function rotatePageBy(pageNo, delta) {
     wsStatus.textContent = `回転失敗: ${err.message ?? err}`;
   }
 }
-function rotateCurrentPage(delta) {
-  return rotatePageBy(viewer.currentPage, delta);
+/**
+ * Resolve the rotation target(s) for toolbar / menu rotate buttons.
+ *
+ * Multi-select aware (β9 fix): a sidebar or split-view thumb selection
+ * — when present — always takes precedence over `viewer.currentPage`.
+ * Earlier behaviour rotated whatever page happened to be visible in the
+ * main viewer, ignoring the user's split-view selection, which surfaced
+ * as "選択していない違うページが回転する" on β8.
+ *
+ * Selection order of preference: split-view > sidebar > main viewer.
+ * Returns the visual ORDER (matches the sidebar / split-view layout) so
+ * rotations land in a predictable sequence.
+ */
+function resolveRotationTargets() {
+  if (splitThumbSelection.pageNos.size > 0) {
+    const ordered = getOrderedThumbPageNos(splitFlow, ".split-thumb[data-page-no]");
+    return ordered.filter((n) => splitThumbSelection.pageNos.has(n));
+  }
+  if (sidebarThumbSelection.pageNos.size > 0) {
+    const ordered = getOrderedThumbPageNos(thumbList, ".thumb-item");
+    return ordered.filter((n) => sidebarThumbSelection.pageNos.has(n));
+  }
+  return [viewer.currentPage];
+}
+
+async function rotateCurrentPage(delta) {
+  const targets = resolveRotationTargets();
+  for (const pageNo of targets) {
+    await rotatePageBy(pageNo, delta);
+  }
 }
 function actionRotateLeft() { return rotateCurrentPage(-90); }
 function actionRotateRight() { return rotateCurrentPage(+90); }
