@@ -4804,14 +4804,16 @@ async function rotatePageBy(pageNo, delta) {
   if (!isOpen || !pageNo) return;
   const row = viewer._pages?.find((p) => p.pageNo === pageNo);
   if (!row) return;
-  // Drop both split-state and sidebar thumb caches for this page so the
-  // subsequent rebuild renders with the new rotation. (β10 testers
-  // reported the sidebar thumb staying in old orientation after a
-  // rotate — refreshViewer calls rebuildThumbs which iterates rows,
-  // but the per-page raster cache is keyed by pageNo and survives the
-  // rebuild unless invalidated explicitly.)
+  // Drop the split-view's thumb cache for this page so the next split
+  // refresh renders the new orientation. The sidebar's thumbCache is
+  // wiped wholesale by clearThumbs() inside refreshViewer → rebuildThumbs
+  // below, so we intentionally do NOT invalidate it here: an eager
+  // invalidate kicks an in-flight renderThumb capturing the OLD
+  // viewer._pages snapshot, which can finish AFTER clearThumbs() and
+  // poison thumbCache with a stale canvas before the new observer
+  // checks it — leaving the freshly-rebuilt thumb-item stuck as a
+  // placeholder ("blank thumb" reported by β11 testers).
   splitState?.thumbCache?.delete(pageNo);
-  invalidateSidebarThumb?.(pageNo);
 
   // Old canonical W/H BEFORE the rotation, accounting for both the
   // intrinsic /Rotate and the previous userRotation.
@@ -6393,6 +6395,13 @@ async function renderThumb(pageNo, itemEl) {
     // of a canvas and the sidebar goes blank.
     const canvas = await compositePage(row, result, projectStore, THUMB_ZOOM);
     canvas.className = "thumb-img";
+    // The thumb-item may have been recreated by rebuildThumbs() while
+    // our renderPage IPC was in flight (e.g. a rotation triggered
+    // refreshViewer mid-call). The original itemEl is detached: its
+    // ph.replaceWith is harmless, but writing to thumbCache would
+    // block the NEW observer-triggered render from kicking off,
+    // leaving the rebuilt thumb-item stuck as a placeholder.
+    if (!itemEl.isConnected) return;
     const ph = itemEl.querySelector(".thumb-placeholder");
     if (ph) ph.replaceWith(canvas);
     thumbCache.set(pageNo, canvas);
