@@ -545,6 +545,13 @@ async function closeTabWithConfirm(tabId) {
 
 function handlePagePointerDown(pageNo, x, y, evt, div) {
   if (!isOpen) return;
+  // Trial-stamp placement (§17.5) is its own dispatch — it runs while
+  // the register dialog is hidden, with placementMode possibly === "none",
+  // so it must be checked BEFORE the placementMode branches.
+  if (_stampTrialPlacing) {
+    placeStampTrial(pageNo, x, y, div);
+    return;
+  }
   if (placementMode === "text") {
     placeText(pageNo, x, y);
   } else if (placementMode === "stamp") {
@@ -2647,7 +2654,15 @@ const stampRegImageLabel = $("stamp-reg-image-label");
 const stampRegImagePreview = $("stamp-reg-image-preview");
 if (stampRegImagePreview) setupHiDPICanvas(stampRegImagePreview, 180, 120);
 const stampRegImageOk = $("stamp-reg-image-ok");
+const stampRegImageTrialBtn = $("stamp-reg-image-trial");
 let _stampRegImageState = null; // { path, mime, bitmap, naturalW, naturalH, label }
+// Trial-stamp placement state (§17.5 "できれば"). _stampTrial is the
+// pinned preview canvas + its canonical (x, y, w, h, params) snapshot,
+// or null when nothing is pinned. _stampTrialPlacing is true while the
+// user has hit "PDF に試し置き" and is hunting for a click position.
+let _stampTrial = null;
+let _stampTrialPlacing = false;
+let _stampTrialCursorEl = null;
 async function openStampRegisterImage(prefill = null) {
   _editingPresetId = prefill?.id ?? null;
   _stampRegImageState = null;
@@ -2660,6 +2675,10 @@ async function openStampRegisterImage(prefill = null) {
   if (stampRegImageColor) stampRegImageColor.value = prefill?.color ?? "";
   stampRegImageLabel.value = prefill?.label ?? "";
   stampRegImageOk.disabled = !prefill?.assetId;
+  if (stampRegImageTrialBtn) {
+    stampRegImageTrialBtn.disabled = !prefill?.assetId;
+    stampRegImageTrialBtn.textContent = "PDF に試し置き";
+  }
   // If editing, fetch the existing asset bitmap for the preview.
   if (prefill?.assetId) {
     try {
@@ -2687,7 +2706,11 @@ async function openStampRegisterImage(prefill = null) {
   paintStampRegImagePreview();
   stampRegImageDialog.hidden = false;
 }
-function closeStampRegisterImage() { stampRegImageDialog.hidden = true; }
+function closeStampRegisterImage() {
+  clearStampTrial();
+  cancelStampTrialPlacement();
+  stampRegImageDialog.hidden = true;
+}
 function paintStampRegImagePreview() {
   paintStampPreview(stampRegImagePreview, {
     kind: "image",
@@ -2749,6 +2772,7 @@ stampRegImagePickBtn?.addEventListener("click", async () => {
     const h = Math.round((w * bitmap.height) / bitmap.width);
     stampRegImageH.value = String(h);
     stampRegImageOk.disabled = false;
+    if (stampRegImageTrialBtn) stampRegImageTrialBtn.disabled = false;
     paintStampRegImagePreview();
   } catch (err) {
     console.error("[stamp-img] preview failed", err);
@@ -2764,9 +2788,16 @@ stampRegImageW?.addEventListener("input", () => {
   const w = Number(stampRegImageW.value) || 0;
   const h = Math.round((w * _stampRegImageState.naturalH) / _stampRegImageState.naturalW);
   stampRegImageH.value = String(h);
+  updateStampTrialAppearance();
 });
-stampRegImageFrame?.addEventListener("change", paintStampRegImagePreview);
-stampRegImageColor?.addEventListener("change", paintStampRegImagePreview);
+stampRegImageFrame?.addEventListener("change", () => {
+  paintStampRegImagePreview();
+  updateStampTrialAppearance();
+});
+stampRegImageColor?.addEventListener("change", () => {
+  paintStampRegImagePreview();
+  updateStampTrialAppearance();
+});
 $("stamp-reg-image-cancel")?.addEventListener("click", closeStampRegisterImage);
 stampRegImageDialog?.addEventListener("click", (e) => {
   if (e.target === stampRegImageDialog) closeStampRegisterImage();
@@ -2794,6 +2825,226 @@ stampRegImageOk?.addEventListener("click", async () => {
 
 // (Old "image stamp via toolbar select" pathway removed — the スタンプ
 // 管理 → 画像スタンプ register dialog is now the sole entry point.)
+
+// ---- 画像スタンプ register dialog: PDF プレ押印 (§17.5 "できれば") ---------
+//
+// Lets the user pin a transparent preview of the draft image stamp onto
+// the actual PDF page from the register dialog, so they can see whether
+// the configured (w, h, color, frame) really fits next to the content
+// before committing to register the preset. The pinned preview is a
+// canvas attached to viewer.pageEls.get(pageNo) — it is NOT a
+// projectStore overlay (no undo entry, no export side-effect).
+
+/** Snapshot the dialog's current form state as a flat trial-params object.
+ *  Returns null if no image is loaded yet. */
+function getStampTrialParams() {
+  if (!_stampRegImageState?.bitmap) return null;
+  return {
+    bitmap: _stampRegImageState.bitmap,
+    width: Math.max(10, Math.min(400, Number(stampRegImageW.value) || 80)),
+    height: Math.max(10, Math.min(400, Number(stampRegImageH.value) || 80)),
+    color: stampRegImageColor?.value || "",
+    frame: stampRegImageFrame?.checked ? "rect" : "none",
+  };
+}
+
+/** Paint the trial bitmap (with tint + frame) onto `canvas` at its full
+ *  CSS size — transparent backdrop, no padding, no paper backdrop.
+ *  paintStampPreview's dialog-preview behaviour (white paper + grey
+ *  border + 4px padding) is wrong for the on-page trial, so this is a
+ *  dedicated variant. */
+function paintStampTrialCanvas(canvas, params) {
+  const ctx = canvas.getContext("2d");
+  const { W, H } = canvasLogicalSize(canvas);
+  ctx.clearRect(0, 0, W, H);
+  if (!params?.bitmap) return;
+  const bw = params.bitmap.width;
+  const bh = params.bitmap.height;
+  // Box w/h is wired to the bitmap aspect ratio in the dialog input
+  // logic, so this normally fills the canvas. Use min-scale anyway so a
+  // user-forced mismatch letterboxes cleanly instead of stretching.
+  const scale = Math.min(W / bw, H / bh);
+  const w = bw * scale;
+  const h = bh * scale;
+  const dx = (W - w) / 2;
+  const dy = (H - h) / 2;
+  if (params.color) {
+    const off = document.createElement("canvas");
+    off.width = bw;
+    off.height = bh;
+    const octx = off.getContext("2d");
+    octx.drawImage(params.bitmap, 0, 0);
+    tintCanvasInPlace(octx, params.color);
+    ctx.drawImage(off, dx, dy, w, h);
+  } else {
+    ctx.drawImage(params.bitmap, dx, dy, w, h);
+  }
+  if (params.frame === "rect") {
+    ctx.strokeStyle =
+      params.color && /^#?[0-9a-fA-F]{6}$/.test(String(params.color))
+        ? params.color
+        : "#000000";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(dx + 0.5, dy + 0.5, w - 1, h - 1);
+  }
+}
+
+function ensureStampTrialCursor() {
+  if (_stampTrialCursorEl) return _stampTrialCursorEl;
+  const el = document.createElement("canvas");
+  el.className = "stamp-trial-cursor";
+  el.hidden = true;
+  document.body.appendChild(el);
+  _stampTrialCursorEl = el;
+  return el;
+}
+
+function paintStampTrialCursor(params) {
+  const el = ensureStampTrialCursor();
+  const z = viewer.zoom;
+  setupHiDPICanvas(el, params.width * z, params.height * z);
+  paintStampTrialCanvas(el, params);
+}
+
+function onTrialCursorMove(e) {
+  if (!_stampTrialPlacing || !_stampTrialCursorEl) return;
+  const params = getStampTrialParams();
+  if (!params) return;
+  const z = viewer.zoom;
+  const w = params.width * z;
+  const h = params.height * z;
+  _stampTrialCursorEl.style.left = `${e.clientX - w / 2}px`;
+  _stampTrialCursorEl.style.top = `${e.clientY - h / 2}px`;
+  _stampTrialCursorEl.hidden = false;
+}
+
+function onTrialCursorLeave() {
+  if (_stampTrialCursorEl) _stampTrialCursorEl.hidden = true;
+}
+
+// Capture-phase so this Esc wins over the global keydown handler (which
+// would clear selection / placementMode and ignore our trial state).
+function onTrialKeydown(e) {
+  if (!_stampTrialPlacing) return;
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    e.preventDefault();
+    cancelStampTrialPlacement();
+  }
+}
+
+function enterStampTrialPlacement() {
+  const params = getStampTrialParams();
+  if (!params) {
+    wsStatus.textContent = "先に画像を選択してください";
+    return;
+  }
+  if (!isOpen) {
+    wsStatus.textContent = "PDF を開いてから試し置きしてください";
+    return;
+  }
+  _stampTrialPlacing = true;
+  stampRegImageDialog.hidden = true;
+  paintStampTrialCursor(params);
+  viewerContainer.addEventListener("mousemove", onTrialCursorMove);
+  viewerContainer.addEventListener("mouseleave", onTrialCursorLeave);
+  window.addEventListener("keydown", onTrialKeydown, true);
+  wsStatus.textContent = "PDF をクリックして試し位置を指定 / Esc で取消";
+}
+
+function cancelStampTrialPlacement() {
+  if (!_stampTrialPlacing) return;
+  _stampTrialPlacing = false;
+  if (_stampTrialCursorEl) _stampTrialCursorEl.hidden = true;
+  viewerContainer.removeEventListener("mousemove", onTrialCursorMove);
+  viewerContainer.removeEventListener("mouseleave", onTrialCursorLeave);
+  window.removeEventListener("keydown", onTrialKeydown, true);
+  // Re-show the dialog only if it was the trigger; closeStampRegisterImage
+  // also calls us but with the dialog already on its way out.
+  if (stampRegImageDialog && !stampRegImageDialog.hidden) {
+    /* already visible — nothing to do */
+  } else if (stampRegImageDialog && stampRegImageDialog.hidden && _stampRegImageState) {
+    stampRegImageDialog.hidden = false;
+  }
+  wsStatus.textContent = "";
+}
+
+function placeStampTrial(pageNo, canonicalX, canonicalY, pageEl) {
+  clearStampTrial();
+  const params = getStampTrialParams();
+  if (!params || !pageEl) {
+    cancelStampTrialPlacement();
+    return;
+  }
+  // Center the trial on the click — matches placeStamp's UX.
+  const x = canonicalX - params.width / 2;
+  const y = canonicalY - params.height / 2;
+  const z = viewer.zoom;
+  const canvas = document.createElement("canvas");
+  canvas.className = "stamp-trial-overlay";
+  setupHiDPICanvas(canvas, params.width * z, params.height * z);
+  canvas.style.left = `${x * z}px`;
+  canvas.style.top = `${y * z}px`;
+  paintStampTrialCanvas(canvas, params);
+  pageEl.appendChild(canvas);
+  _stampTrial = { pageNo, x, y, canvas, params };
+  if (stampRegImageTrialBtn) stampRegImageTrialBtn.textContent = "試し置きをやり直す";
+  cancelStampTrialPlacement();
+}
+
+/** Re-paint the pinned trial canvas in place when the user tweaks w/h/
+ *  color/frame in the dialog. Cheap; runs on every input change. */
+function updateStampTrialAppearance() {
+  if (!_stampTrial) return;
+  const params = getStampTrialParams();
+  if (!params) return;
+  const z = viewer.zoom;
+  setupHiDPICanvas(_stampTrial.canvas, params.width * z, params.height * z);
+  _stampTrial.canvas.style.left = `${_stampTrial.x * z}px`;
+  _stampTrial.canvas.style.top = `${_stampTrial.y * z}px`;
+  paintStampTrialCanvas(_stampTrial.canvas, params);
+  _stampTrial.params = params;
+}
+
+/** Tear down the pinned trial canvas + reset the button label. Safe to
+ *  call when nothing is pinned. */
+function clearStampTrial() {
+  if (_stampTrial?.canvas?.parentNode) {
+    _stampTrial.canvas.parentNode.removeChild(_stampTrial.canvas);
+  }
+  _stampTrial = null;
+  if (stampRegImageTrialBtn) stampRegImageTrialBtn.textContent = "PDF に試し置き";
+}
+
+/** Re-create the pinned trial canvas inside the current page DOM after a
+ *  viewer.setZoom rebuild has replaced the page elements. */
+function reattachStampTrial() {
+  if (!_stampTrial) return;
+  const pageEl = viewer.pageEls?.get(_stampTrial.pageNo);
+  if (!pageEl) {
+    // Page no longer exists in the new layout — drop the trial.
+    _stampTrial = null;
+    if (stampRegImageTrialBtn) stampRegImageTrialBtn.textContent = "PDF に試し置き";
+    return;
+  }
+  const z = viewer.zoom;
+  const canvas = document.createElement("canvas");
+  canvas.className = "stamp-trial-overlay";
+  setupHiDPICanvas(canvas, _stampTrial.params.width * z, _stampTrial.params.height * z);
+  canvas.style.left = `${_stampTrial.x * z}px`;
+  canvas.style.top = `${_stampTrial.y * z}px`;
+  paintStampTrialCanvas(canvas, _stampTrial.params);
+  pageEl.appendChild(canvas);
+  _stampTrial.canvas = canvas;
+}
+
+stampRegImageTrialBtn?.addEventListener("click", () => {
+  // The button is dual-purpose: first press → placement mode. While a
+  // trial is already pinned the label reads "やり直す" and a press
+  // clears the existing pin and re-enters placement.
+  clearStampTrial();
+  enterStampTrialPlacement();
+});
 
 // ---- Stamp drag ghost (preview that follows the cursor) ---------------
 let stampGhostEl = null;
@@ -3181,6 +3432,11 @@ function updatePageIndicatorAndMenu(current, total) {
 viewer.onPageChange = updatePageIndicatorAndMenu;
 
 async function refreshViewer() {
+  // Trial-stamp preview pins a canvas onto a specific page DOM at
+  // canonical coords; rotation / page delete / insert / reorder all
+  // invalidate that frame, so drop it before the rebuild rather than
+  // leaving an orphaned reference pointing at a detached canvas.
+  clearStampTrial();
   if (!isOpen) {
     activeSourceName = "";
     wsStatus.textContent = "PDF を「開く」で読み込みます";
@@ -4925,6 +5181,11 @@ function actionRotateRight() { return rotateCurrentPage(+90); }
 
 function applyZoom(z) {
   viewer.setZoom(z);
+  // setZoom rebuilds the page DOMs via viewer.load — any trial-stamp
+  // canvas we pinned to a page element has been detached. Recreate it
+  // at the new zoom inside the freshly-built page DOM so the user's
+  // size comparison survives zooming in/out.
+  reattachStampTrial();
   refreshMenuState();
   refreshZoomSelect();
   if (isOpen) wsStatus.textContent = `${Math.round(z * 100)}%`;

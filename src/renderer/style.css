@@ -907,6 +907,28 @@ button.toggled {
   border: none;
 }
 
+/* Trial-stamp ghost (§17.5 "できれば"): a transparent preview placed on
+ * a PDF page from the image-stamp register dialog so the user can see
+ * the seal at real scale before committing to register the preset.
+ * The cursor variant follows the pointer during placement; the overlay
+ * variant is pinned to a page after the user clicks. Dashed outline
+ * makes it obvious this is a preview, not a real overlay. */
+.stamp-trial-cursor {
+  position: fixed;
+  pointer-events: none;
+  z-index: 1500;
+  opacity: 0.6;
+}
+.stamp-trial-cursor[hidden] { display: none !important; }
+.stamp-trial-overlay {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
+  opacity: 0.65;
+  outline: 1px dashed rgba(0, 0, 128, 0.7);
+  outline-offset: 1px;
+}
+
 /* Overlay accepts pointer events (it sits inside an .overlay-layer with
  * pointer-events: none, so this is what makes the overlay clickable). */
 .overlay {
