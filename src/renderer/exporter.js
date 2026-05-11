@@ -237,18 +237,22 @@ export async function composePagesForExport({
     const overlayCount = projectStore.getPageOverlays(row.pageNo).length;
     const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
     const sourceRot = (((row.rotation ?? 0) % 360) + 360) % 360;
+    const effectiveRotation = ((sourceRot + userRot) % 360 + 360) % 360;
     const isSynthetic = row.isSynthetic || row.pageNo < 0;
-    // Hybrid strategy: when we have a source PDF page that the main side
-    // can copy verbatim, do that. Only rasterize the overlay layer on top
-    // (or skip rendering entirely when the page has no overlay). User-
-    // or PDF-rotated source pages fall back to the legacy full-rasterize
-    // path because aligning a copied source page + a separately-rasterized
-    // overlay through a content-stream rotation matrix is non-trivial.
+    // Hybrid strategy:
+    //   - synthetic page (no source) → "full" (rasterize the renderer-
+    //     drawn synthetic content)
+    //   - source PDF page with overlays → "overlay" (copy vector source +
+    //     draw transparent overlay PNG on top)
+    //   - source PDF page with no overlays → "source" (copy verbatim)
+    //
+    // β5+: rotated pages (userRotation or source /Rotate != 0) also take
+    // the hybrid path. main-side assembler uses embedPage + drawPage to
+    // place rotated vector content, so we keep crisp text on rotated pages
+    // too (β4 fell back to full-rasterize which exploded file size).
     let strategy;
     if (isSynthetic) {
       strategy = "full"; // no source page to keep — rasterize everything
-    } else if (userRot !== 0 || sourceRot !== 0) {
-      strategy = "full"; // rotated: hybrid alignment skipped for β4
     } else if (overlayCount > 0) {
       strategy = "overlay"; // copy source vector + draw overlay PNG on top
     } else {
@@ -282,10 +286,15 @@ export async function composePagesForExport({
 
     out.push({
       pageNo: row.pageNo,
-      widthPt: canonical.w,
+      widthPt: canonical.w,   // post-rotation canonical w/h (what user sees)
       heightPt: canonical.h,
       strategy,
       sourceIdx: isSynthetic ? null : (row.pageNo - 1),
+      // userRotation lets the main side place the source page rotated.
+      // pdf-lib's embedPage already bakes in the source's intrinsic
+      // /Rotate, so only the *additional* user-applied rotation needs
+      // to flow through drawPage. 0 = no extra rotation.
+      userRotation: userRot,
       imageBytes,
     });
     if (onProgress) onProgress({ done: i + 1, total });

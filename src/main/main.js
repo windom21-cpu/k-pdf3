@@ -19,7 +19,7 @@ import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
 import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, degrees } from "pdf-lib";
 import { computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
@@ -981,6 +981,7 @@ ipcMain.handle("kpdf3:pick-export-pdf", async () => {
  * @param {Array<{ pageNo: number, widthPt: number, heightPt: number,
  *                  strategy: "source" | "overlay" | "full",
  *                  sourceIdx: number | null,
+ *                  userRotation?: 0 | 90 | 180 | 270,
  *                  imageBytes?: Uint8Array }>} pages
  * @param {Uint8Array | null} sourceBytes raw source-PDF bytes
  * @returns {Promise<Buffer>}
@@ -991,27 +992,38 @@ async function assembleHybridPdf(pages, sourceBytes) {
     ? await PDFDocument.load(sourceBytes, { ignoreEncryption: true })
     : null;
   for (const p of pages) {
+    const userRot = (((p.userRotation ?? 0) % 360) + 360) % 360;
     if (p.strategy === "source") {
       if (!sourcePdf) throw new Error("assembleHybridPdf: source page strategy but no source PDF");
-      const [copied] = await newPdf.copyPages(sourcePdf, [p.sourceIdx]);
-      newPdf.addPage(copied);
+      if (userRot === 0) {
+        // Fast path — verbatim copy retains the source page's intrinsic
+        // /Rotate so vectors stay crisp at native zoom.
+        const [copied] = await newPdf.copyPages(sourcePdf, [p.sourceIdx]);
+        newPdf.addPage(copied);
+      } else {
+        await _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, null);
+      }
     } else if (p.strategy === "overlay") {
       if (!sourcePdf) throw new Error("assembleHybridPdf: overlay strategy but no source PDF");
-      const [copied] = await newPdf.copyPages(sourcePdf, [p.sourceIdx]);
-      newPdf.addPage(copied);
-      if (p.imageBytes && p.imageBytes.length > 0) {
-        const overlayImg = await newPdf.embedPng(p.imageBytes);
-        // Draw the overlay across the (canonical) page bounds. pdf-lib's
-        // coordinate origin is bottom-left; the overlay PNG was authored
-        // with y-down semantics for the same canvas dimensions, and
-        // pdf-lib's drawImage flips it back to right-side-up — matches
-        // the on-screen overlay orientation.
-        copied.drawImage(overlayImg, {
-          x: 0,
-          y: 0,
-          width: p.widthPt,
-          height: p.heightPt,
-        });
+      if (userRot === 0) {
+        const [copied] = await newPdf.copyPages(sourcePdf, [p.sourceIdx]);
+        newPdf.addPage(copied);
+        if (p.imageBytes && p.imageBytes.length > 0) {
+          const overlayImg = await newPdf.embedPng(p.imageBytes);
+          // Draw the overlay across the (canonical) page bounds. pdf-lib's
+          // coordinate origin is bottom-left; the overlay PNG was authored
+          // with y-down semantics for the same canvas dimensions, and
+          // pdf-lib's drawImage flips it back to right-side-up — matches
+          // the on-screen overlay orientation.
+          copied.drawImage(overlayImg, {
+            x: 0,
+            y: 0,
+            width: p.widthPt,
+            height: p.heightPt,
+          });
+        }
+      } else {
+        await _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, p.imageBytes);
       }
     } else if (p.strategy === "full") {
       if (!p.imageBytes || p.imageBytes.length === 0) {
@@ -1030,6 +1042,62 @@ async function assembleHybridPdf(pages, sourceBytes) {
   }
   const bytes = await newPdf.save();
   return Buffer.from(bytes);
+}
+
+/**
+ * Place a rotated source page (β5 §17.15 follow-up: hybrid for rotated
+ * pages) onto a freshly-added canonical-sized page in newPdf, then
+ * (optionally) draw an overlay PNG on top.
+ *
+ * Approach: embed the source page as a PDFEmbeddedPage (pdf-lib bakes
+ * in the source's intrinsic /Rotate when computing the embedded form's
+ * bounding box, so the embedded form is *already* in "post-/Rotate"
+ * orientation). We then drawPage with the additional userRotation, plus
+ * a translation that keeps the rotated bounding box inside the new
+ * canvas. This keeps source content as vectors so text stays crisp —
+ * β4 fell back to full-rasterize JPEG which blurred + bloated.
+ *
+ * Translation table — `embedded.width` / `embedded.height` are the
+ * post-/Rotate displayed dimensions. After rotating CCW by `userRot`
+ * around the placement point (x, y), the embedded form's corners need
+ * to land in the first quadrant [0, canonicalW] × [0, canonicalH].
+ *
+ *   userRot=0   → (x, y) = (0, 0)             new page = (W_emb, H_emb)
+ *   userRot=90  → (x, y) = (H_emb, 0)          new page = (H_emb, W_emb)
+ *   userRot=180 → (x, y) = (W_emb, H_emb)      new page = (W_emb, H_emb)
+ *   userRot=270 → (x, y) = (0, W_emb)          new page = (H_emb, W_emb)
+ *
+ * The overlay PNG, when present, is drawn AFTER the rotated source so
+ * it sits on top at (0, 0) of the new page in canonical dimensions —
+ * no transform needed because the overlay was rendered by the renderer
+ * in canonical/post-rotation coordinates.
+ */
+async function _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, overlayBytes) {
+  const [embedded] = await newPdf.embedPdf(sourcePdf, [p.sourceIdx]);
+  const page = newPdf.addPage([p.widthPt, p.heightPt]);
+  const W = embedded.width;
+  const H = embedded.height;
+  let tx = 0;
+  let ty = 0;
+  if (userRot === 90) { tx = H; ty = 0; }
+  else if (userRot === 180) { tx = W; ty = H; }
+  else if (userRot === 270) { tx = 0; ty = W; }
+  page.drawPage(embedded, {
+    x: tx,
+    y: ty,
+    width: W,
+    height: H,
+    rotate: degrees(userRot),
+  });
+  if (overlayBytes && overlayBytes.length > 0) {
+    const overlayImg = await newPdf.embedPng(overlayBytes);
+    page.drawImage(overlayImg, {
+      x: 0,
+      y: 0,
+      width: p.widthPt,
+      height: p.heightPt,
+    });
+  }
 }
 
 function tempPrintPath() {
