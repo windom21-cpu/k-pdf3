@@ -7500,6 +7500,15 @@ async function reloadRenderer() {
 // they go through the same dirty-check + beforeunload-bypass path.
 kpdf3.onReloadRequest?.(() => reloadRenderer());
 
+// OS-driven PDF open: main forwards paths from argv / macOS open-file /
+// second-instance into here. Route through openPdfSmart so the new
+// path opens in a fresh tab when the active one is already in use
+// (preserves the user's editing context).
+kpdf3.onOpenPdfByOS?.((pdfPath) => {
+  if (!pdfPath || typeof pdfPath !== "string") return;
+  void openPdfSmart(pdfPath);
+});
+
 // ---- Tab bar (ADR-0015 Phase 3) --------------------------------------
 $("tab-add")?.addEventListener("click", () => {
   void newTabAndOpen(null);

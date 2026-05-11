@@ -145,6 +145,15 @@
       "perMachine": false,
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "PDF Document",
+        "description": "PDF Document",
+        "role": "Editor",
+        "icon": "build/icon.png"
+      }
+    ]
   }
 }

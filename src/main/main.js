@@ -194,6 +194,16 @@ function createMainWindow() {
     },
   });
   mainWindow.loadFile(join(__dirname, "..", "renderer", "index.html"));
+  // Flush any PDF paths the OS handed us via argv / open-file once the
+  // renderer is ready to receive IPC. did-finish-load fires after the
+  // initial HTML + scripts have settled.
+  mainWindow.webContents.once("did-finish-load", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    while (pendingOpens.length > 0) {
+      const p = pendingOpens.shift();
+      mainWindow.webContents.send("kpdf3:open-pdf-by-os", p);
+    }
+  });
   // Hide the menu bar (Linux / Windows) while keeping the accelerators
   // registered via setApplicationMenu — frame:false plus visible menu
   // would double the title-bar height with the OS menu strip.
@@ -262,6 +272,76 @@ function createMainWindow() {
     mainWindow = null;
   });
 }
+
+// ---- OS-driven PDF file open (Windows / Linux / macOS) -------------------
+//
+// File-association (build.fileAssociations in package.json) registers
+// K-PDF3 as a candidate "Open with" app for .pdf files. When the user
+// chooses K-PDF3 from the OS file manager, the OS launches the binary
+// with the PDF path either on argv (Win/Linux) or via the macOS
+// `open-file` AppleEvent. We capture those paths here and forward them
+// to the renderer via `kpdf3:open-pdf-by-os`.
+//
+// `pendingOpens` buffers paths that arrive BEFORE the renderer is
+// ready (the most common case at cold start — argv is available the
+// moment the main process boots). They're flushed once the renderer
+// has finished its initial load.
+
+/** @type {string[]} */
+const pendingOpens = [];
+
+/** Walk argv looking for a .pdf path the OS handed us. argv[0] is the
+ *  electron binary; subsequent entries can include CLI flags (which we
+ *  skip) plus the file path. */
+function pdfPathsFromArgv(argv) {
+  /** @type {string[]} */
+  const out = [];
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (typeof a !== "string") continue;
+    if (a.startsWith("-")) continue; // flags
+    if (!/\.pdf$/i.test(a)) continue;
+    if (!existsSync(a)) continue;
+    out.push(a);
+  }
+  return out;
+}
+
+// Single-instance: when the user double-clicks another PDF while K-PDF3
+// is already running, route the new path to the existing window instead
+// of launching a duplicate process.
+const gotInstanceLock = app.requestSingleInstanceLock();
+if (!gotInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_event, argv) => {
+    const paths = pdfPathsFromArgv(argv);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      for (const p of paths) {
+        mainWindow.webContents.send("kpdf3:open-pdf-by-os", p);
+      }
+    } else {
+      pendingOpens.push(...paths);
+    }
+  });
+}
+
+// macOS: file launches come through this AppleEvent rather than argv.
+app.on("open-file", (event, path) => {
+  event.preventDefault();
+  if (!path || !/\.pdf$/i.test(path)) return;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("kpdf3:open-pdf-by-os", path);
+  } else {
+    pendingOpens.push(path);
+  }
+});
+
+// Catch argv-borne paths from cold launch.
+pendingOpens.push(...pdfPathsFromArgv(process.argv));
 
 // ---- App lifecycle -------------------------------------------------------
 

@@ -61,6 +61,10 @@ contextBridge.exposeInMainWorld("kpdf3", {
   toggleAlwaysOnTop:  (on)      => ipcRenderer.invoke("kpdf3:toggle-always-on-top", on),
   resizePopupToFit:   (opts)    => ipcRenderer.invoke("kpdf3:resize-popup-to-fit", opts),
   onReloadRequest:    (cb)      => ipcRenderer.on("kpdf3:reload-request", () => cb()),
+  // OS-driven PDF open: fires when the user double-clicks a .pdf in
+  // their file manager (or chose K-PDF3 via "Open with…"). Main passes
+  // the absolute path; renderer routes into openPdfSmart.
+  onOpenPdfByOS:      (cb)      => ipcRenderer.on("kpdf3:open-pdf-by-os", (_, p) => cb(p)),
   // Drag&drop helper — Electron 32+ removed File.path from the renderer,
   // so dropped files now need webUtils.getPathForFile() (preload-only).
   getPathForFile:     (file)    => webUtils.getPathForFile(file),
