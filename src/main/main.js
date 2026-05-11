@@ -40,6 +40,7 @@ import {
   migrateFromWorkspaceIfEmpty as migrateStampPresetsToGlobalIfEmpty,
   closeStampStore,
 } from "./global-stamp-store.js";
+import { setupAutoUpdater } from "./updater.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -296,6 +297,10 @@ app.whenReady().then(() => {
   ]);
   Menu.setApplicationMenu(accelMenu);
   createMainWindow();
+  // Wire auto-update (§17.15). No-op in dev mode (!app.isPackaged) and
+  // when launched with --no-update. The initial check fires ~3s after
+  // the window is shown so the renderer has time to subscribe.
+  if (mainWindow) setupAutoUpdater(mainWindow);
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });

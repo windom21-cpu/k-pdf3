@@ -2,20 +2,26 @@
 #
 # Each runner builds installers for its native OS via electron-builder.
 # Outputs land in `release/` (per the package.json `directories.output`
-# setting). After all three matrix jobs complete, the `publish` job
-# downloads every artifact and attaches them to the corresponding
-# GitHub Release. Code-sign / notarization secrets stay out of scope —
-# unsigned builds are still installable (right-click → 開く on macOS,
-# SmartScreen warning on Windows).
+# setting). Electron-builder publishes the installer + `latest*.yml` +
+# blockmap to the **public** `windom21-cpu/k-pdf3-releases` repository,
+# which serves as the autoUpdater feed (§17.15). The development repo
+# (this one, k-pdf3) stays private.
+#
+# Token: `RELEASES_REPO_TOKEN` is a fine-grained PAT scoped only to
+# k-pdf3-releases (Contents=Write, Metadata=Read). The default
+# GITHUB_TOKEN cannot write to a different repository, so the explicit
+# secret is required. Without it electron-builder errors out clearly.
+#
+# Code-sign / notarization secrets stay out of scope — unsigned builds
+# are still installable (right-click → 開く on macOS, SmartScreen
+# warning on Windows). macOS auto-update will not work until certs are
+# in place; Linux/Windows updates work fine unsigned.
 
 name: release
 
 on:
   push:
     tags: ["v*"]
-
-permissions:
-  contents: write   # required by softprops/action-gh-release
 
 jobs:
   build:
@@ -37,64 +43,41 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate icon
-        run: npm run build:icon
-
-      - name: Build (Linux)
+      - name: Build + publish (Linux)
         if: runner.os == 'Linux'
-        run: npm run build:linux
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        run: npm run publish:linux
 
-      - name: Build (macOS)
+      - name: Build + publish (macOS)
         if: runner.os == 'macOS'
-        # Code signing / notarization requires APPLE_ID / APPLE_ID_PASSWORD
-        # secrets — left disabled until certs are available. Unsigned
-        # dmg still installable with right-click → 開く.
-        run: npm run build:mac
+        env:
+          # Code signing / notarization requires APPLE_ID / APPLE_ID_PASSWORD
+          # secrets — left disabled until certs are available. Unsigned
+          # dmg still installable with right-click → 開く.
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        run: npm run publish:mac
 
-      - name: Build (Windows)
+      - name: Build + publish (Windows)
         if: runner.os == 'Windows'
-        run: npm run build:win
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        run: npm run publish:win
 
-      - name: Upload artifacts
+      # Retain artifacts on the workflow run too — helpful when debugging
+      # a failed publish without crossing into the public releases repo.
+      - name: Upload artifacts (debugging copy)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: k-pdf3-${{ matrix.os }}
-          # electron-builder's output dir is "release" per package.json
           path: |
             release/*.AppImage
             release/*.deb
             release/*.dmg
             release/*.exe
             release/*.zip
+            release/*.yml
+            release/*.blockmap
           if-no-files-found: warn
           retention-days: 14
-
-  publish:
-    name: attach to GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: release-artifacts
-          merge-multiple: true
-
-      - name: List downloaded artifacts
-        run: ls -la release-artifacts
-
-      - name: Create / update GitHub Release with installers
-        uses: softprops/action-gh-release@v2
-        with:
-          # `prerelease` heuristic — anything with `alpha` / `beta` / `rc`
-          # in the tag name is treated as a pre-release; tags like v2.0.0
-          # become full releases.
-          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
-          generate_release_notes: true
-          files: |
-            release-artifacts/*.AppImage
-            release-artifacts/*.deb
-            release-artifacts/*.dmg
-            release-artifacts/*.exe
-            release-artifacts/*.zip

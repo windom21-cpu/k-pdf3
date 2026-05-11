@@ -67,6 +67,18 @@ contextBridge.exposeInMainWorld("kpdf3", {
   // Open the OS-native printer properties dialog for a given printer.
   printerProperties:  (name)    => ipcRenderer.invoke("kpdf3:printer-properties", name),
   searchPdf:          (q)       => ipcRenderer.invoke("kpdf3:search-pdf", q),
+  // Auto-update (§17.15). The renderer drives the UX (98 風 dialogs +
+  // busy modal); main only forwards electron-updater's events and
+  // performs the actual download/install on request.
+  updaterCheck:           ()    => ipcRenderer.invoke("kpdf3:updater-check"),
+  updaterDownload:        ()    => ipcRenderer.invoke("kpdf3:updater-download"),
+  updaterInstall:         ()    => ipcRenderer.invoke("kpdf3:updater-install"),
+  onUpdaterChecking:        (cb) => ipcRenderer.on("kpdf3:updater-checking",           ()      => cb()),
+  onUpdaterUpdateAvailable: (cb) => ipcRenderer.on("kpdf3:updater-update-available",   (_, d)  => cb(d)),
+  onUpdaterNotAvailable:    (cb) => ipcRenderer.on("kpdf3:updater-not-available",      ()      => cb()),
+  onUpdaterDownloadProgress:(cb) => ipcRenderer.on("kpdf3:updater-download-progress",  (_, d)  => cb(d)),
+  onUpdaterUpdateDownloaded:(cb) => ipcRenderer.on("kpdf3:updater-update-downloaded",  (_, d)  => cb(d)),
+  onUpdaterError:           (cb) => ipcRenderer.on("kpdf3:updater-error",              (_, d)  => cb(d)),
   setPageDeleted:     (n, d)    => ipcRenderer.invoke("kpdf3:set-page-deleted", n, d),
   setPageRotation:    (n, r)    => ipcRenderer.invoke("kpdf3:set-page-rotation", n, r),
   reorderPages:       (orderedPageNos) => ipcRenderer.invoke("kpdf3:reorder-pages", orderedPageNos),

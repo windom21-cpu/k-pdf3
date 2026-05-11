@@ -6198,6 +6198,138 @@ aboutDialog.addEventListener("click", (e) => {
   if (e.target === aboutDialog) hideAboutDialog();
 });
 
+// ---- Auto-update UX (§17.15) ------------------------------------------
+//
+// The main process drives electron-updater and forwards events here.
+// We surface the lifecycle through:
+//   - update-available  → 98-styled confirm「ダウンロードしますか？」
+//   - download-progress → busy modal with percent
+//   - update-downloaded → 98-styled confirm「再起動して適用しますか？」
+//   - error             → silent during the auto-check, surfaced for manual
+//
+// `updaterMode` differentiates the automatic startup check (silent on
+// the "no update available" case) from a user-initiated check via
+// ヘルプ＞更新を確認 (which should say "最新版です").
+let updaterMode = "auto";
+let updaterDownloadInFlight = false;
+
+function fmtMB(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+kpdf3.onUpdaterChecking?.(() => {
+  // Only surface "checking..." during a manual check — the auto-check
+  // happens silently in the background.
+  if (updaterMode === "manual") {
+    showBusy("更新の確認中", "GitHub から最新版の情報を取得しています...", 0);
+  }
+});
+
+kpdf3.onUpdaterNotAvailable?.(() => {
+  if (updaterMode === "manual") {
+    hideBusy();
+    void customConfirm({
+      title: "更新の確認",
+      message: "お使いのバージョンは最新です。",
+      okLabel: "OK",
+      cancelLabel: "閉じる",
+    });
+  }
+  updaterMode = "auto";
+});
+
+kpdf3.onUpdaterUpdateAvailable?.(async (info) => {
+  // Hide the manual "確認中..." modal before showing the confirm.
+  hideBusy();
+  const ver = info?.version ? `v${info.version}` : "新しいバージョン";
+  const ok = await customConfirm({
+    title: "更新が利用可能",
+    message: `${ver} が利用可能です。\n今すぐダウンロードしますか？\n\n（ダウンロード後に再起動の確認があります）`,
+    okLabel: "ダウンロード",
+    cancelLabel: "後で",
+  });
+  if (!ok) {
+    updaterMode = "auto";
+    return;
+  }
+  updaterDownloadInFlight = true;
+  showBusy("更新をダウンロード中", "通信を開始しています...", 0);
+  const res = await kpdf3.updaterDownload();
+  if (res && res.ok === false) {
+    updaterDownloadInFlight = false;
+    hideBusy();
+    void customConfirm({
+      title: "ダウンロード失敗",
+      message: `更新のダウンロードに失敗しました。\n${res.error || ""}`,
+      okLabel: "OK",
+      cancelLabel: "閉じる",
+    });
+  }
+});
+
+kpdf3.onUpdaterDownloadProgress?.((p) => {
+  if (!updaterDownloadInFlight) return;
+  const pct = Math.max(0, Math.min(100, Math.round(p?.percent ?? 0)));
+  const transferred = fmtMB(p?.transferred);
+  const total = fmtMB(p?.total);
+  const sizes = transferred && total ? ` (${transferred} / ${total})` : "";
+  updateBusy(`ダウンロード中: ${pct}%${sizes}`, pct);
+});
+
+kpdf3.onUpdaterUpdateDownloaded?.(async (info) => {
+  updaterDownloadInFlight = false;
+  hideBusy();
+  const ver = info?.version ? `v${info.version}` : "更新";
+  const ok = await customConfirm({
+    title: "更新の準備完了",
+    message: `${ver} のダウンロードが完了しました。\n今すぐ再起動して適用しますか？\n\n（未保存の変更がある場合は事前に保存してください）`,
+    okLabel: "再起動して適用",
+    cancelLabel: "次回起動時に適用",
+  });
+  if (ok) {
+    await kpdf3.updaterInstall();
+  }
+  updaterMode = "auto";
+});
+
+kpdf3.onUpdaterError?.((err) => {
+  // Auto-check failures stay silent — testers on closed networks would
+  // otherwise see an error on every launch. Manual checks surface the
+  // problem so the user knows their explicit request failed.
+  if (updaterMode === "manual") {
+    updaterDownloadInFlight = false;
+    hideBusy();
+    void customConfirm({
+      title: "更新の確認に失敗",
+      message: `更新サーバーへの接続に失敗しました。\n${err?.message || ""}`,
+      okLabel: "OK",
+      cancelLabel: "閉じる",
+    });
+    updaterMode = "auto";
+  } else {
+    console.warn("[updater] auto-check error (silent):", err?.message || err);
+  }
+});
+
+async function actionCheckForUpdates() {
+  updaterMode = "manual";
+  const res = await kpdf3.updaterCheck();
+  if (res?.skipped) {
+    hideBusy();
+    void customConfirm({
+      title: "更新の確認",
+      message: res.reason === "dev mode"
+        ? "開発モードでは自動更新は無効です。"
+        : "自動更新は --no-update で無効化されています。",
+      okLabel: "OK",
+      cancelLabel: "閉じる",
+    });
+    updaterMode = "auto";
+  }
+  // Otherwise the response is handled via the updater events.
+}
+
 function actionExit() {
   window.close();
 }
@@ -6223,6 +6355,7 @@ const menuBar = new MenuBar({
     print: actionPrint,
     exit: actionExit,
     about: actionAbout,
+    "check-update": actionCheckForUpdates,
     undo: actionUndo,
     redo: actionRedo,
     "zoom-in": actionZoomIn,
@@ -6595,6 +6728,7 @@ const MENU_HINTS = {
   "stamp-manager": "印影テンプレート（toolbar select）— フル UI は M6 後半",
   "font-settings": "スタンプの全角・半角フォント既定を設定",
   about: "K-PDF3 のバージョン情報",
+  "check-update": "新しいバージョンの有無を確認します",
 };
 const DEFAULT_STATUS = "PDF を「開く」で読み込みます";
 let statusHintActive = false;
