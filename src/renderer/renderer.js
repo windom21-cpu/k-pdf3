@@ -4874,22 +4874,28 @@ async function rotatePageBy(pageNo, delta) {
 /**
  * Resolve the rotation target(s) for toolbar / menu rotate buttons.
  *
- * Multi-select aware (β9 fix): a sidebar or split-view thumb selection
- * — when present — always takes precedence over `viewer.currentPage`.
- * Earlier behaviour rotated whatever page happened to be visible in the
- * main viewer, ignoring the user's split-view selection, which surfaced
- * as "選択していない違うページが回転する" on β8.
+ * Selection precedence:
+ *   1. split-view selection (any size) — always explicit batch intent
+ *   2. sidebar selection of **2 or more** pages — user actively built a
+ *      multi-select via Ctrl/Shift+click
+ *   3. main viewer's currentPage — the page the user is looking at
  *
- * Selection order of preference: split-view > sidebar > main viewer.
- * Returns the visual ORDER (matches the sidebar / split-view layout) so
- * rotations land in a predictable sequence.
+ * A *single-page* sidebar selection is intentionally ignored: clicking
+ * a sidebar thumb both selects AND scrolls the viewer there, so the
+ * selection is often just a leftover from navigation. After the user
+ * scrolls to a different page, they expect "rotate" to act on what
+ * they're SEEING, not on the long-stale clicked thumb (β8/β9 testers
+ * reported "サイドバーで選択 → 回転で関係ないページが回転").
+ *
+ * Multi-page sidebar selections are clearly deliberate, so we honor
+ * those without ambiguity.
  */
 function resolveRotationTargets() {
   if (splitThumbSelection.pageNos.size > 0) {
     const ordered = getOrderedThumbPageNos(splitFlow, ".split-thumb[data-page-no]");
     return ordered.filter((n) => splitThumbSelection.pageNos.has(n));
   }
-  if (sidebarThumbSelection.pageNos.size > 0) {
+  if (sidebarThumbSelection.pageNos.size >= 2) {
     const ordered = getOrderedThumbPageNos(thumbList, ".thumb-item");
     return ordered.filter((n) => sidebarThumbSelection.pageNos.has(n));
   }
