@@ -41,6 +41,7 @@ import {
   closeStampStore,
 } from "./global-stamp-store.js";
 import { setupAutoUpdater } from "./updater.js";
+import { openPrinterPropertiesNative } from "./printer-properties-win.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -583,17 +584,16 @@ ipcMain.handle("kpdf3:toggle-devtools", async () => {
  *   - macOS   : System Preferences > Printers (no per-printer URL exists)
  * Non-blocking: the spawned process is detached so the app keeps running.
  */
-ipcMain.handle("kpdf3:printer-properties", async (_, deviceName) => {
+ipcMain.handle("kpdf3:printer-properties", async (event, deviceName) => {
   if (!deviceName) return { ok: false, error: "プリンタ名が指定されていません" };
   try {
     if (process.platform === "win32") {
-      const child = spawn(
-        "rundll32.exe",
-        ["printui.dll,PrintUIEntry", "/e", "/n", deviceName],
-        { detached: true, stdio: "ignore" },
-      );
-      child.unref();
-      return { ok: true };
+      // Try the DPI-aware DocumentProperties path so the driver UI
+      // renders crisply on 4K monitors. The helper falls back to the
+      // legacy rundll32 path internally if koffi / the API call fails.
+      const senderWin = BrowserWindow.fromWebContents(event.sender);
+      const hwndBuf = senderWin?.getNativeWindowHandle?.() ?? null;
+      return await openPrinterPropertiesNative(deviceName, hwndBuf);
     }
     if (process.platform === "linux") {
       // Try system-config-printer; if missing, fall back to CUPS web UI.
