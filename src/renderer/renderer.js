@@ -12,6 +12,7 @@ import {
   AddOverlayCommand,
   UpdateOverlayCommand,
   RemoveOverlayCommand,
+  CompositeCommand,
 } from "../domain/commands.js";
 import {
   composePagesForExport,
@@ -1177,17 +1178,48 @@ function placeStamp(pageNo, x, y) {
   // and entering edit on every placement breaks the rhythm.
 }
 
-function handleOverlayClick(id) {
+function handleOverlayClick(id, mods = {}) {
   if (!isOpen) return;
-  setSelectedOverlay(id);
+  // Modifier-aware multi-select (β5 §17.13):
+  //   Ctrl/Cmd+click → toggle membership
+  //   Shift+click    → reading-order range from anchor to here
+  //   plain click    → replace (single)
+  // Inline-edit is suppressed when entering / staying in multi-select
+  // mode — otherwise Ctrl+click would immediately drop into edit mode
+  // on the new overlay, defeating the purpose.
+  let mode = "replace";
+  if (mods.ctrl || mods.meta) mode = "toggle";
+  else if (mods.shift) mode = "range";
+  const wasMultiSelected = selectedOverlayIds.size > 1;
+  selectOverlay(id, mode);
+  if (selectedOverlayIds.size > 1 || wasMultiSelected) {
+    // Don't enter inline edit when the user is building or shrinking a
+    // multi-selection. Selection alone is the visible outcome.
+    return;
+  }
   // For text/stamp/callout this enters inline edit; for redaction /
   // marker / image overlays it short-circuits inside enterTextEdit so
   // selection alone is the visible result.
   viewer.enterTextEdit(id);
 }
 
-// ---- Overlay selection — single-overlay model + Delete key ----------
+// ---- Overlay selection — multi-overlay model + Delete / alignment ----
+//
+// β5 §17.13/#13 expansion. `selectedOverlayIds` is the full set;
+// `selectedOverlayId` is the "primary" — the most recently clicked
+// member of the set. Legacy single-selection call sites read/write
+// selectedOverlayId; multi-selection-aware sites (Delete, alignment,
+// new copy/paste flow) iterate selectedOverlayIds.
+//
+// `lastClickedOverlayId` (separate from primary) is the anchor for
+// Shift+click range select. It survives deselection so the user can
+// Click → click elsewhere → Shift+click and still get a range.
+
+/** @type {Set<string>} */
+const selectedOverlayIds = new Set();
 let selectedOverlayId = null;
+/** @type {string | null} anchor for Shift+click range */
+let lastClickedOverlayId = null;
 
 function _ovCssEscape(s) {
   return globalThis.CSS?.escape
@@ -1195,38 +1227,152 @@ function _ovCssEscape(s) {
     : String(s).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
-function setSelectedOverlay(id) {
-  if (selectedOverlayId === id) return;
-  if (selectedOverlayId) {
-    const prev = viewer.container?.querySelector(
-      `.overlay[data-overlay-id="${_ovCssEscape(selectedOverlayId)}"]`,
-    );
-    prev?.classList.remove("is-selected");
+/** Synchronise the `selectedOverlayId` primary alias with the current
+ *  set. Picks the last-clicked id when it's still in the set, otherwise
+ *  any single remaining member, otherwise null. */
+function _syncPrimaryFromSet() {
+  if (selectedOverlayIds.size === 0) {
+    selectedOverlayId = null;
+    return;
   }
-  selectedOverlayId = id;
+  if (lastClickedOverlayId && selectedOverlayIds.has(lastClickedOverlayId)) {
+    selectedOverlayId = lastClickedOverlayId;
+    return;
+  }
+  // First by iteration order — selection-stack order is not exposed.
+  for (const id of selectedOverlayIds) {
+    selectedOverlayId = id;
+    return;
+  }
+}
+
+/**
+ * Update the selection set.
+ *
+ * @param {string|null} id
+ * @param {"replace"|"toggle"|"range"|"add"} [mode]
+ *   - "replace" (default): clear, then add id (or clear all if id is null)
+ *   - "toggle": flip membership of id (Ctrl/Cmd+click)
+ *   - "range": select all overlays between the anchor and id in reading
+ *     order (Shift+click). Falls back to "replace" when there's no anchor.
+ *   - "add": ensure id is in the set without removing anything
+ */
+function selectOverlay(id, mode = "replace") {
+  if (id == null) {
+    if (mode === "replace") {
+      selectedOverlayIds.clear();
+      lastClickedOverlayId = null;
+    }
+    _syncPrimaryFromSet();
+    reapplySelectionDom();
+    return;
+  }
+  if (mode === "replace") {
+    selectedOverlayIds.clear();
+    selectedOverlayIds.add(id);
+    lastClickedOverlayId = id;
+  } else if (mode === "toggle") {
+    if (selectedOverlayIds.has(id)) {
+      selectedOverlayIds.delete(id);
+      if (lastClickedOverlayId === id) lastClickedOverlayId = null;
+    } else {
+      selectedOverlayIds.add(id);
+      lastClickedOverlayId = id;
+    }
+  } else if (mode === "add") {
+    selectedOverlayIds.add(id);
+    lastClickedOverlayId = id;
+  } else if (mode === "range") {
+    const anchor = lastClickedOverlayId;
+    if (!anchor || anchor === id || !projectStore.get(anchor)) {
+      // No usable anchor — fall back to replace.
+      selectedOverlayIds.clear();
+      selectedOverlayIds.add(id);
+      lastClickedOverlayId = id;
+    } else {
+      const ids = _overlayIdsInReadingOrderBetween(anchor, id);
+      // Shift+click conventionally REPLACES rather than adding to the
+      // current selection so the user gets the expected "range" result.
+      selectedOverlayIds.clear();
+      for (const x of ids) selectedOverlayIds.add(x);
+      lastClickedOverlayId = id;
+    }
+  }
+  _syncPrimaryFromSet();
   reapplySelectionDom();
 }
 
-/** Re-paint the .is-selected class onto the currently-tracked overlay
- *  element, ignoring any class that may have been left over on stale
- *  nodes after a re-render. Called after store-update events because
- *  the viewer rebuilds the overlay layer DOM. */
+/** Drop the selection entirely. Convenience wrapper. */
+function clearSelection() {
+  selectOverlay(null, "replace");
+}
+
+/** Compute the set of overlay ids between (inclusive) anchor and target
+ *  in document reading order — page order first, then top-to-bottom +
+ *  left-to-right within a page. */
+function _overlayIdsInReadingOrderBetween(anchorId, targetId) {
+  const overlays = projectStore.list();
+  const ordered = overlays.slice().sort((a, b) => {
+    // Page order via PageRegistry positions (sparse / inserted pages
+    // make raw pageNo unreliable).
+    const aPos = viewer.registry?.posOfPageNo?.(a.pageNo) ?? a.pageNo;
+    const bPos = viewer.registry?.posOfPageNo?.(b.pageNo) ?? b.pageNo;
+    if (aPos !== bPos) return aPos - bPos;
+    // Same page → row-major: y first (with row tolerance), then x.
+    const ROW_TOL = 6; // PDF points — anything within this is "same row"
+    if (Math.abs(a.y - b.y) > ROW_TOL) return a.y - b.y;
+    return a.x - b.x;
+  });
+  const ai = ordered.findIndex((o) => o.id === anchorId);
+  const ti = ordered.findIndex((o) => o.id === targetId);
+  if (ai < 0 || ti < 0) return [targetId];
+  const [lo, hi] = ai < ti ? [ai, ti] : [ti, ai];
+  return ordered.slice(lo, hi + 1).map((o) => o.id);
+}
+
+// Back-compat shim: old call sites pass a single id (or null) and
+// expect "replace" semantics. Forwards to selectOverlay.
+function setSelectedOverlay(id) {
+  selectOverlay(id, "replace");
+}
+
+/** Re-paint the .is-selected class onto every currently-selected
+ *  overlay element. Called after store-update events because the
+ *  viewer rebuilds the overlay layer DOM. The × close button is
+ *  injected only when exactly one overlay is selected — with multiple
+ *  selected, Delete via keyboard is the unambiguous path. */
 function reapplySelectionDom() {
   if (!viewer.container) return;
   for (const el of viewer.container.querySelectorAll(".overlay.is-selected")) {
     el.classList.remove("is-selected");
     el.querySelector(":scope > .overlay-close-btn")?.remove();
   }
-  if (!selectedOverlayId) return;
+  if (selectedOverlayIds.size === 0) return;
+  for (const id of selectedOverlayIds) {
+    const el = viewer.container.querySelector(
+      `.overlay[data-overlay-id="${_ovCssEscape(id)}"]`,
+    );
+    if (!el) continue;
+    el.classList.add("is-selected");
+  }
+  // Only show the × close button when exactly one is selected, so the
+  // button's action is unambiguous. Multi-select uses keyboard Delete.
+  if (selectedOverlayIds.size !== 1) {
+    syncAlignToolbar();
+    return;
+  }
+  const onlyId = selectedOverlayId;
+  if (!onlyId) {
+    syncAlignToolbar();
+    return;
+  }
   const el = viewer.container.querySelector(
-    `.overlay[data-overlay-id="${_ovCssEscape(selectedOverlayId)}"]`,
+    `.overlay[data-overlay-id="${_ovCssEscape(onlyId)}"]`,
   );
-  if (!el) return;
-  el.classList.add("is-selected");
-  // Always inject the × button when selected — CSS hides it while
-  // .editing is on the parent (so Delete in inline edit acts on text,
-  // not on the overlay). When editing ends, the editing class is
-  // removed and the × becomes visible again automatically.
+  if (!el) {
+    syncAlignToolbar();
+    return;
+  }
   if (!el.querySelector(":scope > .overlay-close-btn")) {
     const btn = document.createElement("span");
     btn.className = "overlay-close-btn";
@@ -1250,6 +1396,88 @@ function reapplySelectionDom() {
     });
     el.appendChild(btn);
   }
+  syncAlignToolbar();
+}
+
+/** Toolbar align-buttons (左/上/右/下揃え) enable/disable + counter
+ *  text. Called from reapplySelectionDom. */
+function syncAlignToolbar() {
+  const bar = document.getElementById("align-bar");
+  if (!bar) return;
+  const n = selectedOverlayIds.size;
+  bar.hidden = n < 2;
+  const count = document.getElementById("align-count");
+  if (count) count.textContent = String(n);
+}
+
+/**
+ * Align all currently-selected overlays along one edge.
+ *
+ * Per-page grouping: overlays on different pages are aligned within
+ * their own page (each page's selection gets its own min/max), since
+ * aligning across pages would yield a meaningless coordinate.
+ *
+ * Emits one CompositeCommand so the whole alignment is a single undo
+ * unit. Overlays already at the target coordinate are skipped (no-op
+ * Update would still record an entry; cheaper to filter here).
+ *
+ * @param {"left"|"top"|"right"|"bottom"} edge
+ */
+function alignSelectedOverlays(edge) {
+  if (selectedOverlayIds.size < 2) return;
+  /** @type {Map<number, import("../domain/project-store.js").Overlay[]>} */
+  const byPage = new Map();
+  for (const id of selectedOverlayIds) {
+    const ov = projectStore.get(id);
+    if (!ov) continue;
+    const arr = byPage.get(ov.pageNo) ?? [];
+    arr.push(ov);
+    byPage.set(ov.pageNo, arr);
+  }
+  const subs = [];
+  for (const overlays of byPage.values()) {
+    if (overlays.length < 2) continue; // single-on-page → nothing to align against
+    let target;
+    let dim;
+    if (edge === "left") {
+      target = Math.min(...overlays.map((o) => o.x));
+      dim = "x";
+    } else if (edge === "top") {
+      target = Math.min(...overlays.map((o) => o.y));
+      dim = "y";
+    } else if (edge === "right") {
+      const maxRight = Math.max(...overlays.map((o) => o.x + o.w));
+      for (const ov of overlays) {
+        const newX = maxRight - ov.w;
+        if (Math.abs(newX - ov.x) < 1e-6) continue;
+        subs.push(new UpdateOverlayCommand(projectStore, ov.id, { x: newX }));
+      }
+      continue;
+    } else if (edge === "bottom") {
+      const maxBottom = Math.max(...overlays.map((o) => o.y + o.h));
+      for (const ov of overlays) {
+        const newY = maxBottom - ov.h;
+        if (Math.abs(newY - ov.y) < 1e-6) continue;
+        subs.push(new UpdateOverlayCommand(projectStore, ov.id, { y: newY }));
+      }
+      continue;
+    } else {
+      return;
+    }
+    for (const ov of overlays) {
+      const cur = ov[dim];
+      if (Math.abs(target - cur) < 1e-6) continue;
+      subs.push(new UpdateOverlayCommand(projectStore, ov.id, { [dim]: target }));
+    }
+  }
+  if (subs.length === 0) {
+    wsStatus.textContent = "整列: 既に揃っています";
+    return;
+  }
+  history.execute(new CompositeCommand(subs, `Align ${edge} (${subs.length} overlays)`));
+  wsStatus.textContent = `${subs.length} 個の overlay を${
+    edge === "left" ? "左" : edge === "top" ? "上" : edge === "right" ? "右" : "下"
+  }揃えしました`;
 }
 
 function handleTextEditCommit(id, newText) {
@@ -2888,12 +3116,21 @@ function attachStoreSubscribers() {
     // sidebar / split-save thumbs reflect the latest content (stamps,
     // marks, text).
     if (!event) return;
-    // Drop the selection if its target disappeared.
-    if (event.kind === "remove" && event.overlay?.id === selectedOverlayId) {
-      selectedOverlayId = null; // already gone from DOM, no class to clear
+    // Drop the selection if its target disappeared. Multi-select aware
+    // (β5 §17.13): only the removed id leaves the set, others stay.
+    if (event.kind === "remove" && event.overlay?.id) {
+      const goneId = event.overlay.id;
+      if (selectedOverlayIds.has(goneId)) {
+        selectedOverlayIds.delete(goneId);
+        if (lastClickedOverlayId === goneId) lastClickedOverlayId = null;
+        _syncPrimaryFromSet();
+        setTimeout(() => reapplySelectionDom(), 0);
+      }
     } else if (event.kind === "reset") {
+      selectedOverlayIds.clear();
+      lastClickedOverlayId = null;
       selectedOverlayId = null;
-    } else if (event.kind === "update" && event.overlay?.id === selectedOverlayId) {
+    } else if (event.kind === "update" && event.overlay?.id && selectedOverlayIds.has(event.overlay.id)) {
       // _renderPageOverlays rebuilds the DOM on update — re-apply the
       // selection class to the freshly-built element on next tick.
       setTimeout(() => reapplySelectionDom(), 0);
@@ -6468,11 +6705,18 @@ window.addEventListener("keydown", (e) => {
   // Delete key on a selected overlay (text / stamp / redaction /
   // marker / callout) → remove it. Skipped while typing in any
   // input — Delete there should fall through to native behaviour.
-  if ((e.key === "Delete" || e.key === "Backspace") && selectedOverlayId && !inText) {
+  // β5 §17.13: multi-select aware — all currently-selected overlays
+  // are removed in one undo unit via CompositeCommand.
+  if ((e.key === "Delete" || e.key === "Backspace") && selectedOverlayIds.size > 0 && !inText) {
     e.preventDefault();
-    const id = selectedOverlayId;
-    setSelectedOverlay(null);
-    history.execute(new RemoveOverlayCommand(projectStore, id));
+    const ids = [...selectedOverlayIds];
+    clearSelection();
+    if (ids.length === 1) {
+      history.execute(new RemoveOverlayCommand(projectStore, ids[0]));
+    } else {
+      const subs = ids.map((id) => new RemoveOverlayCommand(projectStore, id));
+      history.execute(new CompositeCommand(subs, `Delete ${ids.length} overlays`));
+    }
     return;
   }
 
@@ -7043,6 +7287,12 @@ const STAMP_POPUP_POS_KEY = "kpdf3.stampPopupPos";
 
 btnRotateLeft.addEventListener("click", actionRotateLeft);
 btnRotateRight.addEventListener("click", actionRotateRight);
+
+// Align toolbar (β5 §17.13/§17.14) — visible only with 2+ selected.
+document.getElementById("align-left")  ?.addEventListener("click", () => alignSelectedOverlays("left"));
+document.getElementById("align-top")   ?.addEventListener("click", () => alignSelectedOverlays("top"));
+document.getElementById("align-right") ?.addEventListener("click", () => alignSelectedOverlays("right"));
+document.getElementById("align-bottom")?.addEventListener("click", () => alignSelectedOverlays("bottom"));
 
 // Restore last-used redaction color (§17.13). The select also auto-
 // switches the redaction mode on so a single click on the color drops

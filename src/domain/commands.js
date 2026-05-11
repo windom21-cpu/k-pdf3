@@ -110,3 +110,36 @@ export class RemoveOverlayCommand {
     return `Remove overlay`;
   }
 }
+
+/**
+ * Run several sub-commands as one undo/redo unit.
+ *
+ * Use cases: deleting multiple selected overlays in one Delete press,
+ * aligning multiple selected overlays in one click. Without grouping,
+ * undo would have to be hit N times to reverse one user-intended action.
+ *
+ * Sub-commands are executed in order on do() and undone in reverse on
+ * undo() so any resource ordering / dependency is preserved.
+ */
+export class CompositeCommand {
+  /**
+   * @param {Array<{ do: () => void, undo: () => void, describe?: () => string }>} commands
+   * @param {string} [label]
+   */
+  constructor(commands, label = "Batch edit") {
+    this.commands = commands.slice();
+    this.label = label;
+  }
+
+  do() {
+    for (const c of this.commands) c.do();
+  }
+
+  undo() {
+    for (let i = this.commands.length - 1; i >= 0; i--) this.commands[i].undo();
+  }
+
+  describe() {
+    return this.label;
+  }
+}

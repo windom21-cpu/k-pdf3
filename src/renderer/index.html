@@ -677,6 +677,17 @@
     </div>
   </div>
 
+  <!-- Alignment bar (β5 §17.13/§17.14) — visible only when 2+ overlays
+       are selected. Each button aligns the canonical bbox edge of every
+       selected overlay onto the extreme edge of the selection. -->
+  <div id="align-bar" class="mode-options-bar align-bar" hidden>
+    <span class="mode-options-label">複数選択中 (<span id="align-count">0</span>) — 整列:</span>
+    <button id="align-left"   class="align-btn" title="選択した overlay を左揃え">左揃え</button>
+    <button id="align-top"    class="align-btn" title="選択した overlay を上揃え">上揃え</button>
+    <button id="align-right"  class="align-btn" title="選択した overlay を右揃え">右揃え</button>
+    <button id="align-bottom" class="align-btn" title="選択した overlay を下揃え">下揃え</button>
+  </div>
+
   <div id="main-area" class="main-area">
     <button
       id="sidebar-toggle"

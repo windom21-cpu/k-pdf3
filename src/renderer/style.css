@@ -368,6 +368,18 @@ body {
   color: #333;
   margin-right: 2px;
 }
+/* Align bar (β5 §17.13/§17.14) — same chrome as mode-options-bar but a
+   slightly distinct background so the user can tell at a glance that
+   they're looking at a multi-selection toolbar, not the placement
+   options for the current tool. */
+.align-bar {
+  background: #c9d6e8;
+}
+.align-btn {
+  height: 22px;
+  min-width: 56px;
+  padding: 0 8px;
+}
 .toolbar button {
   min-width: 0;
 }
