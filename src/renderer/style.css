@@ -807,6 +807,32 @@ button.toggled {
   display: block;
   font-weight: normal;
 }
+/* Drag handle pinned to the arrow tip so the user can revise the
+ * pointer position after the callout has been placed + text entered.
+ * Always visible (not hover-gated like the corner resize handles):
+ * the arrow tip sits OUTSIDE the box, so a hover-driven reveal
+ * disappears the moment the cursor crosses empty space on the way
+ * to the handle, leaving the user unable to grab it. The handle is
+ * small enough (9×9 circle) that always-on visual cost is minimal,
+ * and the circular shape keeps it distinguishable from the square
+ * corner resize handles. */
+.callout-arrow-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  margin-top: -4.5px;
+  background: #ffffff;
+  border: 1px solid #000080;
+  border-radius: 50%;
+  box-sizing: border-box;
+  pointer-events: auto;
+  cursor: move;
+  z-index: 6;
+}
+.overlay-callout.dragging-arrow {
+  outline: 1px dashed #000080;
+}
 /* Drag preview while defining a new callout. */
 .callout-preview {
   position: absolute;
@@ -981,9 +1007,15 @@ button.toggled {
  * in the text doesn't get confused with "delete this overlay". For
  * STAMP overlays (date / text-frame), the inline-edit path is mostly
  * a quirk of the click handler — users still expect a visible close
- * button to remove the stamp. Keep × visible for stamps. */
-.overlay-text.editing > .overlay-close-btn,
-.overlay-callout.editing > .overlay-close-btn {
+ * button to remove the stamp. Keep × visible for stamps.
+ *
+ * The descendant selector (no `>` combinator) is intentional: a
+ * contentEditable can normalize its content into wrapper <div>s as
+ * the user types, which would push the close-btn out of "direct
+ * child" range and silently re-show it. Matching at any depth keeps
+ * the hide stable regardless of contentEditable's restructuring. */
+.overlay-text.editing .overlay-close-btn,
+.overlay-callout.editing .overlay-close-btn {
   display: none;
 }
 

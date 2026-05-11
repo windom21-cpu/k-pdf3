@@ -638,7 +638,7 @@ async function drawOverlay(ctx, ov, zoom) {
     // Highlighter marker — semi-transparent fill so the underlying
     // text remains readable through the marker color.
     const color = props.color ?? "#ffeb3b";
-    const opacity = typeof props.opacity === "number" ? props.opacity : 0.5;
+    const opacity = typeof props.opacity === "number" ? props.opacity : 0.3;
     ctx.save();
     ctx.globalAlpha = opacity;
     ctx.fillStyle = color;

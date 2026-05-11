@@ -184,6 +184,7 @@ const viewer = new Viewer(viewerContainer, {
   onTextEditCommit: handleTextEditCommit,
   onOverlayDragEnd: handleOverlayDragEnd,
   onOverlayResizeEnd: handleOverlayResizeEnd,
+  onCalloutArrowEnd: handleCalloutArrowEnd,
   onOverlayContextMenu: showOverlayContextMenu,
   onPageChange: updatePageIndicator,
 });
@@ -680,7 +681,11 @@ function placeMarker(pageNo, x, y, w, h) {
     properties: {
       kind: "marker",
       color: currentMarkerColor(),
-      opacity: 0.5,
+      // 0.3 (was 0.5): user feedback that 0.5 was too opaque and the
+      // underlying text was hard to read through the highlight. 0.3
+      // keeps the marker visible while letting the document text
+      // remain legible.
+      opacity: 0.3,
     },
   });
   history.execute(cmd);
@@ -705,7 +710,7 @@ function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
   const preview = document.createElement("div");
   preview.className = "marker-preview";
   preview.style.background = previewColor;
-  preview.style.opacity = "0.55";
+  preview.style.opacity = "0.35";
   preview.style.left = `${startX * z}px`;
   preview.style.top = `${startY * z}px`;
   preview.style.width = "0px";
@@ -1610,6 +1615,18 @@ function handleOverlayDragEnd(id, newX, newY) {
   );
 }
 
+function handleCalloutArrowEnd(id, arrowDx, arrowDy) {
+  if (!isOpen) return;
+  const ov = projectStore.get(id);
+  if (!ov || ov.type !== "rect" || ov.properties?.kind !== "callout") return;
+  const oldDx = ov.properties.arrowDx ?? -30;
+  const oldDy = ov.properties.arrowDy ?? ov.h + 25;
+  if (Math.abs(oldDx - arrowDx) < 1e-3 && Math.abs(oldDy - arrowDy) < 1e-3) return;
+  history.execute(new UpdateOverlayCommand(projectStore, id, {
+    properties: { ...ov.properties, arrowDx, arrowDy },
+  }));
+}
+
 function handleOverlayResizeEnd(id, bbox) {
   if (!isOpen) return;
   const ov = projectStore.get(id);
@@ -1622,9 +1639,12 @@ function handleOverlayResizeEnd(id, bbox) {
   ) {
     return;
   }
-  // Callouts: respect the user's new width but recompute height from
-  // the wrapped line count so all text stays inside the box even when
-  // the user narrows it (text wraps → more lines → taller).
+  // Callouts: respect the user's new width but snap height to the
+  // wrapped text. Previously we kept the user's dragged height when
+  // it exceeded the text (Math.max), which left visible empty space
+  // below the wrapped text inside the callout border. Now the border
+  // always hugs the bottom of the last line — matches "no whitespace"
+  // behaviour of regular text overlays.
   if (ov.type === "rect" && ov.properties?.kind === "callout") {
     const wrappedH = measureCalloutWrappedHeight(
       ov.properties.text ?? "",
@@ -1632,7 +1652,7 @@ function handleOverlayResizeEnd(id, bbox) {
       getTextFontStack(ov.properties.fontId),
       bbox.w,
     );
-    bbox = { ...bbox, h: Math.max(bbox.h, wrappedH) };
+    bbox = { ...bbox, h: wrappedH };
   }
   history.execute(new UpdateOverlayCommand(projectStore, id, bbox));
 }
@@ -2550,13 +2570,28 @@ $("stamp-reg-date-ok")?.addEventListener("click", async () => {
   };
   const label = stampRegDateLabel.value.trim() || formatLabels[formatKey] || "日付";
   const fontSize = Math.max(6, Math.min(72, Number(stampRegDateFontSize?.value) || 14));
-  // Box width scales with fontSize so a 24pt date doesn't overflow a
-  // 14pt-sized box. The base widths below were tuned for fontSize 14.
-  const baseWidth = formatKey === "date-kanji-dash"
-    ? 140
-    : formatKey === "date-numeric-spaced"
-      ? 90
-      : 105;
+  // distribute-3 needs a width that matches the dialog's preview —
+  // the previous fixed-90pt default put the leftmost/rightmost token
+  // way out at the box edges, well wider than the centred preview.
+  // Measure the natural rendered width at the actual font / size so
+  // the placed stamp matches the preview by default. Users can still
+  // drag-resize the box wider afterwards — distribute-3 will spread
+  // the tokens evenly across the new width to fit preprinted
+  //「  年  月  日」forms.
+  let finalWidth;
+  if (formatKey === "date-numeric-spaced") {
+    const probe = document.createElement("canvas");
+    const ctx = probe.getContext("2d");
+    const { half } = getStampFontDefaults();
+    ctx.font = `bold ${fontSize}px ${getStampFontStack(half)}`;
+    const m = ctx.measureText(renderDateText(formatKey));
+    finalWidth = Math.max(20, Math.ceil(m.width + 6));
+  } else {
+    // Box width scales with fontSize so a 24pt date doesn't overflow
+    // a 14pt-sized box. Base widths were tuned for fontSize 14.
+    const baseWidth = formatKey === "date-kanji-dash" ? 140 : 105;
+    finalWidth = Math.round(baseWidth * (fontSize / 14));
+  }
   await kpdf3.addStampPreset({
     id: _editingPresetId, // null on create, existing id on edit (upsert)
     kind: "date",
@@ -2565,11 +2600,7 @@ $("stamp-reg-date-ok")?.addEventListener("click", async () => {
     frame: stampRegDateFrame.checked ? "rect" : "none",
     fontSize,
     text: formatKey, // store the format spec, render the date at placement
-    // distribute-3 default = the natural "compact" width, matching
-    // what the preview shows. Users WIDEN the box by dragging the
-    // resize handle to fit the preprinted year/month/day positions
-    // on the underlying paper.
-    width: Math.round(baseWidth * (fontSize / 14)),
+    width: finalWidth,
     height: Math.round(40 * (fontSize / 14)),
   });
   _editingPresetId = null;
