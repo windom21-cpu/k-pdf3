@@ -103,6 +103,7 @@ const btnModeRedaction = $("btn-mode-redaction");
 const redactionColorSel = $("redaction-color");
 const textFontSel = $("text-font");
 const textSizeSel = $("text-size");
+const textColorSel = $("text-color");
 const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
 const btnModeCallout = $("btn-mode-callout");
@@ -121,16 +122,30 @@ const busyModal = $("busy-modal");
 const busyTitle = $("busy-title");
 const busyMessage = $("busy-message");
 const busyProgressBar = $("busy-progress-bar");
+const busyCancelBtn = $("busy-cancel");
+
+/** Active cancel handler — populated when showBusy is called with onCancel,
+ *  cleared on hideBusy or after the handler fires. */
+let _busyCancelHandler = null;
 
 /**
  * Show / update / hide a 98-styled modal busy indicator with a progress
  * bar. Used for long operations (export / print) where the user might
- * otherwise think the app froze.
+ * otherwise think the app froze. Optional `onCancel` callback wires a
+ * 「中止」 button — caller is responsible for actually aborting the work.
  */
-function showBusy(title, message, percent = 0) {
+function showBusy(title, message, percent = 0, opts = {}) {
   busyTitle.textContent = title;
   busyMessage.textContent = message;
   busyProgressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  if (typeof opts.onCancel === "function") {
+    _busyCancelHandler = opts.onCancel;
+    busyCancelBtn.hidden = false;
+    busyCancelBtn.disabled = false;
+  } else {
+    _busyCancelHandler = null;
+    busyCancelBtn.hidden = true;
+  }
   busyModal.hidden = false;
   document.body.classList.add("is-busy");
 }
@@ -142,8 +157,24 @@ function updateBusy(message, percent) {
 }
 function hideBusy() {
   busyModal.hidden = true;
+  busyCancelBtn.hidden = true;
+  _busyCancelHandler = null;
   document.body.classList.remove("is-busy");
 }
+busyCancelBtn.addEventListener("click", () => {
+  if (!_busyCancelHandler) return;
+  // Disable to prevent double-click; busy modal stays open until the
+  // handler finishes its own cleanup (which usually calls hideBusy).
+  busyCancelBtn.disabled = true;
+  busyMessage.textContent = "中止しています...";
+  try {
+    _busyCancelHandler();
+  } catch (err) {
+    console.error("[busy-cancel] handler threw:", err);
+  } finally {
+    _busyCancelHandler = null;
+  }
+});
 
 const viewer = new Viewer(viewerContainer, {
   projectStore,
@@ -240,6 +271,8 @@ async function applyTab(tabId) {
   workspaceBookmarksCache = tab.workspaceBookmarksCache;
   currentSidebarTab = tab.currentSidebarTab;
   viewer.setProjectStore(projectStore);
+  // Re-subscribe dirty/menu listeners onto the new tab's store + history.
+  attachStoreSubscribers();
   // Notify main of the switch so render-page / save-overlays / etc.
   // resolve against the right workspace handle. For empty tabs (no
   // PDF yet) we clear main's active workspace too so a stray IPC
@@ -284,6 +317,7 @@ async function newTabAndOpen(pdfPath = null) {
   workspaceBookmarksCache = [];
   currentSidebarTab = "thumbs";
   viewer.setProjectStore(projectStore);
+  attachStoreSubscribers();
   setOpen(false);
   renderTabBar();
   if (pdfPath) {
@@ -336,6 +370,7 @@ async function closeTab(tabId) {
       bookmarkSource = "outline";
       workspaceBookmarksCache = [];
       viewer.setProjectStore(projectStore);
+      attachStoreSubscribers();
       viewer.unload();
       setOpen(false);
     }
@@ -873,6 +908,9 @@ function currentTextFontSize() {
   const v = parseInt(textSizeSel?.value ?? "", 10);
   return Number.isFinite(v) && v > 0 ? v : TEXT_FONT_DEFAULT_SIZE;
 }
+function currentTextColor() {
+  return textColorSel?.value || "#000000";
+}
 
 function placeText(pageNo, x, y) {
   const fontSize = currentTextFontSize();
@@ -895,7 +933,7 @@ function placeText(pageNo, x, y) {
     properties: {
       text: "テキスト",
       fontSize,
-      color: "#000000",
+      color: currentTextColor(),
       fontId: currentTextFontId(),
       rotation: 0, // page-rotation tracked here so content stays upright on rotated paper
     },
@@ -1218,9 +1256,9 @@ function handleTextEditCommit(id, newText) {
   if (!isOpen) return;
   const ov = projectStore.get(id);
   if (!ov) return;
-  // Callouts auto-fit to the entered text — the user wanted the box to
-  // grow with the font size / character count instead of staying at the
-  // initial drag-defined dimensions.
+  // Auto-fit the box to the entered text so longer / multi-line content
+  // doesn't overflow the initial placement size. Callouts and text
+  // overlays both grow; redaction / image stamps keep their drag bounds.
   let sizePatch = {};
   if (ov.type === "rect" && ov.properties?.kind === "callout") {
     const m = measureCalloutSize(
@@ -1229,6 +1267,17 @@ function handleTextEditCommit(id, newText) {
       getTextFontStack(ov.properties.fontId),
     );
     sizePatch = { w: m.w, h: m.h };
+  } else if (ov.type === "text") {
+    const m = measureTextOverlaySize(
+      newText,
+      ov.properties.fontSize ?? 12,
+      getTextFontStack(ov.properties.fontId),
+      ov.w,
+    );
+    // Keep the existing width when it already accommodates the longest
+    // line; otherwise grow horizontally. Height always grows to fit all
+    // wrapped lines so nothing is clipped.
+    sizePatch = { w: m.w, h: m.h };
   }
   history.execute(
     new UpdateOverlayCommand(projectStore, id, {
@@ -1236,6 +1285,51 @@ function handleTextEditCommit(id, newText) {
       properties: { ...ov.properties, text: newText },
     }),
   );
+}
+
+/** Measure the natural size of a plain text overlay. Width: longest
+ *  unwrapped line OR the current box width (whichever is larger, capped
+ *  near page width). Height: number of wrapped lines × line height.
+ *
+ *  The implementation mirrors measureCalloutSize / wrapCanvasText so the
+ *  saved canonical w/h matches what the renderer and exporter draw.
+ */
+function measureTextOverlaySize(text, fontSize, fontFamily, currentW) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  ctx.font = `${fontSize}px ${fontFamily}`;
+  const lines = (text ?? "").split(/\r?\n/);
+  let maxLineWidth = 0;
+  for (const line of lines) {
+    const w = ctx.measureText(line).width;
+    if (w > maxLineWidth) maxLineWidth = w;
+  }
+  const minW = Math.max(60, fontSize * 6);
+  const targetW = Math.max(minW, Math.ceil(maxLineWidth) + 4);
+  // Don't shrink below current — user may have manually widened the
+  // box and we shouldn't undo that.
+  const w = Math.max(currentW ?? 0, targetW);
+  // Wrap at the chosen width to compute height (mirrors wrapCanvasText).
+  let lineCount = 0;
+  for (const para of lines) {
+    if (para.length === 0) { lineCount += 1; continue; }
+    let line = "";
+    let count = 0;
+    for (const ch of para) {
+      const candidate = line + ch;
+      if (line.length > 0 && ctx.measureText(candidate).width > w) {
+        count += 1;
+        line = ch;
+      } else {
+        line = candidate;
+      }
+    }
+    if (line.length > 0) count += 1;
+    lineCount += Math.max(count, 1);
+  }
+  const lineHeight = fontSize * 1.2;
+  const h = Math.max(fontSize, Math.ceil(lineCount * lineHeight));
+  return { w, h };
 }
 
 /** Measure the natural size of a callout's text in canonical points,
@@ -1371,7 +1465,43 @@ function dispatchOverlayCtx(target) {
   if (!action) return;
   if (action === "delete") {
     history.execute(new RemoveOverlayCommand(projectStore, id));
+  } else if (action === "copy") {
+    const ov = projectStore.get(id);
+    if (ov) {
+      _overlayClipboard = { ...ov, properties: { ...(ov.properties ?? {}) } };
+      wsStatus.textContent = `${ov.type} をコピーしました`;
+    }
+  } else if (action === "paste") {
+    pasteOverlayFromClipboard();
   }
+}
+
+/** Build and add a new overlay from `_overlayClipboard` onto the
+ *  currently-visible page, offset slightly from the original position.
+ *  Shared by Ctrl+V and the right-click「貼り付け」menu item. */
+function pasteOverlayFromClipboard() {
+  if (!_overlayClipboard) {
+    wsStatus.textContent = "貼り付けるものがありません";
+    return;
+  }
+  const src = _overlayClipboard;
+  const pageNo = viewer.currentPage || src.pageNo || 1;
+  const dx = 12;
+  const dy = 12;
+  const cmd = new AddOverlayCommand(projectStore, {
+    pageNo,
+    type: src.type,
+    x: (src.x ?? 0) + dx,
+    y: (src.y ?? 0) + dy,
+    w: src.w,
+    h: src.h,
+    zOrder: src.zOrder ?? 0,
+    properties: { ...(src.properties ?? {}) },
+    assetId: src.assetId ?? null,
+  });
+  history.execute(cmd);
+  if (cmd._snapshot) setSelectedOverlay(cmd._snapshot.id);
+  wsStatus.textContent = `${src.type} を貼り付けました`;
 }
 
 ctxOverlay.addEventListener("pointerdown", (e) => {
@@ -1397,6 +1527,20 @@ document.addEventListener("pointerdown", (ev) => {
   // Anywhere outside ctxOverlay or its children → close.
   if (ev.target instanceof Node && ctxOverlay.contains(ev.target)) return;
   hideOverlayContextMenu();
+});
+
+// Click on empty page / viewer background → drop overlay selection so the
+// dotted is-selected outline disappears. β3 testers asked for this after
+// noticing that the paste outline lingered until the user did Esc or
+// clicked another overlay. Only left clicks count, and we skip when the
+// pointer landed inside an overlay (so the click that selects an overlay
+// isn't followed by an immediate deselect via this listener).
+viewerContainer.addEventListener("pointerdown", (ev) => {
+  if (ev.button !== 0) return;
+  if (viewer._editingId) return;
+  if (!selectedOverlayId) return;
+  if (ev.target instanceof HTMLElement && ev.target.closest(".overlay")) return;
+  setSelectedOverlay(null);
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
@@ -1426,6 +1570,19 @@ function showThumbContextMenu(pageNo, x, y) {
   ctxThumb.dataset.targetPageNo = String(pageNo);
   ctxThumb.style.left = `${x}px`;
   ctxThumb.style.top = `${y}px`;
+  // Reflect multi-selection in the「保存」menu item so the user can tell
+  // (before clicking) whether the action will save just the clicked page
+  // or the whole sidebar multi-selection. Mirrors the dispatch logic in
+  // dispatchThumbCtx.
+  const saveItem = ctxThumb.querySelector('[data-ctx="save-page"]');
+  if (saveItem) {
+    const sel = sidebarThumbSelection.pageNos;
+    if (sel.size > 1 && sel.has(pageNo)) {
+      saveItem.textContent = `選択した ${sel.size} ページを PDF として保存…`;
+    } else {
+      saveItem.textContent = "このページを PDF として保存…";
+    }
+  }
   ctxThumb.hidden = false;
 }
 function hideThumbContextMenu() {
@@ -1442,42 +1599,88 @@ function dispatchThumbCtx(target) {
   if (action === "rotate-right") rotatePageBy(pageNo, +90);
   else if (action === "rotate-left") rotatePageBy(pageNo, -90);
   else if (action === "rotate-180") rotatePageBy(pageNo, 180);
-  else if (action === "save-page") actionSaveSinglePage(pageNo);
+  else if (action === "save-page") {
+    // β3 testers reported that multi-selecting in the sidebar and then
+    // right-clicking → 保存 saved only the right-clicked page, dropping
+    // the rest of their selection on the floor. If the clicked page is
+    // part of the active multi-selection, save the whole set as one PDF;
+    // otherwise fall back to the single-page path.
+    const sel = sidebarThumbSelection.pageNos;
+    if (sel.size > 1 && sel.has(pageNo)) {
+      actionSavePagesAsPdf([...sel]);
+    } else {
+      actionSavePagesAsPdf([pageNo]);
+    }
+  }
 }
 
-/** Extract a single page (with overlays + rotation) to a new PDF. */
-async function actionSaveSinglePage(pageNo) {
-  if (!isOpen || !pageNo) return;
-  const row = viewer._pages?.find((p) => p.pageNo === pageNo);
-  if (!row) return;
+/** Extract one or more pages (with overlays + rotation) to a new PDF.
+ *  Ordered by visible page position, not by the selection insertion
+ *  order, so the saved PDF reads in the same sequence as the sidebar.
+ */
+async function actionSavePagesAsPdf(pageNos) {
+  if (!isOpen || !Array.isArray(pageNos) || pageNos.length === 0) return;
+  const all = viewer._pages ?? [];
+  const orderIndex = new Map(all.map((p, i) => [p.pageNo, i]));
+  const set = new Set(pageNos);
+  const rows = all.filter((p) => set.has(p.pageNo));
+  if (rows.length === 0) return;
+  rows.sort((a, b) => (orderIndex.get(a.pageNo) ?? 0) - (orderIndex.get(b.pageNo) ?? 0));
   const defaults = await kpdf3.getExportDefaults();
   const baseName = (defaults.defaultName || "page").replace(/\.[^.]+$/, "");
-  const tag = pageNo > 0 ? `p${pageNo}` : `inserted${-pageNo}`;
+  let tag;
+  if (rows.length === 1) {
+    const n = rows[0].pageNo;
+    tag = n > 0 ? `p${n}` : `inserted${-n}`;
+  } else {
+    // Look for a contiguous range to spell out (p3-5) and fall back to
+    // a count-tagged name (3pages) when the user picked a non-contiguous
+    // set across the document.
+    const sourceNos = rows.map((r) => r.pageNo).filter((n) => n > 0);
+    const contiguous =
+      sourceNos.length === rows.length
+      && sourceNos.every((n, i, arr) => i === 0 || n === arr[i - 1] + 1);
+    tag = contiguous
+      ? `p${sourceNos[0]}-${sourceNos[sourceNos.length - 1]}`
+      : `${rows.length}pages`;
+  }
   const initialName = `${baseName}_${tag}.pdf`;
   const savePath = await showFileBrowser({
     mode: "save",
-    title: `ページ ${pageNo > 0 ? pageNo : "挿入"} を PDF として保存`,
+    title:
+      rows.length === 1
+        ? `ページ ${rows[0].pageNo > 0 ? rows[0].pageNo : "挿入"} を PDF として保存`
+        : `${rows.length} ページを PDF として保存`,
     initialName,
     defaultDir: defaults.sourceDir,
   });
   if (!savePath) return;
-  showBusy("保存", `ページを書き出し中...`, 50);
+  showBusy("保存", `${rows.length} ページを書き出し中...`, 0);
   try {
     const composed = await composePagesForExport({
-      pages: [row],
+      pages: rows,
       projectStore,
       renderPage: kpdf3.renderPage,
       renderSyntheticPage: renderSyntheticPagePixels,
-      onProgress: () => {},
+      onProgress: ({ done, total }) => {
+        updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
+      },
     });
+    updateBusy("PDF を組み立て中...", 90);
     const result = await kpdf3.exportPdfRasterized({ savePath, pages: composed });
     hideBusy();
-    wsStatus.textContent = `${savePath} に保存しました（rev ${(result?.revisionId ?? "").slice(0, 8)}）`;
+    wsStatus.textContent = `${savePath} に保存しました（${rows.length} ページ, rev ${(result?.revisionId ?? "").slice(0, 8)}）`;
   } catch (err) {
     hideBusy();
-    console.error("[save-page] failed", err);
+    console.error("[save-pages] failed", err);
     wsStatus.textContent = `保存失敗: ${err.message ?? err}`;
   }
+}
+
+/** Back-compat shim. Old call sites use single-page; thunk to the new
+ *  multi-page path. */
+function actionSaveSinglePage(pageNo) {
+  return actionSavePagesAsPdf([pageNo]);
 }
 ctxThumb.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
@@ -1494,6 +1697,51 @@ document.addEventListener("pointerdown", (ev) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideThumbContextMenu();
+});
+
+// ---- Overlay copy / paste (Ctrl+C, Ctrl+V) -------------------------------
+//
+// Implements the β3 testers' "テキスト入力したテキスト枠のコピペ" request.
+// Uses an in-renderer clipboard rather than the OS clipboard so the
+// copy carries the full overlay payload (font, size, color, dimensions,
+// assetId for image stamps, etc.). Pasting drops a new overlay onto
+// the currently-visible page at a small offset from the source position.
+//
+// Skipped automatically when the user is inline-editing text, typing
+// into a real <input>/<textarea>, or has focus on any other content-
+// editable element — so OS-level copy/paste of plain text continues to
+// work normally during those flows.
+
+/** @type {import("../domain/project-store.js").Overlay | null} */
+let _overlayClipboard = null;
+
+document.addEventListener("keydown", (e) => {
+  if (!isOpen) return;
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const key = e.key.toLowerCase();
+  if (key !== "c" && key !== "v") return;
+  // Ignore when user is typing into a real text input or inline-editing.
+  if (viewer._editingId) return;
+  const t = e.target;
+  if (t) {
+    const tag = (t.tagName ?? "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || t.isContentEditable) return;
+  }
+  if (key === "c") {
+    if (!selectedOverlayId) return;
+    const ov = projectStore.get(selectedOverlayId);
+    if (!ov) return;
+    _overlayClipboard = {
+      ...ov,
+      properties: { ...(ov.properties ?? {}) },
+    };
+    e.preventDefault();
+    wsStatus.textContent = `${ov.type} をコピーしました`;
+  } else if (key === "v") {
+    if (!_overlayClipboard) return;
+    e.preventDefault();
+    pasteOverlayFromClipboard();
+  }
 });
 
 /** Attach a contextmenu handler on a thumb element so right-click pops
@@ -1884,11 +2132,30 @@ async function populateStampMgrList() {
 }
 
 // ---- Generic stamp preview painter (used by all 3 register dialogs) ----
-function tintCanvasInPlace(ctx, hex) {
+//
+// `color` controls how the source image bytes are post-processed:
+//   - ""               → as-is (white background visible)
+//   - "bg-transparent" → luminance → alpha, keep original RGB
+//                        (so scanned 印影 lose their white paper without
+//                        being recolored)
+//   - "#rrggbb"        → luminance → alpha, RGB replaced with the colour
+//                        (the existing tint path)
+//
+function tintCanvasInPlace(ctx, color) {
   const w = ctx.canvas.width, h = ctx.canvas.height;
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
-  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex ?? ""));
+  if (color === "bg-transparent") {
+    // luminance → alpha, RGB untouched. Same alpha curve as the colored
+    // tint so the visual weight matches between modes.
+    for (let i = 0; i < d.length; i += 4) {
+      const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+      d[i + 3] = Math.round(d[i + 3] * (1 - lum));
+    }
+    ctx.putImageData(img, 0, 0);
+    return;
+  }
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(color ?? ""));
   if (!m) return;
   const v = m[1];
   const tr = parseInt(v.slice(0, 2), 16);
@@ -2202,12 +2469,29 @@ function paintStampRegImagePreview() {
   });
 }
 stampRegImagePickBtn?.addEventListener("click", async () => {
+  // Guard against re-entry — β3 testers reported the button feels
+  // unresponsive when they click it twice while the file browser is
+  // still loading, since two parallel addAssetFromFile round-trips end
+  // up racing for the dialog state.
+  if (stampRegImagePickBtn.disabled) return;
+  stampRegImagePickBtn.disabled = true;
+  const originalLabel = stampRegImagePickBtn.textContent;
   const path = await showFileBrowser({
     mode: "open",
     title: "印影画像を選択",
     filterDefault: "image",
   });
-  if (!path) return;
+  if (!path) {
+    stampRegImagePickBtn.disabled = false;
+    stampRegImagePickBtn.textContent = originalLabel;
+    return;
+  }
+  // Visible "loading" state — large stamp images (印影 scans 2400×2400
+  // are common) take a few hundred ms to read + decode + dedupe, and
+  // without feedback the user clicks the button again thinking it
+  // didn't register the first click.
+  stampRegImagePickBtn.textContent = "読み込み中…";
+  stampRegImageName.textContent = "読み込み中…";
   // Read the bytes via the existing addAssetFromFile infrastructure —
   // here we just need to preview, not commit yet. Re-use the asset
   // pipeline by registering tentatively, then if user cancels we leave
@@ -2241,6 +2525,10 @@ stampRegImagePickBtn?.addEventListener("click", async () => {
   } catch (err) {
     console.error("[stamp-img] preview failed", err);
     wsStatus.textContent = `画像読み込み失敗: ${err.message ?? err}`;
+    stampRegImageName.textContent = "(失敗)";
+  } finally {
+    stampRegImagePickBtn.disabled = false;
+    stampRegImagePickBtn.textContent = originalLabel;
   }
 });
 stampRegImageW?.addEventListener("input", () => {
@@ -2510,7 +2798,11 @@ function refreshDirtyIndicator() {
     document.title = "K-PDF3";
     appTitleText.textContent = APP_TITLE_DEFAULT;
   }
-  btnSave.disabled = !dirty;
+  // 上書き enabled both when there are unflushed in-memory edits AND when
+  // the source PDF on disk doesn't yet reflect the workspace's overlay /
+  // page state. Otherwise users see the button greyed out after a workspace
+  // save even though "save back to the PDF file" is exactly what they want.
+  btnSave.disabled = !isOpen || (!dirty && !isPdfOutOfSync());
   // Re-render the tab bar so its dirty-mark dot updates as the user
   // edits. Cheap (Map iteration + DOM rebuild for 1-5 tabs).
   renderTabBar();
@@ -2577,36 +2869,50 @@ function refreshMenuState() {
   });
 }
 
-history.subscribe(() => refreshMenuState());
-projectStore.subscribe((event) => {
-  refreshDirtyIndicator();
-  refreshMenuState();
-  // Invalidate thumb caches for pages whose overlays changed so the
-  // sidebar / split-save thumbs reflect the latest content (stamps,
-  // marks, text).
-  if (!event) return;
-  // Drop the selection if its target disappeared.
-  if (event.kind === "remove" && event.overlay?.id === selectedOverlayId) {
-    selectedOverlayId = null; // already gone from DOM, no class to clear
-  } else if (event.kind === "reset") {
-    selectedOverlayId = null;
-  } else if (event.kind === "update" && event.overlay?.id === selectedOverlayId) {
-    // _renderPageOverlays rebuilds the DOM on update — re-apply the
-    // selection class to the freshly-built element on next tick.
-    setTimeout(() => reapplySelectionDom(), 0);
-  }
-  if (event.kind === "reset") {
-    for (const pageNo of thumbCache.keys()) invalidateSidebarThumb(pageNo);
-    splitState.thumbCache.clear();
-    return;
-  }
-  if (Array.isArray(event.pages)) {
-    for (const pageNo of event.pages) {
-      invalidateSidebarThumb(pageNo);
-      splitState.thumbCache.delete(pageNo);
+/** Active subscriber unsubs — needed because `projectStore` / `history`
+ *  get reassigned on tab switch (applyTab) and on new-tab open
+ *  (newTabAndOpen). Without re-subscribing, the toolbar dirty button +
+ *  menu items get wired to the *initial* boot-tab store and stop
+ *  reacting once the user opens any second tab. */
+let _projectStoreUnsub = null;
+let _historyUnsub = null;
+
+function attachStoreSubscribers() {
+  if (_projectStoreUnsub) { try { _projectStoreUnsub(); } catch { /* noop */ } _projectStoreUnsub = null; }
+  if (_historyUnsub)      { try { _historyUnsub(); }      catch { /* noop */ } _historyUnsub = null; }
+  _historyUnsub = history.subscribe(() => refreshMenuState());
+  _projectStoreUnsub = projectStore.subscribe((event) => {
+    refreshDirtyIndicator();
+    refreshMenuState();
+    // Invalidate thumb caches for pages whose overlays changed so the
+    // sidebar / split-save thumbs reflect the latest content (stamps,
+    // marks, text).
+    if (!event) return;
+    // Drop the selection if its target disappeared.
+    if (event.kind === "remove" && event.overlay?.id === selectedOverlayId) {
+      selectedOverlayId = null; // already gone from DOM, no class to clear
+    } else if (event.kind === "reset") {
+      selectedOverlayId = null;
+    } else if (event.kind === "update" && event.overlay?.id === selectedOverlayId) {
+      // _renderPageOverlays rebuilds the DOM on update — re-apply the
+      // selection class to the freshly-built element on next tick.
+      setTimeout(() => reapplySelectionDom(), 0);
     }
-  }
-});
+    if (event.kind === "reset") {
+      for (const pageNo of thumbCache.keys()) invalidateSidebarThumb(pageNo);
+      splitState.thumbCache.clear();
+      return;
+    }
+    if (Array.isArray(event.pages)) {
+      for (const pageNo of event.pages) {
+        invalidateSidebarThumb(pageNo);
+        splitState.thumbCache.delete(pageNo);
+      }
+    }
+  });
+}
+// Initial wiring against the boot tab's store + history.
+attachStoreSubscribers();
 
 /** Drop the cached canvas + DOM for a sidebar thumb so the next
  *  visibility check re-renders. */
@@ -3992,7 +4298,18 @@ async function actionPrint() {
     choice.pageNos.every((n, i) => n === i + 1);
   const isCopy = overlayCount === 0 && allPagesSelected;
 
-  showBusy("印刷準備", "ページを描画中...", 0);
+  // 中止ボタンを有効化。spawn 中の SumatraPDF や silent print の途中で
+  // 「もう待たない」をユーザに渡せる。fire-and-forget: handler 内で
+  // hideBusy + cancelPrint IPC を呼ぶ。
+  let printCancelled = false;
+  showBusy("印刷準備", "ページを描画中...", 0, {
+    onCancel: () => {
+      printCancelled = true;
+      kpdf3.cancelPrint?.();
+      hideBusy();
+      wsStatus.textContent = "印刷を中止しました";
+    },
+  });
   let composed = null;
   try {
     if (!isCopy) {
@@ -4003,11 +4320,13 @@ async function actionPrint() {
         pages: filteredPages,
         projectStore,
         renderPage: kpdf3.renderPage,
+        renderSyntheticPage: renderSyntheticPagePixels,
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
       });
     }
+    if (printCancelled) return;
     updateBusy(`${choice.deviceName} に送信中...`, 90);
     await kpdf3.printPdfSilent({
       source: isCopy ? "byte-copy" : "rasterized",
@@ -4016,10 +4335,12 @@ async function actionPrint() {
       copies: choice.copies,
       landscape: choice.landscape,
     });
+    if (printCancelled) return;
     hideBusy();
     wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部 / ${choice.pageNos.length} ページ）`;
   } catch (err) {
     hideBusy();
+    if (printCancelled) return;
     console.error("[renderer] print failed:", err);
     wsStatus.textContent = `印刷失敗: ${err.message ?? err}`;
   }
@@ -4027,8 +4348,6 @@ async function actionPrint() {
 
 async function actionExport() {
   if (!isOpen) return;
-  const pages = await fetchVisiblePages();
-  if (pages.length === 0) return;
   const defaults = await kpdf3.getExportDefaults();
   const savePath = await showFileBrowser({
     mode: "save",
@@ -4037,78 +4356,35 @@ async function actionExport() {
     defaultDir: defaults.sourceDir,
   });
   if (!savePath) return;
-  // ADR-0008: with no overlays, byte-copy the source PDF instead of
-  // rasterising — preserves the original PDF's text layer and size.
-  // BUT byte-copy outputs the source PDF as-is, so if any pages are
-  // hidden (pending or persisted deletions) OR user-inserted blank
-  // pages are present, we must rasterize instead.
-  const overlayCount = projectStore.count();
-  const meta = await kpdf3.getSourceMeta();
-  const hasInsertions = pages.some((p) => p.isSynthetic || p.pageNo < 0);
-  const sourcePagesCount = pages.filter((p) => !p.isSynthetic && p.pageNo > 0).length;
-  const hasDeletions =
-    pendingDeletedPages.size > 0 ||
-    (meta && sourcePagesCount < (meta.pageCount ?? sourcePagesCount));
-  const isCopy = overlayCount === 0 && !hasDeletions && !hasInsertions;
-  const verb = isCopy ? "コピー" : "書き出し";
-  showBusy(`${verb}準備`, "ページを描画しています...", 0);
-  try {
-    let result;
-    if (isCopy) {
-      updateBusy("元 PDF をコピー中...", 50);
-      result = await kpdf3.copySourcePdf(savePath);
-    } else {
-      const composed = await composePagesForExport({
-        pages,
-        projectStore,
-        renderPage: kpdf3.renderPage,
-        renderSyntheticPage: renderSyntheticPagePixels,
-        onProgress: ({ done, total }) => {
-          updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
-        },
-      });
-      updateBusy("PDF を組み立て中...", 90);
-      result = await kpdf3.exportPdfRasterized({
-        savePath,
-        pages: composed,
-      });
-    }
-    // ---- Save As convention: switch active workspace to the new file --
-    // After saving as 008.pdf the user expects to be editing 008 (not 001
-    // with risk of accidentally Ctrl+S overwriting 001). Mirrors Word /
-    // Excel "Save As" semantics. byte-copy with no edits → fingerprint
-    // matches source → main process opens the existing workspace, which
-    // is fine (same content). For rasterized output a fresh workspace is
-    // created.
-    updateBusy("新しいファイルに切り替え中...", 95);
-    try {
-      // ADR-0015: Save As replaces the active tab's workspace handle —
-      // we reuse activeTabId so other tabs (when they exist in
-      // Phase 4+) aren't disturbed.
-      const opened = await kpdf3.openPdfFile(savePath, activeTabId);
-      projectStore.reset(opened.overlays ?? []);
-      pendingDeletedPages.clear();
-      workspaceMutated = false;
-      thumbSelection.pageNos.clear();
-      thumbSelection.anchor = null;
-      history.clear();
-      await refreshViewer();
-    } catch (switchErr) {
-      console.error("[renderer] post-export workspace switch failed:", switchErr);
-    }
-    hideBusy();
-    wsStatus.textContent = `${savePath} に切り替えました（${verb}, rev ${result.revisionId.slice(0, 8)}）`;
-  } catch (err) {
-    hideBusy();
-    console.error("[renderer] export failed:", err);
-    wsStatus.textContent = `${verb}失敗: ${err.message ?? err}`;
-  }
+  await actionExportToPath(savePath);
+}
+
+/**
+ * Out-of-sync detection: the current workspace shows content the source
+ * PDF on disk doesn't reflect (overlays, pending or persisted insertions,
+ * pending deletions, or any other workspace mutation since the last
+ * write-back). When true, the 上書き button is enabled even after the
+ * workspace itself is "clean" (no in-memory pending edits) so the user
+ * can flatten back into the source PDF.
+ */
+function isPdfOutOfSync() {
+  if (!isOpen) return false;
+  if (projectStore.count() > 0) return true;
+  if (pendingDeletedPages.size > 0) return true;
+  if (workspaceMutated) return true;
+  return false;
 }
 
 async function actionSave() {
   if (!isOpen) return;
-  // No-op when nothing has changed since the last save.
-  if (!isWorkspaceDirty()) return;
+  // No-op when nothing has changed AND source PDF already matches workspace.
+  if (!isWorkspaceDirty() && !isPdfOutOfSync()) return;
+  // Snapshot the "had pre-save mutations" signal — useful below to decide
+  // whether the source PDF still needs flattening even after we cleared
+  // workspaceMutated.
+  const hadMutations = workspaceMutated;
+  // Step 1: flush workspace state (overlays + deletions) so the kpdf3
+  // captures everything before we touch the on-disk PDF. Cheap (~50ms).
   try {
     const overlaySnapshot = projectStore.snapshot();
     if (projectStore.isDirty()) {
@@ -4126,6 +4402,32 @@ async function actionSave() {
     workspaceMutated = false;
     refreshDirtyIndicator();
     refreshMenuState();
+    // Step 2: if the source PDF doesn't yet reflect the workspace's
+    // overlay / page state, confirm + write back. Word Ctrl+S semantics
+    // — commit edits to the file the user opened. (Source-PDF path
+    // lives on the TabState, NOT as a module-level alias, so resolve
+    // it via getActiveTab().)
+    const tab = getActiveTab();
+    const sourcePath = tab?.activeSourcePdfPath ?? null;
+    const hasEditsToCommit =
+      sourcePath
+      && (overlaySnapshot.length > 0
+        || deletedCount > 0
+        || hadMutations
+        || projectStore.count() > 0);
+    if (hasEditsToCommit) {
+      const ok = await customConfirm({
+        title: "元 PDF に上書き保存",
+        message:
+          `「${activeSourceName || "(無名)"}」を編集内容で上書きします。\n`
+          + `上書き後は元の PDF 内容には戻せません。よろしいですか？`,
+        okLabel: "上書きする",
+      });
+      if (ok) {
+        await actionExportToPath(sourcePath, { verb: "上書き保存" });
+        return;
+      }
+    }
     const parts = [];
     if (overlaySnapshot.length > 0) parts.push(`${overlaySnapshot.length} overlays`);
     if (deletedCount > 0) parts.push(`${deletedCount} pages 削除`);
@@ -4134,6 +4436,71 @@ async function actionSave() {
   } catch (err) {
     console.error("[renderer] save failed:", err);
     wsStatus.textContent = `保存失敗: ${err.message ?? err}`;
+  }
+}
+
+/**
+ * Shared "export rasterized (or byte-copy) PDF to the given path, then
+ * re-anchor the active tab onto that file" pipeline. Used by both
+ * actionExport (Save As — user-chosen path) and actionSave (上書き保存
+ * — path === activeSourcePdfPath). Mirrors Word's Save / Save As
+ * semantics: after the operation, the user is editing the file they
+ * just wrote to.
+ *
+ * @param {string} savePath - absolute target PDF path
+ * @param {{ verb?: string }} [opts] - status-message verb (default "書き出し")
+ */
+async function actionExportToPath(savePath, { verb: verbOverride } = {}) {
+  if (!isOpen) return;
+  const pages = await fetchVisiblePages();
+  if (pages.length === 0) return;
+  const overlayCount = projectStore.count();
+  const meta = await kpdf3.getSourceMeta();
+  const hasInsertions = pages.some((p) => p.isSynthetic || p.pageNo < 0);
+  const sourcePagesCount = pages.filter((p) => !p.isSynthetic && p.pageNo > 0).length;
+  const hasDeletions =
+    pendingDeletedPages.size > 0
+    || (meta && sourcePagesCount < (meta.pageCount ?? sourcePagesCount));
+  const isCopy = overlayCount === 0 && !hasDeletions && !hasInsertions;
+  const verb = verbOverride ?? (isCopy ? "コピー" : "書き出し");
+  showBusy(`${verb}準備`, "ページを描画しています...", 0);
+  try {
+    let result;
+    if (isCopy) {
+      updateBusy("元 PDF をコピー中...", 50);
+      result = await kpdf3.copySourcePdf(savePath);
+    } else {
+      const composed = await composePagesForExport({
+        pages,
+        projectStore,
+        renderPage: kpdf3.renderPage,
+        renderSyntheticPage: renderSyntheticPagePixels,
+        onProgress: ({ done, total }) => {
+          updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
+        },
+      });
+      updateBusy("PDF を組み立て中...", 90);
+      result = await kpdf3.exportPdfRasterized({ savePath, pages: composed });
+    }
+    updateBusy("新しいファイルに切り替え中...", 95);
+    try {
+      const opened = await kpdf3.openPdfFile(savePath, activeTabId);
+      projectStore.reset(opened.overlays ?? []);
+      pendingDeletedPages.clear();
+      workspaceMutated = false;
+      thumbSelection.pageNos.clear();
+      thumbSelection.anchor = null;
+      history.clear();
+      await refreshViewer();
+    } catch (switchErr) {
+      console.error("[renderer] post-save workspace switch failed:", switchErr);
+    }
+    hideBusy();
+    wsStatus.textContent = `${verb}しました（rev ${result.revisionId.slice(0, 8)}）`;
+  } catch (err) {
+    hideBusy();
+    console.error(`[renderer] ${verb} failed:`, err);
+    wsStatus.textContent = `${verb}失敗: ${err.message ?? err}`;
   }
 }
 
@@ -5388,6 +5755,10 @@ function attachInsertGapDrop(gap, afterPageNo) {
       hideBusy();
       markWorkspaceMutated();
       await refreshViewer();
+      // β3 testers reported "分割画面でドロップしても追加が見えない" —
+      // refreshViewer() above rebuilds the sidebar thumbs but the split
+      // view has its own thumb list that needs an explicit refresh.
+      if (isSplitMode) await refreshSplitView();
       const n = r?.syntheticPageNos?.length ?? 0;
       wsStatus.textContent = `${n} ページを挿入しました`;
     } catch (err) {
@@ -6260,11 +6631,34 @@ for (const dropdownId of ["menu-file", "menu-edit", "menu-view", "menu-tools", "
 
 // Drag-and-drop to open: dropping a `.pdf` anywhere on the window opens it.
 // preventDefault on dragover is needed for the drop event to fire.
+//
+// We also light up a `body.file-dragging` flag while a file is in flight
+// so the (otherwise 8 px) thumb-insert gaps swell into actually-hittable
+// drop targets — β3 testers couldn't reliably land a PDF on the sidebar
+// gaps and got nothing on split-view drops.
+let _fileDragDepth = 0;
+document.addEventListener("dragenter", (e) => {
+  const types = e.dataTransfer?.types;
+  if (!types || ![...types].includes("Files")) return;
+  _fileDragDepth += 1;
+  document.body.classList.add("file-dragging");
+});
+document.addEventListener("dragleave", (e) => {
+  const types = e.dataTransfer?.types;
+  if (!types || ![...types].includes("Files")) return;
+  _fileDragDepth = Math.max(0, _fileDragDepth - 1);
+  if (_fileDragDepth === 0) document.body.classList.remove("file-dragging");
+});
+const _clearFileDragging = () => {
+  _fileDragDepth = 0;
+  document.body.classList.remove("file-dragging");
+};
 document.addEventListener("dragover", (e) => {
   e.preventDefault();
 });
 document.addEventListener("drop", async (e) => {
   e.preventDefault();
+  _clearFileDragging();
   const files = e.dataTransfer?.files;
   if (!files || files.length === 0) return;
   const file = files[0];
@@ -6282,6 +6676,13 @@ document.addEventListener("drop", async (e) => {
   // No dirty check — drop opens in a fresh tab when the active one is
   // already busy, mirroring the toolbar 開く button.
   await openPdfSmart(path);
+});
+// Belt-and-braces: ensure the file-dragging class clears even when the
+// dragenter/dragleave pair gets out of sync (which is easy to do on
+// Windows + Electron when dragging across nested elements).
+window.addEventListener("dragend", _clearFileDragging);
+window.addEventListener("mouseup", () => {
+  if (document.body.classList.contains("file-dragging")) _clearFileDragging();
 });
 
 // Ctrl + mouse wheel zooms the viewer (Adobe / browser convention).
@@ -6434,10 +6835,39 @@ $("stamp-palette-close")?.addEventListener("click", () => {
 });
 
 // Drag the stamp palette popup by its titlebar.
+const STAMP_POPUP_POS_KEY = "kpdf3.stampPopupPos";
 {
   const popup = $("stamp-palette-popup");
   const titleBar = $("stamp-palette-titlebar");
   if (popup && titleBar) {
+    // Restore the popup's last-used position so it doesn't snap back to
+    // the CSS default (top: 120px / right: 24px) every time the user
+    // exits + re-enters stamp mode or relaunches K-PDF3.
+    const restorePopupPosition = () => {
+      try {
+        const saved = localStorage.getItem(STAMP_POPUP_POS_KEY);
+        if (!saved) return;
+        const { left, top } = JSON.parse(saved);
+        if (typeof left !== "number" || typeof top !== "number") return;
+        // Clamp into the current viewport in case the window shrank
+        // since the position was saved.
+        const w = popup.offsetWidth || 260;
+        const h = popup.offsetHeight || 200;
+        const clampedLeft = Math.max(0, Math.min(window.innerWidth - w, left));
+        const clampedTop = Math.max(0, Math.min(window.innerHeight - h, top));
+        popup.style.left = `${clampedLeft}px`;
+        popup.style.top = `${clampedTop}px`;
+        popup.style.right = "auto";
+      } catch { /* ignore parse errors */ }
+    };
+    // Run once at module load and again every time the popup is shown
+    // (offsetWidth is 0 while [hidden]).
+    restorePopupPosition();
+    const obs = new MutationObserver(() => {
+      if (!popup.hidden) restorePopupPosition();
+    });
+    obs.observe(popup, { attributes: true, attributeFilter: ["hidden"] });
+
     let drag = null;
     titleBar.addEventListener("pointerdown", (e) => {
       // Don't drag from the close button.
@@ -6467,6 +6897,12 @@ $("stamp-palette-close")?.addEventListener("click", () => {
       if (!drag || drag.pointerId !== e.pointerId) return;
       try { titleBar.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
       drag = null;
+      // Persist the drop position so the next stamp-mode entry remembers it.
+      try {
+        const left = parseFloat(popup.style.left) || 0;
+        const top = parseFloat(popup.style.top) || 0;
+        localStorage.setItem(STAMP_POPUP_POS_KEY, JSON.stringify({ left, top }));
+      } catch { /* ignore quota */ }
     });
   }
 }
@@ -6500,13 +6936,14 @@ function applyFontSizeToEditingOverlay() {
   if (!ov || ov.type !== "text") return;
   const fontId = currentTextFontId();
   const fontSize = currentTextFontSize();
+  const color = currentTextColor();
   projectStore.update(id, {
-    properties: { ...ov.properties, fontId, fontSize },
+    properties: { ...ov.properties, fontId, fontSize, color },
   });
   // Keep the inline-edit element visually in sync (the store update
   // alone doesn't repaint the editing element — see viewer's preserve-
   // editing logic).
-  viewer.applyEditingTextStyle({ fontId, fontSize });
+  viewer.applyEditingTextStyle({ fontId, fontSize, color });
 }
 
 if (textFontSel) {
@@ -6525,6 +6962,20 @@ if (textSizeSel) {
   if (saved) textSizeSel.value = saved;
   textSizeSel.addEventListener("change", () => {
     localStorage.setItem(TEXT_SIZE_STORAGE_KEY, String(currentTextFontSize()));
+    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+      setPlacementMode("text");
+    }
+    applyFontSizeToEditingOverlay();
+  });
+}
+const TEXT_COLOR_STORAGE_KEY = "kpdf3.textColor";
+if (textColorSel) {
+  const saved = localStorage.getItem(TEXT_COLOR_STORAGE_KEY);
+  if (saved && Array.from(textColorSel.options).some((o) => o.value === saved)) {
+    textColorSel.value = saved;
+  }
+  textColorSel.addEventListener("change", () => {
+    localStorage.setItem(TEXT_COLOR_STORAGE_KEY, currentTextColor());
     if (isOpen && placementMode !== "text" && !viewer._editingId) {
       setPlacementMode("text");
     }

@@ -19,6 +19,7 @@ import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
 import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
+import { PDFDocument } from "pdf-lib";
 import { computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
@@ -953,40 +954,77 @@ ipcMain.handle("kpdf3:pick-export-pdf", async () => {
  * @param {Array<{ pageNo:number, png:Uint8Array, widthPt:number, heightPt:number }>} pages
  * @returns {Buffer}
  */
-function assembleRasterizedPdf(pages) {
-  const newDoc = new mupdf.PDFDocument();
-  try {
-    for (const p of pages) {
-      const png = p.png instanceof Uint8Array ? p.png : new Uint8Array(p.png);
-      const image = new mupdf.Image(png);
-      try {
-        const imageRef = newDoc.addImage(image);
-        const xobjects = newDoc.newDictionary();
-        xobjects.put("Im0", imageRef);
-        const resources = newDoc.newDictionary();
-        resources.put("XObject", xobjects);
-        const cs = `q\n${p.widthPt} 0 0 ${p.heightPt} 0 0 cm\n/Im0 Do\nQ\n`;
-        const contents = new TextEncoder().encode(cs);
-        const pageObj = newDoc.addPage(
-          [0, 0, p.widthPt, p.heightPt],
-          0,
-          resources,
-          contents,
-        );
-        newDoc.insertPage(newDoc.countPages(), pageObj);
-      } finally {
-        image.destroy?.();
+/**
+ * Hybrid PDF assembly. Each page is one of:
+ *
+ *   - strategy "source"  → copy the original PDF page verbatim. Vector
+ *                          text and lines stay crisp at any zoom; file
+ *                          stays small.
+ *   - strategy "overlay" → copy the source page, then drop a PNG layer
+ *                          (transparent background) on top so overlays
+ *                          (text boxes, stamps, marker, etc.) render
+ *                          above the preserved vectors.
+ *   - strategy "full"    → no source vector to preserve (synthetic page
+ *                          inserted by the user, or a rotated source
+ *                          page where overlay alignment under hybrid
+ *                          would be off): rasterized full-page JPEG.
+ *
+ * Replaces the earlier mupdf-only assembler that always image-encoded
+ * every page → ballooned legal-document outputs to 100 MB / page even
+ * for content the source already carried as vectors.
+ *
+ * @param {Array<{ pageNo: number, widthPt: number, heightPt: number,
+ *                  strategy: "source" | "overlay" | "full",
+ *                  sourceIdx: number | null,
+ *                  imageBytes?: Uint8Array }>} pages
+ * @param {Uint8Array | null} sourceBytes raw source-PDF bytes
+ * @returns {Promise<Buffer>}
+ */
+async function assembleHybridPdf(pages, sourceBytes) {
+  const newPdf = await PDFDocument.create();
+  const sourcePdf = sourceBytes
+    ? await PDFDocument.load(sourceBytes, { ignoreEncryption: true })
+    : null;
+  for (const p of pages) {
+    if (p.strategy === "source") {
+      if (!sourcePdf) throw new Error("assembleHybridPdf: source page strategy but no source PDF");
+      const [copied] = await newPdf.copyPages(sourcePdf, [p.sourceIdx]);
+      newPdf.addPage(copied);
+    } else if (p.strategy === "overlay") {
+      if (!sourcePdf) throw new Error("assembleHybridPdf: overlay strategy but no source PDF");
+      const [copied] = await newPdf.copyPages(sourcePdf, [p.sourceIdx]);
+      newPdf.addPage(copied);
+      if (p.imageBytes && p.imageBytes.length > 0) {
+        const overlayImg = await newPdf.embedPng(p.imageBytes);
+        // Draw the overlay across the (canonical) page bounds. pdf-lib's
+        // coordinate origin is bottom-left; the overlay PNG was authored
+        // with y-down semantics for the same canvas dimensions, and
+        // pdf-lib's drawImage flips it back to right-side-up — matches
+        // the on-screen overlay orientation.
+        copied.drawImage(overlayImg, {
+          x: 0,
+          y: 0,
+          width: p.widthPt,
+          height: p.heightPt,
+        });
       }
+    } else if (p.strategy === "full") {
+      if (!p.imageBytes || p.imageBytes.length === 0) {
+        throw new Error(`assembleHybridPdf: full strategy without imageBytes (page ${p.pageNo})`);
+      }
+      // Header sniff: first two bytes of JPEG are 0xFF 0xD8.
+      const isJpeg = p.imageBytes[0] === 0xff && p.imageBytes[1] === 0xd8;
+      const img = isJpeg
+        ? await newPdf.embedJpg(p.imageBytes)
+        : await newPdf.embedPng(p.imageBytes);
+      const page = newPdf.addPage([p.widthPt, p.heightPt]);
+      page.drawImage(img, { x: 0, y: 0, width: p.widthPt, height: p.heightPt });
+    } else {
+      throw new Error(`assembleHybridPdf: unknown strategy "${p.strategy}" on page ${p.pageNo}`);
     }
-    const buf = newDoc.saveToBuffer();
-    try {
-      return Buffer.from(buf.asUint8Array());
-    } finally {
-      buf.destroy?.();
-    }
-  } finally {
-    newDoc.destroy();
   }
+  const bytes = await newPdf.save();
+  return Buffer.from(bytes);
 }
 
 function tempPrintPath() {
@@ -1087,6 +1125,93 @@ function silentPrintPdf(pdfPath, opts) {
 }
 
 /**
+ * Resolve the bundled SumatraPDF.exe path. Packaged via electron-builder's
+ * extraResources → lands at `<resourcesPath>/sumatrapdf/SumatraPDF.exe`.
+ * In dev (npm start) we read from `<repo>/vendor/sumatrapdf/SumatraPDF.exe`.
+ * Returns null when the binary isn't present (Mac/Linux builds, dev tree
+ * without the vendored exe, etc.).
+ */
+function sumatraPath() {
+  if (process.platform !== "win32") return null;
+  const candidates = [
+    join(process.resourcesPath, "sumatrapdf", "SumatraPDF.exe"),
+    join(__dirname, "..", "..", "vendor", "sumatrapdf", "SumatraPDF.exe"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+/**
+ * Print via the bundled SumatraPDF (Windows). SumatraPDF parses the PDF
+ * with its own engine and sends a print job directly via WinSpool —
+ * bypasses Chromium's PDF plugin entirely. Used for the rasterized path
+ * because Chromium silent print stalls (~55s → fail) on certain hardware
+ * drivers (β3 testing reproduced this on FUJIFILM Apeos C2360 wireless)
+ * when handed mupdf-generated PDFs with large PNG XObjects.
+ *
+ *   SumatraPDF.exe -print-to "<deviceName>"
+ *     -print-settings "<settings>" -silent -exit-when-done <pdfPath>
+ *
+ * `-print-settings` accepts a comma-separated string: `Nx` for copies,
+ * `landscape`/`portrait`, `noscale`/`shrink`/`fit`, etc. We pre-rasterize
+ * to canonical PDF-point dimensions so `noscale` is correct.
+ */
+/** Active SumatraPDF child for cancel support; set during print, cleared
+ *  on exit or by `kpdf3:cancel-print`. */
+let _activeSumatraProcess = null;
+
+function sumatraPrintPdf(pdfPath, opts) {
+  return new Promise((resolve, reject) => {
+    const exe = sumatraPath();
+    if (!exe) {
+      reject(new Error("SumatraPDF not bundled (vendor/sumatrapdf/SumatraPDF.exe missing)"));
+      return;
+    }
+    const settings = [];
+    if (opts.copies && opts.copies > 1) settings.push(`${opts.copies}x`);
+    if (opts.landscape) settings.push("landscape");
+    settings.push("noscale");
+    const args = [
+      "-print-to", opts.deviceName,
+      "-print-settings", settings.join(","),
+      "-silent",
+      "-exit-when-done",
+      pdfPath,
+    ];
+    const sp = spawn(exe, args, { windowsHide: true });
+    _activeSumatraProcess = sp;
+    let stderr = "";
+    sp.stderr?.on("data", (d) => { stderr += d.toString(); });
+    sp.on("error", (err) => {
+      _activeSumatraProcess = null;
+      reject(err);
+    });
+    sp.on("close", (code) => {
+      _activeSumatraProcess = null;
+      if (code === 0) resolve({ success: true });
+      else reject(new Error(`SumatraPDF print failed (exit ${code}): ${stderr.trim() || "no output"}`));
+    });
+  });
+}
+
+/**
+ * Abort whatever silent-print is in flight. Best-effort: we can cleanly
+ * kill the SumatraPDF subprocess, but Chromium's `webContents.print` has
+ * no public cancellation API — the callback will still eventually fire
+ * and we silently ignore it.
+ */
+ipcMain.handle("kpdf3:cancel-print", async () => {
+  if (_activeSumatraProcess) {
+    try { _activeSumatraProcess.kill(); } catch { /* ignore */ }
+    _activeSumatraProcess = null;
+    return { ok: true, killed: "sumatra" };
+  }
+  return { ok: true, killed: null };
+});
+
+/**
  * Assemble a flatten PDF from per-page composited PNG bytes (from the
  * renderer) and write it to disk.
  *
@@ -1106,12 +1231,13 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
   if (!savePath || !Array.isArray(pages) || pages.length === 0) {
     throw new Error("export-pdf-rasterized: invalid payload");
   }
-  let pdfBytes = assembleRasterizedPdf(pages);
+  const sourceBytes = activeWorkspace.getSourceBytes() ?? null;
+  let pdfBytes = await assembleHybridPdf(pages, sourceBytes);
   // §17.14 — write workspace bookmarks back as PDF /Outlines so other
   // viewers (Adobe / Preview / etc.) can navigate them too.
   // pageOrder lines up with the order pages were composed in (the
   // renderer passes the visible-pages list to composePagesForExport,
-  // and assembleRasterizedPdf builds the PDF in that same order).
+  // and assembleHybridPdf builds the PDF in that same order).
   try {
     const bookmarks = activeWorkspace.listBookmarks();
     if (Array.isArray(bookmarks) && bookmarks.length > 0) {
@@ -1198,14 +1324,29 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     pdfBytes = activeWorkspace.getSourceBytes();
     if (!pdfBytes) throw new Error("No source PDF in workspace");
   } else if (source === "rasterized" && Array.isArray(pages) && pages.length > 0) {
-    pdfBytes = assembleRasterizedPdf(pages);
+    const sourceBytes = activeWorkspace.getSourceBytes() ?? null;
+    pdfBytes = await assembleHybridPdf(pages, sourceBytes);
   } else {
     throw new Error("print-pdf-silent: invalid source / pages");
   }
 
   const tempPath = tempPrintPath();
   writeFileSync(tempPath, pdfBytes);
-  await silentPrintPdf(tempPath, { deviceName, copies, landscape });
+  // Windows + rasterized: hand off to bundled SumatraPDF, which uses its
+  // own PDF engine + WinSpool directly. Chromium silent print stalls on
+  // some hardware drivers (β3 testing reproduced ~55s timeout on FUJIFILM
+  // Apeos C2360 wireless) when handed our mupdf-generated PDFs with
+  // large PNG XObjects. byte-copy keeps using Chromium silent print —
+  // the source PDF is normal-shape and goes through quickly.
+  const useSumatra =
+    process.platform === "win32"
+    && source === "rasterized"
+    && sumatraPath() !== null;
+  if (useSumatra) {
+    await sumatraPrintPdf(tempPath, { deviceName, copies, landscape });
+  } else {
+    await silentPrintPdf(tempPath, { deviceName, copies, landscape });
+  }
   return { tempPath, deviceName, copies, landscape };
 });
 

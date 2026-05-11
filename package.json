@@ -103,6 +103,16 @@
             "x64"
           ]
         }
+      ],
+      "extraResources": [
+        {
+          "from": "vendor/sumatrapdf/SumatraPDF.exe",
+          "to": "sumatrapdf/SumatraPDF.exe"
+        },
+        {
+          "from": "vendor/sumatrapdf/COPYING",
+          "to": "sumatrapdf/COPYING.txt"
+        }
       ]
     },
     "mac": {

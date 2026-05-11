@@ -1838,6 +1838,35 @@ body.thumb-dragging .thumb-insert-gap.drop-target {
   background: #d4f4d4;
 }
 
+/* When the user is dragging a file over the K-PDF3 window, swell the
+ * sidebar's horizontal insert-gaps so the drop target is fat enough to
+ * actually hit. The default 8 px line is invisible for β3 testers to
+ * land a PDF on. Reverts the moment the user releases or leaves the
+ * window.
+ *
+ * Vertical gaps (split-save view) keep their 16 px width — that's
+ * already easy to hit and changing it breaks the wrapped-row alignment
+ * the .split-thumbs-row padding/margin pair is calibrated against. */
+body.file-dragging .thumb-insert-gap {
+  height: 28px;
+  color: #000080;
+  border-top-color: #aab8e0;
+  border-bottom-color: #aab8e0;
+  background: #eef3ff;
+  font-size: 14px;
+  font-weight: bold;
+}
+body.file-dragging .thumb-insert-gap-vertical {
+  /* Bump prominence only — keep width: 16px to match split-thumbs-row's
+   * 18 px leading padding so wrapped rows stay aligned. */
+  height: 100%;
+  opacity: 1;
+  border-left-color: #aab8e0;
+  border-right-color: #aab8e0;
+  background: #eef3ff;
+  color: #000080;
+}
+
 /* Split-save row uses horizontal flex; override to be a vertical bar.
  * `align-self: center` + a fixed cap on height so the bar sits visually
  * tied to a single thumb pair instead of stretching the full wrapped
@@ -1941,4 +1970,12 @@ body.thumb-dragging .thumb-insert-gap.drop-target {
 .busy-modal .progress-indicator-bar {
   width: 0%;
   transition: width 0.15s linear;
+}
+.busy-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.busy-footer button {
+  min-width: 70px;
 }

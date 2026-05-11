@@ -10,9 +10,14 @@
 // The collected PNGs (with their canonical PDF-point dimensions) are then
 // shipped to main where mupdf assembles them into a flat PDF.
 //
-// EXPORT_ZOOM is set to 2.0 — a 144-dpi-equivalent render that gives
-// readable output for legal-practice reading without ballooning file size
-// the way a 300-dpi render would. M5 polish will let the user pick.
+// EXPORT_ZOOM is 600 / 72 — exactly 600 dpi, matching the user's
+// preceding-tool baseline. β3 testers reported 144 dpi as outright
+// unusable and 288 dpi (4.0) as still short of the prior quality bar.
+// Trade-off: per-page PNG buffers are ~4× heavier than at 288 dpi
+// (~150MB raw RGBA for A4) and the assembled PDF balloons proportionally.
+// The proper long-term fix is hybrid PDF assembly — keep unedited source
+// pages as vectors and only rasterize pages with overlays — deferred to
+// β5+ since it needs a mupdf graftObject pipeline.
 
 import { canonicalPageSize } from "../domain/coord.js";
 import {
@@ -73,14 +78,24 @@ async function getTintedAssetCanvas(assetId, color) {
   ctx.drawImage(bitmap, 0, 0);
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const d = img.data;
-  const [tr, tg, tb] = parseHexColor(color);
-  for (let i = 0; i < d.length; i += 4) {
-    const r = d[i], g = d[i + 1], b = d[i + 2];
-    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    d[i + 3] = Math.round(d[i + 3] * (1 - lum));
-    d[i] = tr;
-    d[i + 1] = tg;
-    d[i + 2] = tb;
+  if (color === "bg-transparent") {
+    // luminance → alpha only; keep original RGB so the scanned 印影's
+    // ink colour shines through.
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      d[i + 3] = Math.round(d[i + 3] * (1 - lum));
+    }
+  } else {
+    const [tr, tg, tb] = parseHexColor(color);
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      d[i + 3] = Math.round(d[i + 3] * (1 - lum));
+      d[i] = tr;
+      d[i + 1] = tg;
+      d[i + 2] = tb;
+    }
   }
   ctx.putImageData(img, 0, 0);
   _tintedAssetCache.set(key, canvas);
@@ -182,7 +197,7 @@ function parseHexColor(s) {
   ];
 }
 
-export const EXPORT_ZOOM = 2.0;
+export const EXPORT_ZOOM = 600 / 72;
 
 /**
  * @param {object} args
@@ -211,17 +226,6 @@ export async function composePagesForExport({
   const total = pages.length;
   for (let i = 0; i < total; i++) {
     const row = pages[i];
-    let result;
-    if (row.isSynthetic || row.pageNo < 0) {
-      if (typeof renderSyntheticPage !== "function") {
-        throw new Error("composePagesForExport: synthetic page encountered but no renderSyntheticPage provided");
-      }
-      result = await renderSyntheticPage(row, EXPORT_ZOOM);
-    } else {
-      result = await renderPage(row.pageNo, { zoom: EXPORT_ZOOM });
-    }
-    const canvas = await compositePage(row, result, projectStore, EXPORT_ZOOM);
-    const png = await canvasToPng(canvas);
     const canonical = canonicalPageSize({
       mediaX: 0, mediaY: 0, mediaW: 0, mediaH: 0,
       cropX: 0, cropY: 0,
@@ -229,11 +233,60 @@ export async function composePagesForExport({
       rotation: row.rotation,
       userRotation: row.userRotation ?? 0,
     });
+
+    const overlayCount = projectStore.getPageOverlays(row.pageNo).length;
+    const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
+    const sourceRot = (((row.rotation ?? 0) % 360) + 360) % 360;
+    const isSynthetic = row.isSynthetic || row.pageNo < 0;
+    // Hybrid strategy: when we have a source PDF page that the main side
+    // can copy verbatim, do that. Only rasterize the overlay layer on top
+    // (or skip rendering entirely when the page has no overlay). User-
+    // or PDF-rotated source pages fall back to the legacy full-rasterize
+    // path because aligning a copied source page + a separately-rasterized
+    // overlay through a content-stream rotation matrix is non-trivial.
+    let strategy;
+    if (isSynthetic) {
+      strategy = "full"; // no source page to keep — rasterize everything
+    } else if (userRot !== 0 || sourceRot !== 0) {
+      strategy = "full"; // rotated: hybrid alignment skipped for β4
+    } else if (overlayCount > 0) {
+      strategy = "overlay"; // copy source vector + draw overlay PNG on top
+    } else {
+      strategy = "source"; // copy source page as-is, no render needed
+    }
+
+    /** @type {Uint8Array | undefined} */
+    let imageBytes;
+    if (strategy === "full") {
+      let result;
+      if (isSynthetic) {
+        if (typeof renderSyntheticPage !== "function") {
+          throw new Error("composePagesForExport: synthetic page encountered but no renderSyntheticPage provided");
+        }
+        result = await renderSyntheticPage(row, EXPORT_ZOOM);
+      } else {
+        result = await renderPage(row.pageNo, { zoom: EXPORT_ZOOM });
+      }
+      const canvas = await compositePage(row, result, projectStore, EXPORT_ZOOM);
+      // Full-page images embed onto a fresh PDF page with no background —
+      // we own every pixel, so JPEG (q=0.95) is the right encoding for
+      // size. Vector text is preserved in the "source"/"overlay" paths.
+      imageBytes = await canvasToJpeg(canvas, 0.95);
+    } else if (strategy === "overlay") {
+      const canvas = await composeOverlayOnlyPage(row, projectStore, EXPORT_ZOOM);
+      // Overlay layer must be PNG to keep transparency — drawing on top of
+      // the copied vector source page would otherwise paint white over it.
+      imageBytes = await canvasToPng(canvas);
+    }
+    // strategy === "source": no image bytes; main copies source page as-is.
+
     out.push({
       pageNo: row.pageNo,
-      png,
       widthPt: canonical.w,
       heightPt: canonical.h,
+      strategy,
+      sourceIdx: isSynthetic ? null : (row.pageNo - 1),
+      imageBytes,
     });
     if (onProgress) onProgress({ done: i + 1, total });
   }
@@ -269,6 +322,38 @@ export async function composeSinglePageCanvas(pageRow, renderPage, projectStore,
     result = await renderPage(pageRow.pageNo, { zoom });
   }
   return await compositePage(pageRow, result, projectStore, zoom);
+}
+
+/**
+ * Render JUST the overlays for a page onto a transparent canvas at the
+ * canonical (post-userRotation) page dimensions. Used by the hybrid
+ * export path so main can copy the source PDF page verbatim (preserving
+ * vector text/lines) and then drop this transparent-bg image on top.
+ *
+ * Mirrors compositePage's overlay loop without painting the source PDF
+ * bitmap underneath.
+ *
+ * @param {{cropW:number, cropH:number, rotation:number, userRotation?:number, pageNo:number}} row
+ * @param {import("../domain/project-store.js").ProjectStore} projectStore
+ * @param {number} zoom
+ * @returns {HTMLCanvasElement}
+ */
+export async function composeOverlayOnlyPage(row, projectStore, zoom = EXPORT_ZOOM) {
+  const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
+  const swap = userRot === 90 || userRot === 270;
+  const w = swap ? row.cropH : row.cropW;
+  const h = swap ? row.cropW : row.cropH;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(w * zoom);
+  canvas.height = Math.round(h * zoom);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("composeOverlayOnlyPage: 2d context unavailable");
+  // ctx is transparent by default — exactly what we want.
+  const overlays = projectStore.getPageOverlays(row.pageNo);
+  for (const ov of overlays) {
+    await drawOverlay(ctx, ov, zoom);
+  }
+  return canvas;
 }
 
 export async function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOOM) {
@@ -594,6 +679,11 @@ function wrapCanvasText(ctx, text, maxWidth) {
 }
 
 /**
+ * Encode the composed page canvas as PNG. Used for the overlay-only
+ * layer (transparent background) in the hybrid pipeline — JPEG can't
+ * carry alpha, and we need the source PDF page to show through where
+ * the overlay layer is empty.
+ *
  * @param {HTMLCanvasElement} canvas
  * @returns {Promise<Uint8Array>}
  */
@@ -609,6 +699,35 @@ function canvasToPng(canvas) {
         resolve(new Uint8Array(buf));
       },
       "image/png",
+    );
+  });
+}
+
+/**
+ * Encode the composed page canvas as JPEG at the given quality. Used for
+ * full-page rasterized fallbacks (synthetic / rotated pages where the
+ * hybrid path can't preserve vectors). JPEG keeps these single-image
+ * pages small while remaining visually acceptable; the truly-quality-
+ * critical pages go through the overlay-only path which preserves
+ * source-PDF vectors.
+ *
+ * @param {HTMLCanvasElement} canvas
+ * @param {number} quality 0..1
+ * @returns {Promise<Uint8Array>}
+ */
+function canvasToJpeg(canvas, quality = 0.95) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      async (blob) => {
+        if (!blob) {
+          reject(new Error("canvasToJpeg: toBlob returned null"));
+          return;
+        }
+        const buf = await blob.arrayBuffer();
+        resolve(new Uint8Array(buf));
+      },
+      "image/jpeg",
+      quality,
     );
   });
 }

@@ -85,6 +85,9 @@
 
   <!-- Right-click context menu for overlays. Anchored at click coords. -->
   <div class="menu-dropdown" id="ctx-overlay" hidden>
+    <div class="menu-item" data-ctx="copy">コピー (Ctrl+C)</div>
+    <div class="menu-item" data-ctx="paste">貼り付け (Ctrl+V)</div>
+    <div class="menu-separator"></div>
     <div class="menu-item" data-ctx="delete">削除 (Del)</div>
   </div>
 
@@ -107,6 +110,9 @@
         <p id="busy-message" class="busy-message">準備中...</p>
         <div class="progress-indicator">
           <span class="progress-indicator-bar" id="busy-progress-bar"></span>
+        </div>
+        <div class="busy-footer">
+          <button type="button" id="busy-cancel" hidden>中止</button>
         </div>
       </div>
     </div>
@@ -329,6 +335,7 @@
         <div class="stamp-reg-row">
           <label>色:
             <select id="stamp-reg-image-color">
+              <option value="bg-transparent" selected>白背景を透過（色そのまま）</option>
               <option value="">そのまま（無加工）</option>
               <option value="#cc0000">朱</option>
               <option value="#000000">黒</option>
@@ -634,6 +641,15 @@
         <option value="18">18</option>
         <option value="24">24</option>
         <option value="36">36</option>
+      </select>
+      <span class="mode-options-label">色:</span>
+      <select id="text-color" class="toolbar-inline-select"
+              title="テキストの色 (新規配置 / 編集中の overlay)">
+        <option value="#000000" selected>黒</option>
+        <option value="#cc0000">赤</option>
+        <option value="#0066cc">青</option>
+        <option value="#1a8a3a">緑</option>
+        <option value="#666666">グレー</option>
       </select>
     </div>
     <div class="mode-options" data-mode="stamp" hidden>
