@@ -62,7 +62,8 @@
       {
         "provider": "github",
         "owner": "windom21-cpu",
-        "repo": "k-pdf3-releases"
+        "repo": "k-pdf3-releases",
+        "releaseType": "release"
       }
     ],
     "files": [
