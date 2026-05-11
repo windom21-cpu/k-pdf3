@@ -1,6 +1,6 @@
 {
   "name": "k-pdf3",
-  "version": "2.0.0-beta.6",
+  "version": "2.0.0-beta.7",
   "description": "法律実務向け PDF Workspace（K-PDF2 の全面再設計版）",
   "private": true,
   "main": "src/main/main.js",
@@ -140,9 +140,10 @@
       "category": "public.app-category.productivity"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
     }
   }
 }
