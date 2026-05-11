@@ -4804,10 +4804,14 @@ async function rotatePageBy(pageNo, delta) {
   if (!isOpen || !pageNo) return;
   const row = viewer._pages?.find((p) => p.pageNo === pageNo);
   if (!row) return;
-  // Drop split-state thumb cache for this page so the next split-save
-  // view re-renders with the new rotation. Sidebar thumbs are wiped by
-  // rebuildThumbs further below, so they don't need explicit clearing.
+  // Drop both split-state and sidebar thumb caches for this page so the
+  // subsequent rebuild renders with the new rotation. (β10 testers
+  // reported the sidebar thumb staying in old orientation after a
+  // rotate — refreshViewer calls rebuildThumbs which iterates rows,
+  // but the per-page raster cache is keyed by pageNo and survives the
+  // rebuild unless invalidated explicitly.)
   splitState?.thumbCache?.delete(pageNo);
+  invalidateSidebarThumb?.(pageNo);
 
   // Old canonical W/H BEFORE the rotation, accounting for both the
   // intrinsic /Rotate and the previous userRotation.
@@ -4899,7 +4903,13 @@ function resolveRotationTargets() {
     const ordered = getOrderedThumbPageNos(thumbList, ".thumb-item");
     return ordered.filter((n) => sidebarThumbSelection.pageNos.has(n));
   }
-  return [viewer.currentPage];
+  // visiblePageNow() reads scrollTop synchronously rather than the
+  // cached _currentPage — protects against a race where the user has
+  // scrolled but the rAF-driven scroll listener has not yet updated
+  // the cache (β10 testers saw rotate target the previously-clicked
+  // sidebar page after subsequently scrolling the main viewer).
+  const visible = viewer.visiblePageNow?.();
+  return [Number.isFinite(visible) ? visible : viewer.currentPage];
 }
 
 async function rotateCurrentPage(delta) {
