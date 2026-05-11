@@ -1513,6 +1513,12 @@ button.toggled {
 }
 .stamp-palette-popup .title-bar {
   cursor: move;
+  /* The global .title-bar rule sets -webkit-app-region: drag for the
+   * main window's frameless drag (ADR-0013). That hijacks pointerdown
+   * before our JS drag handler sees it, so the popup stayed pinned in
+   * place. Forcing no-drag here lets the JS pointer handlers run
+   * (close-button bubble-out + DOM-position move). */
+  -webkit-app-region: no-drag;
 }
 .stamp-palette-popup[hidden] {
   display: none !important;
