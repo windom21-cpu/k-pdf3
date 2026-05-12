@@ -5552,6 +5552,12 @@ function createWorkspaceBookmarkNode(node) {
     e.stopPropagation();
     startInlineRenameBookmark(li, node);
   });
+  li.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    selectBookmark(node.id);
+    showBookmarkContextMenu(li, node, e.clientX, e.clientY);
+  });
   attachBookmarkDnd(li, node);
 
   if (Array.isArray(node.children) && node.children.length > 0) {
@@ -5842,6 +5848,53 @@ $("bookmark-add")?.addEventListener("click", actionAddBookmark);
 $("bookmark-remove")?.addEventListener("click", actionRemoveBookmark);
 $("bookmark-indent")?.addEventListener("click", actionIndentBookmark);
 $("bookmark-outdent")?.addEventListener("click", actionOutdentBookmark);
+
+// ---- Bookmark right-click context menu --------------------------------
+const ctxBookmark = $("ctx-bookmark");
+// Cache the <li> + node so 名前を変更 can run startInlineRenameBookmark
+// without re-traversing the DOM (the right-clicked <li> may be the one
+// inside a nested children <ul>).
+let _bookmarkCtxTarget = null;
+function showBookmarkContextMenu(li, node, x, y) {
+  if (!ctxBookmark) return;
+  _bookmarkCtxTarget = { li, node };
+  ctxBookmark.style.left = `${x}px`;
+  ctxBookmark.style.top = `${y}px`;
+  ctxBookmark.hidden = false;
+}
+function hideBookmarkContextMenu() {
+  if (!ctxBookmark) return;
+  ctxBookmark.hidden = true;
+  _bookmarkCtxTarget = null;
+}
+function dispatchBookmarkCtx(target) {
+  const ctx = _bookmarkCtxTarget;
+  hideBookmarkContextMenu();
+  if (!(target instanceof HTMLElement) || !ctx) return;
+  const action = target.dataset.ctx;
+  if (action === "rename") {
+    startInlineRenameBookmark(ctx.li, ctx.node);
+  } else if (action === "delete") {
+    actionRemoveBookmark();
+  }
+}
+ctxBookmark?.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  let el = e.target;
+  while (el && el !== ctxBookmark && !(el.dataset && el.dataset.ctx)) {
+    el = el.parentElement;
+  }
+  if (el && el !== ctxBookmark) dispatchBookmarkCtx(el);
+});
+ctxBookmark?.addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("pointerdown", (ev) => {
+  if (!ctxBookmark || ctxBookmark.hidden) return;
+  if (ev.target instanceof Node && ctxBookmark.contains(ev.target)) return;
+  hideBookmarkContextMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideBookmarkContextMenu();
+});
 
 // Tab / Shift+Tab when focus is inside the bookmark sidebar.
 bookmarkTree.addEventListener("keydown", (e) => {

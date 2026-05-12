@@ -102,6 +102,12 @@
     <div class="menu-item" data-ctx="save-page">このページを PDF として保存…</div>
   </div>
 
+  <!-- Right-click context menu for workspace bookmarks. -->
+  <div class="menu-dropdown" id="ctx-bookmark" hidden>
+    <div class="menu-item" data-ctx="rename">名前を変更</div>
+    <div class="menu-item" data-ctx="delete">削除</div>
+  </div>
+
   <!-- Modal busy indicator for long-running operations (export / print). -->
   <div class="busy-modal" id="busy-modal" hidden>
     <div class="window busy-window">
