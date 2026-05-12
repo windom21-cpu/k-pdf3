@@ -29,8 +29,6 @@ import {
   addInsertedImagePage,
   removeInsertedPage,
   getInsertedPageImage,
-  getOrCreateInsertedSourcePdf,
-  getInsertedSourcePdf,
   listBookmarks,
   addBookmark,
   renameBookmark,
@@ -68,11 +66,6 @@ function syntheticRow(r) {
     syntheticImageH: r.imageH ?? null,
     syntheticAfterPageNo: r.afterPageNo,
     syntheticOrderInSlot: r.orderInSlot,
-    // β31: present when the synthetic page is backed by a vector source
-    // PDF (external PDF insertion). Exporter prefers copyPages when both
-    // are non-null; otherwise falls back to the rasterised image_blob.
-    syntheticSourcePdfId: r.sourcePdfId ?? null,
-    syntheticSourcePageIndex: r.sourcePageIndex ?? null,
     cropW: r.width,
     cropH: r.height,
     mediaW: r.width,
@@ -284,17 +277,10 @@ export class Workspace {
   }
 
   /** Add an image-backed inserted page (e.g. external PDF page rasterised
-   *  to PNG). Returns the synthetic pageNo (negative).
-   *  β31: when `sourcePdfId` + `sourcePageIndex` are supplied, the row
-   *  is also a vector reference into inserted_source_pdfs so exports can
-   *  copyPages the original PDF instead of using the rasterised image. */
-  addInsertedImagePage({
-    afterPageNo, imageBlob, imageW, imageH, width, height,
-    sourcePdfId = null, sourcePageIndex = null,
-  }) {
+   *  to PNG). Returns the synthetic pageNo (negative). */
+  addInsertedImagePage({ afterPageNo, imageBlob, imageW, imageH, width, height }) {
     const id = addInsertedImagePage(this.db, {
       afterPageNo, imageBlob, imageW, imageH, width, height,
-      sourcePdfId, sourcePageIndex,
     });
     return -id;
   }
@@ -304,18 +290,6 @@ export class Workspace {
    *  negating). */
   getInsertedPageImage(id) {
     return getInsertedPageImage(this.db, id);
-  }
-
-  /** β31: get-or-create a vector-source PDF row keyed by SHA-256.
-   *  Returns the inserted_source_pdfs.id (existing or new). */
-  getOrCreateInsertedSourcePdf({ sha256, pdfBlob, byteSize }) {
-    return getOrCreateInsertedSourcePdf(this.db, { sha256, pdfBlob, byteSize });
-  }
-
-  /** β31: read the stored external-source PDF bytes for vector
-   *  copyPages at export / print time. */
-  getInsertedSourcePdf(id) {
-    return getInsertedSourcePdf(this.db, id);
   }
 
   /** Remove an inserted page by its synthetic pageNo (negative). */

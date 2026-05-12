@@ -10,15 +10,14 @@
 // The collected PNGs (with their canonical PDF-point dimensions) are then
 // shipped to main where mupdf assembles them into a flat PDF.
 //
-// EXPORT_ZOOM is 900 / 72 — exactly 900 dpi (β31 bumped from 600 dpi).
-// β30 testers still reported visible AA dots on printed text; doubling
-// stroke (β31 A) plus raising the raster density (β31 B) together push
-// the AA fringe below the printer's perceivable threshold without
-// requiring vector-text assembly. β3 testers had ruled out 144 dpi as
-// unusable and 288 dpi as short of Adobe-baseline quality; 600 dpi was
-// β4-β30 baseline; 900 dpi keeps PNG buffers within Canvas dimension
-// limits (~7440×10530 px for A4) and PNG output stays under a few MB
-// per page on text-heavy content.
+// EXPORT_ZOOM is 600 / 72 — exactly 600 dpi, matching the user's
+// preceding-tool baseline. β3 testers reported 144 dpi as outright
+// unusable and 288 dpi (4.0) as still short of the prior quality bar.
+// Trade-off: per-page PNG buffers are ~4× heavier than at 288 dpi
+// (~150MB raw RGBA for A4) and the assembled PDF balloons proportionally.
+// The proper long-term fix is hybrid PDF assembly — keep unedited source
+// pages as vectors and only rasterize pages with overlays — deferred to
+// β5+ since it needs a mupdf graftObject pipeline.
 
 import { canonicalPageSize } from "../domain/coord.js";
 import {
@@ -104,27 +103,6 @@ async function getTintedAssetCanvas(assetId, color) {
 }
 
 /**
- * β31: same-color overstroke + fill for every rasterized glyph run.
- * Canvas 2D fillText anti-aliases edges to subpixel alpha → printer
- * reproduces the halo as gray dots ("ドット感"). A thin stroke under
- * the fill at the same color paints over the halo so the glyph reads
- * as solid color on paper. lineWidth = 6% of rendered font size: at
- * 900 dpi for 12pt that's ≈9 px, enough to cover the AA fringe.
- * Caller pre-configures ctx.font / ctx.textBaseline / ctx.textAlign.
- */
-function paintGlyphRun(ctx, text, x, y, color, fontSize) {
-  ctx.save();
-  ctx.fillStyle = color;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = fontSize * 0.06;
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-  ctx.strokeText(text, x, y);
-  ctx.fillText(text, x, y);
-  ctx.restore();
-}
-
-/**
  * Draw stamp text centred on (cx, cy) with per-run fonts. Mirrors
  * `splitStampRuns` so 全角/半角 alternation lines up exactly between
  * the on-screen viewer and the exported canvas (no drift between
@@ -137,27 +115,28 @@ function paintGlyphRun(ctx, text, x, y, color, fontSize) {
  *  are not drawn (matches preprinted「  年    月    日」forms). */
 function drawSpacedTokensOnCanvas(ctx, tokens, cx, cy, width, fontSize, color, halfStack) {
   if (!tokens || tokens.length === 0) return;
+  ctx.fillStyle = color;
   ctx.font = `bold ${fontSize}px ${halfStack}`;
   ctx.textBaseline = "middle";
   const left = cx - width / 2;
   const right = cx + width / 2;
   if (tokens.length === 1) {
     ctx.textAlign = "center";
-    paintGlyphRun(ctx, tokens[0], cx, cy, color, fontSize);
+    ctx.fillText(tokens[0], cx, cy);
     return;
   }
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
     if (i === 0) {
       ctx.textAlign = "left";
-      paintGlyphRun(ctx, tok, left, cy, color, fontSize);
+      ctx.fillText(tok, left, cy);
     } else if (i === tokens.length - 1) {
       ctx.textAlign = "right";
-      paintGlyphRun(ctx, tok, right, cy, color, fontSize);
+      ctx.fillText(tok, right, cy);
     } else {
       ctx.textAlign = "center";
       const tcx = left + (width * i) / (tokens.length - 1);
-      paintGlyphRun(ctx, tok, tcx, cy, color, fontSize);
+      ctx.fillText(tok, tcx, cy);
     }
   }
 }
@@ -172,13 +151,14 @@ function drawStampMixedTextOnCanvas(ctx, text, cx, cy, fontSize, color, fullStac
     widths.push(m.width);
     total += m.width;
   }
+  ctx.fillStyle = color;
   ctx.textBaseline = "middle";
   ctx.textAlign = "left";
   let pen = cx - total / 2;
   for (let i = 0; i < runs.length; i++) {
     const run = runs[i];
     ctx.font = `bold ${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
-    paintGlyphRun(ctx, run.text, pen, cy, color, fontSize);
+    ctx.fillText(run.text, pen, cy);
     pen += widths[i];
   }
 }
@@ -217,7 +197,7 @@ function parseHexColor(s) {
   ];
 }
 
-export const EXPORT_ZOOM = 900 / 72;
+export const EXPORT_ZOOM = 600 / 72;
 
 /**
  * @param {object} args
@@ -259,16 +239,7 @@ export async function composePagesForExport({
     const sourceRot = (((row.rotation ?? 0) % 360) + 360) % 360;
     const effectiveRotation = ((sourceRot + userRot) % 360 + 360) % 360;
     const isSynthetic = row.isSynthetic || row.pageNo < 0;
-    // β31: synthetic page backed by a stored external PDF (inserted via
-    // sidebar/split D&D). When present, we ask main to copyPages the
-    // original PDF for crisp vector output instead of rasterising.
-    const hasExternalSource =
-      isSynthetic
-      && row.syntheticSourcePdfId != null
-      && row.syntheticSourcePageIndex != null;
     // Hybrid strategy:
-    //   - synthetic page backed by external PDF → "external" (copyPages
-    //     the stored source PDF, plus overlay PNG if any)
     //   - synthetic page (no source) → "full" (rasterize the renderer-
     //     drawn synthetic content)
     //   - source PDF page with overlays → "overlay" (copy vector source +
@@ -280,9 +251,7 @@ export async function composePagesForExport({
     // place rotated vector content, so we keep crisp text on rotated pages
     // too (β4 fell back to full-rasterize which exploded file size).
     let strategy;
-    if (hasExternalSource) {
-      strategy = "external"; // copyPages from stored external PDF (vector)
-    } else if (isSynthetic) {
+    if (isSynthetic) {
       strategy = "full"; // no source page to keep — rasterize everything
     } else if (overlayCount > 0) {
       strategy = "overlay"; // copy source vector + draw overlay PNG on top
@@ -303,35 +272,17 @@ export async function composePagesForExport({
         result = await renderPage(row.pageNo, { zoom: EXPORT_ZOOM });
       }
       const canvas = await compositePage(row, result, projectStore, EXPORT_ZOOM);
-      // β31 #3: pick encoding by content type so printed sharpness is
-      // maximised for text-heavy pages.
-      //   - synthetic white + text page (no underlying image) → PNG
-      //     (lossless; DCT halos around glyph edges in JPEG showed up
-      //     as faint blur on print).
-      //   - legacy image-only inserted page (β30 and earlier, before
-      //     the vector "external" path) → JPEG q=0.95 to keep file
-      //     size manageable on photo-ish content.
-      //   - any other "full" fallback (rotated source page that fell
-      //     out of the hybrid path, etc.) → JPEG q=0.95.
-      const isPureSyntheticText =
-        isSynthetic && !(row.syntheticHasImage);
-      imageBytes = isPureSyntheticText
-        ? await canvasToPng(canvas)
-        : await canvasToJpeg(canvas, 0.95);
+      // Full-page images embed onto a fresh PDF page with no background —
+      // we own every pixel, so JPEG (q=0.95) is the right encoding for
+      // size. Vector text is preserved in the "source"/"overlay" paths.
+      imageBytes = await canvasToJpeg(canvas, 0.95);
     } else if (strategy === "overlay") {
       const canvas = await composeOverlayOnlyPage(row, projectStore, EXPORT_ZOOM);
       // Overlay layer must be PNG to keep transparency — drawing on top of
       // the copied vector source page would otherwise paint white over it.
       imageBytes = await canvasToPng(canvas);
-    } else if (strategy === "external" && overlayCount > 0) {
-      // External-source pages can also carry overlays drawn by the user
-      // (e.g. a stamp pinned onto an inserted page). Author the overlay
-      // layer the same way as the "overlay" strategy so main can compose.
-      const canvas = await composeOverlayOnlyPage(row, projectStore, EXPORT_ZOOM);
-      imageBytes = await canvasToPng(canvas);
     }
     // strategy === "source": no image bytes; main copies source page as-is.
-    // strategy === "external" with no overlays: no image bytes either.
 
     out.push({
       pageNo: row.pageNo,
@@ -339,10 +290,6 @@ export async function composePagesForExport({
       heightPt: canonical.h,
       strategy,
       sourceIdx: isSynthetic ? null : (row.pageNo - 1),
-      // β31: external-source coordinates carried through to main so it
-      // can fetch the stored PDF and copyPages the right page.
-      externalSourcePdfId: hasExternalSource ? row.syntheticSourcePdfId : null,
-      externalSourcePageIndex: hasExternalSource ? row.syntheticSourcePageIndex : null,
       // userRotation lets the main side place the source page rotated.
       // pdf-lib's embedPage already bakes in the source's intrinsic
       // /Rotate, so only the *additional* user-applied rotation needs
@@ -494,20 +441,35 @@ async function drawOverlay(ctx, ov, zoom) {
   if (ov.type === "text") {
     const fontSize = (props.fontSize ?? 12) * zoom;
     const color = props.color ?? "#000000";
-    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId, {
-      digitsHanko: !!props.digitsHanko,
-    })}`;
+    ctx.fillStyle = color;
+    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId)}`;
     ctx.textBaseline = "top";
-    ctx.textAlign = "start";
-    // β15/β31: see paintGlyphRun for why we stroke-then-fill at the
-    // same color — plugs the AA halo that prints as gray dots.
+    // β15 testers reported the rasterised text overlay prints lighter /
+    // thinner than expected. Canvas 2D fillText anti-aliases glyph
+    // edges to subpixel alpha, which a printer reproduces as light
+    // gray; the dark glyph core is surrounded by gray fringes, giving
+    // the overall "黒が薄い" impression. Overstroking the same glyph
+    // with a thin line at the same colour blackens those fringes
+    // without changing the font weight — gives the printed output
+    // the saturation of a real "black" ink fill while preserving the
+    // glyph's original shape. Stroke width is 3% of the rendered
+    // glyph height; at 600 dpi for a 12pt font that's ≈3 px, just
+    // enough to plug the AA fringe.
+    ctx.strokeStyle = color;
+    ctx.lineWidth = fontSize * 0.03;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
     const text = props.text ?? "";
     const lineHeight = fontSize * (props.lineHeight ?? 1);
     const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+    const paintLine = (line, px, py) => {
+      ctx.strokeText(line, px, py);
+      ctx.fillText(line, px, py);
+    };
     if (rot === 0) {
       const lines = wrapCanvasText(ctx, text, w);
       for (let i = 0; i < lines.length; i++) {
-        paintGlyphRun(ctx, lines[i], x, y + i * lineHeight, color, fontSize);
+        paintLine(lines[i], x, y + i * lineHeight);
       }
     } else {
       // Match the viewer's "rotate the content within the new rect"
@@ -521,7 +483,7 @@ async function drawOverlay(ctx, ov, zoom) {
       ctx.rotate((rot * Math.PI) / 180);
       const lines = wrapCanvasText(ctx, text, naturalW);
       for (let i = 0; i < lines.length; i++) {
-        paintGlyphRun(ctx, lines[i], -naturalW / 2, -naturalH / 2 + i * lineHeight, color, fontSize);
+        paintLine(lines[i], -naturalW / 2, -naturalH / 2 + i * lineHeight);
       }
       ctx.restore();
     }
@@ -677,19 +639,17 @@ async function drawOverlay(ctx, ov, zoom) {
     ctx.fillStyle = color;
     ctx.fill();
     ctx.restore();
-    // Text inside the box. β31: same overstroke as text overlay.
+    // Text inside the box.
     const fontSize = (props.fontSize ?? 12) * zoom;
-    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId, {
-      digitsHanko: !!props.digitsHanko,
-    })}`;
+    ctx.fillStyle = color;
+    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId)}`;
     ctx.textBaseline = "top";
-    ctx.textAlign = "start";
     const text = props.text ?? "";
     const padding = 3 * zoom;
     const lineHeight = fontSize * (props.lineHeight ?? 1);
     const lines = wrapCanvasText(ctx, text, w - padding * 2);
     for (let i = 0; i < lines.length; i++) {
-      paintGlyphRun(ctx, lines[i], x + padding, y + padding + i * lineHeight, color, fontSize);
+      ctx.fillText(lines[i], x + padding, y + padding + i * lineHeight);
     }
     return;
   }

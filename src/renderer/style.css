@@ -7,35 +7,13 @@
  * PSY/OPS Freeware via FontSpace; license lives next to the .ttf in
  * vendor/. The font-family name matches the one in fonts.js
  * (STAMP_FONT_STACKS.numeric) so Canvas / DOM both resolve to this
- * exact face when the user picks "数字明朝" for the stamp's 半角.
- *
- * The TTF actually ships glyphs for 0-9 + a smattering of ASCII
- * punctuation (.,-/+=) and uppercase letters (E,Q,R,T,W,Y). Stamps
- * historically use the full coverage because the date format relies
- * on the period / 全角 fallback to look hanko-style. */
+ * exact face when the user picks "数字明朝" for the stamp's 半角. */
 @font-face {
   font-family: "CrashNumberingSerif";
   font-style: normal;
   font-weight: normal;
   font-display: block; /* avoid FOUT — date stamp is identity-bearing */
   src: url("vendor/CrashNumberingSerif.ttf") format("truetype");
-}
-
-/* β32: text-overlay-facing variant of the same TTF, but restricted to
- * digit codepoints (U+0030..U+0039) via unicode-range. The text mode
- * exposes a "数字を hanko 風にする" checkbox that prepends this family
- * onto the user's chosen main stack; the unicode-range guarantees only
- * 0-9 pick up the hanko glyphs while every other character (CJK,
- * Latin letters, punctuation) falls through to the main font (明朝 /
- * ゴシック / etc.) — fixing β31's bug where the raw CrashNumberingSerif
- * face also hijacked `.`, `T`, `E`, etc. */
-@font-face {
-  font-family: "CrashNumberingDigits";
-  font-style: normal;
-  font-weight: normal;
-  font-display: block;
-  src: url("vendor/CrashNumberingSerif.ttf") format("truetype");
-  unicode-range: U+0030-0039;
 }
 
 /* UI font override (一旦 MS UI Gothic に統一して評価中).

@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
@@ -1099,23 +1099,6 @@ async function assembleHybridPdf(pages, sourceBytes) {
   const sourcePdf = sourceBytes
     ? await PDFDocument.load(sourceBytes, { ignoreEncryption: true })
     : null;
-  // β31: cache external-source PDFDocument handles per inserted_source_pdfs.id.
-  // Multiple inserted pages from the same external PDF share one PDFDocument
-  // so copyPages doesn't re-parse the bytes for every page.
-  const externalPdfCache = new Map();
-  async function getExternalPdf(id) {
-    if (externalPdfCache.has(id)) return externalPdfCache.get(id);
-    if (!activeWorkspace) {
-      throw new Error("assembleHybridPdf: external-source requested but no active workspace");
-    }
-    const row = activeWorkspace.getInsertedSourcePdf(id);
-    if (!row || !row.pdfBlob) {
-      throw new Error(`assembleHybridPdf: inserted_source_pdfs id=${id} not found`);
-    }
-    const doc = await PDFDocument.load(row.pdfBlob, { ignoreEncryption: true });
-    externalPdfCache.set(id, doc);
-    return doc;
-  }
   for (const p of pages) {
     const userRot = (((p.userRotation ?? 0) % 360) + 360) % 360;
     if (p.strategy === "source") {
@@ -1149,38 +1132,6 @@ async function assembleHybridPdf(pages, sourceBytes) {
         }
       } else {
         await _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, p.imageBytes);
-      }
-    } else if (p.strategy === "external") {
-      // β31: vector-preserving external PDF insertion. Pull the stored
-      // source PDF (dedup'd via inserted_source_pdfs) and copyPages the
-      // referenced page. Overlays (when any) ride on top as a PNG layer,
-      // same shape as the "overlay" strategy.
-      if (p.externalSourcePdfId == null || p.externalSourcePageIndex == null) {
-        throw new Error(`assembleHybridPdf: external strategy missing source ids (page ${p.pageNo})`);
-      }
-      const extDoc = await getExternalPdf(p.externalSourcePdfId);
-      if (userRot === 0) {
-        const [copied] = await newPdf.copyPages(extDoc, [p.externalSourcePageIndex]);
-        newPdf.addPage(copied);
-        if (p.imageBytes && p.imageBytes.length > 0) {
-          const overlayImg = await newPdf.embedPng(p.imageBytes);
-          copied.drawImage(overlayImg, {
-            x: 0,
-            y: 0,
-            width: p.widthPt,
-            height: p.heightPt,
-          });
-        }
-      } else {
-        // Reuse the rotated-source helper with the external doc as source
-        // and `externalSourcePageIndex` standing in for `sourceIdx`.
-        await _placeRotatedSourcePage(
-          newPdf,
-          extDoc,
-          { ...p, sourceIdx: p.externalSourcePageIndex },
-          userRot,
-          p.imageBytes,
-        );
       }
     } else if (p.strategy === "full") {
       if (!p.imageBytes || p.imageBytes.length === 0) {
@@ -1684,18 +1635,10 @@ ipcMain.handle("kpdf3:remove-inserted-page", async (_, syntheticPageNo) => {
 
 /**
  * Import every page of an external PDF file as image-backed inserted
- * pages, anchored at `afterPageNo`.
- *
- * β31: dual-track storage —
- *   - image_blob (300 dpi PNG): viewer-preview path. Bumped from 144 dpi
- *     to make the on-screen preview sharp; printer/export does NOT use
- *     this when source_pdf_id is available.
- *   - inserted_source_pdfs (vector): the entire external PDF is stored
- *     once (dedup by SHA-256). Exporter/print uses copyPages on this
- *     blob so vector text + lines stay crisp at any output resolution.
- *
- * Returns the new synthetic pageNos so the renderer can scroll to the
- * first inserted page if it wants. (§17.3, β31 vector path.)
+ * pages, anchored at `afterPageNo`. Each page is rasterised at 144 dpi
+ * (zoom 2.0) and stored as a PNG in inserted_pages.image_blob. Returns
+ * the new synthetic pageNos so the renderer can scroll to the first
+ * inserted page if it wants. (§17.3 MVP: rasterize → synthetic.)
  */
 ipcMain.handle(
   "kpdf3:add-inserted-pdf-pages",
@@ -1703,14 +1646,6 @@ ipcMain.handle(
     if (!activeWorkspace) throw new Error("No active workspace");
     if (!externalPath) throw new Error("externalPath missing");
     const buf = readFileSync(externalPath);
-    // Store the entire external PDF once for vector-preserving export.
-    // Many pages from the same PDF share this row via SHA-256 dedup.
-    const sha256 = createHash("sha256").update(buf).digest("hex");
-    const sourcePdfId = activeWorkspace.getOrCreateInsertedSourcePdf({
-      sha256,
-      pdfBlob: buf,
-      byteSize: buf.length,
-    });
     const doc = mupdf.Document.openDocument(
       new Uint8Array(buf),
       "application/pdf",
@@ -1724,7 +1659,7 @@ ipcMain.handle(
           const bounds = page.getBounds();
           const pdfW = bounds[2] - bounds[0];
           const pdfH = bounds[3] - bounds[1];
-          const ZOOM = 300 / 72; // 300 dpi viewer preview
+          const ZOOM = 2.0; // 144 dpi
           const matrix = mupdf.Matrix.scale(ZOOM, ZOOM);
           const pixmap = page.toPixmap(
             matrix,
@@ -1747,8 +1682,6 @@ ipcMain.handle(
             imageH: imgH,
             width: pdfW,
             height: pdfH,
-            sourcePdfId,
-            sourcePageIndex: i,
           });
           synthetic.push(syntheticPageNo);
         } finally {
@@ -1762,18 +1695,6 @@ ipcMain.handle(
     return { syntheticPageNos: synthetic };
   },
 );
-
-/** β31: fetch the vector-source PDF bytes for an inserted page so the
- *  exporter/print path can copyPages it instead of using image_blob. */
-ipcMain.handle("kpdf3:get-inserted-source-pdf", async (_, id) => {
-  if (!activeWorkspace) throw new Error("No active workspace");
-  const row = activeWorkspace.getInsertedSourcePdf(id);
-  if (!row) return null;
-  const u8 = row.pdfBlob instanceof Uint8Array
-    ? row.pdfBlob
-    : new Uint8Array(row.pdfBlob);
-  return { pdfBlob: u8, byteSize: row.byteSize };
-});
 
 ipcMain.handle("kpdf3:get-inserted-page-image", async (_, id) => {
   if (!activeWorkspace) throw new Error("No active workspace");

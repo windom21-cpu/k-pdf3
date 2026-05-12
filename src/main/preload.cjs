@@ -90,6 +90,5 @@ contextBridge.exposeInMainWorld("kpdf3", {
   addInsertedPage:    (opts)    => ipcRenderer.invoke("kpdf3:add-inserted-page", opts),
   addInsertedPdfPages:(opts)    => ipcRenderer.invoke("kpdf3:add-inserted-pdf-pages", opts),
   getInsertedPageImage:(id)     => ipcRenderer.invoke("kpdf3:get-inserted-page-image", id),
-  getInsertedSourcePdf:(id)     => ipcRenderer.invoke("kpdf3:get-inserted-source-pdf", id),
   removeInsertedPage: (n)       => ipcRenderer.invoke("kpdf3:remove-inserted-page", n),
 });
