@@ -469,11 +469,39 @@ ipcMain.handle("kpdf3:list-directory", async (_, dirPath) => {
       } catch {
         continue;
       }
+      let isDir = ent.isDirectory();
+      let targetPath = null;
+      // Windows .lnk shortcuts: shell.readShortcutLink resolves the
+      // shortcut's target so the user can navigate INTO a shortcut-
+      // to-folder from the in-app file browser. β15 testers reported
+      // being unable to open desktop shortcut folders (e.g., a
+      // 「業務フォルダ」 shortcut on Desktop). When the resolved
+      // target is itself a directory we mark isDir=true and the
+      // renderer's click handler navigates to targetPath. Shortcut-
+      // to-file isn't handled here — the file dialog's filter
+      // wouldn't accept the .lnk anyway.
+      if (process.platform === "win32"
+          && !isDir
+          && ent.name.toLowerCase().endsWith(".lnk")) {
+        try {
+          const link = shell.readShortcutLink(full);
+          if (link?.target) {
+            try {
+              const targetSt = await stat(link.target);
+              if (targetSt.isDirectory()) {
+                isDir = true;
+                targetPath = link.target;
+              }
+            } catch { /* dangling shortcut — leave as a plain .lnk */ }
+          }
+        } catch { /* not a parseable shortcut — leave as plain file */ }
+      }
       entries.push({
         name: ent.name,
-        isDir: ent.isDirectory(),
+        isDir,
         size: st.size,
         mtimeMs: st.mtimeMs,
+        targetPath,
       });
     }
     entries.sort((a, b) => {
