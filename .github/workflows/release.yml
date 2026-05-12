@@ -1,11 +1,19 @@
 # Cross-platform release builder — fires on tag push (v*).
 #
-# Each runner builds installers for its native OS via electron-builder.
+# B-2 strategy (β34+): β tags (`v*-beta.*`) build Windows only — the
+# active tester is on Windows and β iterations need to land fast.
+# Stable tags (`v[0-9].[0-9].[0-9]` with no `-beta` suffix) trigger the
+# full Linux + macOS + Windows matrix so distribution covers all
+# platforms once the build hits release quality. This also stops the
+# transient `tag_name already_exists` 422 race we hit during β12/β33
+# when the 3-OS matrix tried to create the same release in parallel.
+#
 # Outputs land in `release/` (per the package.json `directories.output`
 # setting). Electron-builder publishes the installer + `latest*.yml` +
 # blockmap to the **public** `windom21-cpu/k-pdf3-releases` repository,
 # which serves as the autoUpdater feed (§17.15). The development repo
-# (this one, k-pdf3) stays private.
+# (this one, k-pdf3) is also public as of 2026-05-12 (history-cleaned
+# via filter-branch — see HANDOVER §12.1).
 #
 # Token: `RELEASES_REPO_TOKEN` is a fine-grained PAT scoped only to
 # k-pdf3-releases (Contents=Write, Metadata=Read). The default
@@ -24,14 +32,82 @@ on:
     tags: ["v*"]
 
 jobs:
-  build:
-    name: build-${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+  # Windows runs unconditionally — every tag, β or stable.
+  build-windows:
+    name: build-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.2"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build + publish (Windows)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        run: npm run publish:win
+
+      - name: Upload artifacts (debugging copy)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k-pdf3-windows-latest
+          path: |
+            release/*.exe
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: warn
+          retention-days: 14
+
+  # macOS and Linux only run for stable tags (no `-beta` substring).
+  # `!contains(...)` evaluates against the tag name (e.g. `v2.0.0-beta.34`
+  # vs `v2.0.0`). Stable releases happen rarely so the matrix race
+  # documented in HANDOVER §6.4 is not a concern when both run together.
+  build-macos:
+    name: build-macos
+    runs-on: macos-latest
+    if: "!contains(github.ref_name, '-beta')"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.2"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build + publish (macOS)
+        env:
+          # Code signing / notarization requires APPLE_ID / APPLE_ID_PASSWORD
+          # secrets — left disabled until certs are available. Unsigned
+          # dmg still installable with right-click → 開く.
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        run: npm run publish:mac
+
+      - name: Upload artifacts (debugging copy)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k-pdf3-macos-latest
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: warn
+          retention-days: 14
+
+  build-linux:
+    name: build-linux
+    runs-on: ubuntu-latest
+    if: "!contains(github.ref_name, '-beta')"
     steps:
       - uses: actions/checkout@v4
 
@@ -44,39 +120,18 @@ jobs:
         run: npm ci
 
       - name: Build + publish (Linux)
-        if: runner.os == 'Linux'
         env:
           GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         run: npm run publish:linux
 
-      - name: Build + publish (macOS)
-        if: runner.os == 'macOS'
-        env:
-          # Code signing / notarization requires APPLE_ID / APPLE_ID_PASSWORD
-          # secrets — left disabled until certs are available. Unsigned
-          # dmg still installable with right-click → 開く.
-          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
-        run: npm run publish:mac
-
-      - name: Build + publish (Windows)
-        if: runner.os == 'Windows'
-        env:
-          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
-        run: npm run publish:win
-
-      # Retain artifacts on the workflow run too — helpful when debugging
-      # a failed publish without crossing into the public releases repo.
       - name: Upload artifacts (debugging copy)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: k-pdf3-${{ matrix.os }}
+          name: k-pdf3-ubuntu-latest
           path: |
             release/*.AppImage
             release/*.deb
-            release/*.dmg
-            release/*.exe
-            release/*.zip
             release/*.yml
             release/*.blockmap
           if-no-files-found: warn
