@@ -109,7 +109,6 @@ const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
 const btnModeCallout = $("btn-mode-callout");
 const wsStatus = $("ws-status");
-const pageIndicator = $("page-indicator");
 const viewerContainer = $("viewer-container");
 const sidebar = $("sidebar");
 const bookmarkTree = $("bookmark-tree");
@@ -189,9 +188,20 @@ const viewer = new Viewer(viewerContainer, {
   onPageChange: updatePageIndicator,
 });
 
+const pagePrevBtn = $("page-prev-btn");
+const pageNextBtn = $("page-next-btn");
+const pageNumInput = $("page-num-input");
+const pageNumTotal = $("page-num-total");
+
 function updatePageIndicator(current, total) {
   if (!total || total === 0) {
-    pageIndicator.textContent = "";
+    if (pageNumInput) {
+      pageNumInput.value = "";
+      pageNumInput.disabled = true;
+    }
+    if (pageNumTotal) pageNumTotal.textContent = "0";
+    if (pagePrevBtn) pagePrevBtn.disabled = true;
+    if (pageNextBtn) pageNextBtn.disabled = true;
     return;
   }
   // `current` is the active pageNo (negative for inserted pages,
@@ -200,11 +210,24 @@ function updatePageIndicator(current, total) {
   // the position via the registry; fall back to the raw value if
   // the registry isn't available yet.
   let displayPos = current;
+  let pos = -1;
   if (viewer.registry && typeof viewer.registry.posOfPageNo === "function") {
-    const pos = viewer.registry.posOfPageNo(current);
+    pos = viewer.registry.posOfPageNo(current);
     if (pos >= 0) displayPos = pos + 1;
   }
-  pageIndicator.textContent = `${displayPos} / ${total}`;
+  if (pageNumInput) {
+    // Don't clobber the user mid-edit — only refresh the field's
+    // value when it isn't focused. Their entered value lives until
+    // they press Enter / blur (handled in the input listeners).
+    if (document.activeElement !== pageNumInput) {
+      pageNumInput.value = String(displayPos);
+    }
+    pageNumInput.max = String(total);
+    pageNumInput.disabled = false;
+  }
+  if (pageNumTotal) pageNumTotal.textContent = String(total);
+  if (pagePrevBtn) pagePrevBtn.disabled = pos <= 0;
+  if (pageNextBtn) pageNextBtn.disabled = pos < 0 || pos >= total - 1;
 }
 
 let isOpen = false;
@@ -5485,6 +5508,68 @@ async function actionPageGoto() {
   }
   viewer.scrollToPage(n);
 }
+
+// ---- Status-bar page navigation: ◀  [n]  / total  ▶ -------------------
+// β15 testers wanted an always-visible way to step pages and jump by
+// number without opening the goto dialog. The existing actionPagePrev/
+// actionPageNext/PageUp/PageDown machinery is reused; this just adds
+// the visible UI in the status bar.
+//
+// commitPageInput parses what the user typed (1-indexed visual position)
+// and resolves it to a real pageNo via the registry. Same validation
+// rules as actionPageGoto.
+function commitPageInput() {
+  if (!isOpen || !viewer.registry || !pageNumInput) return;
+  const total = viewer.registry.count();
+  const raw = pageNumInput.value.trim();
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > total) {
+    // Revert to the live position.
+    updatePageIndicator(viewer.currentPage, total);
+    if (raw !== "") wsStatus.textContent = `無効なページ番号: ${raw}`;
+    return;
+  }
+  // The status-bar input is 1-indexed visual position. Translate via
+  // the registry to the underlying pageNo (which can be negative for
+  // inserted pages).
+  const pageNo = viewer.registry.pageNoAtPos(n - 1);
+  if (typeof pageNo !== "number") {
+    updatePageIndicator(viewer.currentPage, total);
+    return;
+  }
+  viewer.scrollToPage(pageNo);
+}
+pagePrevBtn?.addEventListener("click", () => {
+  actionPagePrev();
+  pagePrevBtn.blur();
+});
+pageNextBtn?.addEventListener("click", () => {
+  actionPageNext();
+  pageNextBtn.blur();
+});
+pageNumInput?.addEventListener("focus", () => {
+  pageNumInput.select();
+});
+pageNumInput?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    commitPageInput();
+    pageNumInput.blur();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    // Discard pending edit, restore live value.
+    const total = viewer.registry?.count() ?? 0;
+    updatePageIndicator(viewer.currentPage, total);
+    pageNumInput.blur();
+  }
+});
+pageNumInput?.addEventListener("blur", () => {
+  // Resync the field to the live position (commitPageInput already
+  // scrolled if the value was valid; this just snaps the input back
+  // for cases where the user left the field with stale text).
+  const total = viewer.registry?.count() ?? 0;
+  updatePageIndicator(viewer.currentPage, total);
+});
 
 // ---- Bookmarks sidebar (M5-5) ----------------------------------------
 

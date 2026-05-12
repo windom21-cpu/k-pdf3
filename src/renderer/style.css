@@ -1097,6 +1097,35 @@ button.toggled {
   flex: 0 0 auto !important;
   min-width: 90px;
   text-align: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.status-bar-page button {
+  min-width: 18px;
+  height: 14px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#page-num-input {
+  width: 42px;
+  height: 14px;
+  padding: 0 2px;
+  font-size: 11px;
+  text-align: right;
+  /* Hide spinner arrows (Webkit) so the field stays narrow in the
+   * status bar; users use the ◀▶ buttons or type+Enter to navigate. */
+  -webkit-appearance: textfield;
+  appearance: textfield;
+}
+#page-num-input::-webkit-outer-spin-button,
+#page-num-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 #appinfo {
   text-align: right;
