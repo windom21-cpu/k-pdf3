@@ -4957,17 +4957,29 @@ async function actionSave() {
         || hadMutations
         || projectStore.count() > 0);
     if (hasEditsToCommit) {
+      // Ask the user how to save. "確定" = flatten + overwrite source PDF
+      // (destructive, overlays bake into the image); "下書き" = keep the
+      // edits live (workspace-only save, source PDF untouched). Wording
+      // avoids the internal "workspace" term and uses the 下書き／確定
+      // distinction that legal practitioners already use day-to-day.
       const ok = await customConfirm({
-        title: "元 PDF に上書き保存",
+        title: "保存方法を選んでください",
         message:
-          `「${activeSourceName || "(無名)"}」を編集内容で上書きします。\n`
-          + `上書き後は元の PDF 内容には戻せません。よろしいですか？`,
-        okLabel: "上書きする",
+          `「${activeSourceName || "(無名)"}」を保存します。\n`
+          + `「確定」を選ぶと、いま入れたテキスト・印影などは\n`
+          + `あとから動かせなくなります。`,
+        okLabel: "確定として PDF を上書き",
+        cancelLabel: "下書きとして保存（あとで編集できる）",
       });
       if (ok) {
         await actionExportToPath(sourcePath, { verb: "上書き保存" });
         return;
       }
+      // User picked 下書き — reinforce the choice in the status bar so
+      // they know the source PDF was left alone.
+      wsStatus.textContent =
+        "下書きとして保存しました（元 PDF は変更されていません）";
+      return;
     }
     const parts = [];
     if (overlaySnapshot.length > 0) parts.push(`${overlaySnapshot.length} overlays`);
