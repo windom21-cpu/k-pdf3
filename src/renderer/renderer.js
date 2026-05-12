@@ -2189,15 +2189,16 @@ async function refreshStampPresetCacheAndSelect() {
   }
   _stampPresetCache.clear();
   for (const p of list) _stampPresetCache.set(p.id, p);
-  // Auto-select the first preset if the previously-active one is gone
-  // (e.g. user deleted it). Avoids an "active id but currentStampPreset
-  // returns null" gap that would silently disable placement.
+  // Drop the active id if the preset is gone (user deleted it). Don't
+  // auto-fill it back to list[0] — β15 testers found the first-stamp
+  // pre-selection confusing because the cursor ghost / palette
+  // highlight implied "this is what will be placed" even before the
+  // user explicitly picked something. Now the initial state is
+  // genuinely 未選択 until the user clicks a palette tile.
   if (_activeStampPresetId && !_stampPresetCache.has(_activeStampPresetId)) {
     _activeStampPresetId = null;
-  }
-  if (!_activeStampPresetId && list.length > 0) {
-    _activeStampPresetId = list[0].id;
-    localStorage.setItem(STAMP_ACTIVE_PRESET_KEY, _activeStampPresetId);
+    try { localStorage.removeItem(STAMP_ACTIVE_PRESET_KEY); }
+    catch { /* ignore */ }
   }
   rebuildStampPalette();
 }
@@ -3081,6 +3082,13 @@ function onTrialKeydown(e) {
   }
 }
 
+// Remember which stamp-related dialogs were open when 試し置き started
+// so we can restore the prior dialog stack on exit. β15 testers
+// reported that after pressing 試し置き the stamp manager (which had
+// been open behind the register dialog) remained visible and blocked
+// clicks on the PDF.
+let _stampTrialPrevDialogState = null;
+
 function enterStampTrialPlacement() {
   const params = getStampTrialParams();
   if (!params) {
@@ -3092,7 +3100,12 @@ function enterStampTrialPlacement() {
     return;
   }
   _stampTrialPlacing = true;
-  stampRegImageDialog.hidden = true;
+  _stampTrialPrevDialogState = {
+    register: stampRegImageDialog && !stampRegImageDialog.hidden,
+    manager: stampMgrDialog && !stampMgrDialog.hidden,
+  };
+  if (stampRegImageDialog) stampRegImageDialog.hidden = true;
+  if (stampMgrDialog) stampMgrDialog.hidden = true;
   paintStampTrialCursor(params);
   viewerContainer.addEventListener("mousemove", onTrialCursorMove);
   viewerContainer.addEventListener("mouseleave", onTrialCursorLeave);
@@ -3107,12 +3120,17 @@ function cancelStampTrialPlacement() {
   viewerContainer.removeEventListener("mousemove", onTrialCursorMove);
   viewerContainer.removeEventListener("mouseleave", onTrialCursorLeave);
   window.removeEventListener("keydown", onTrialKeydown, true);
-  // Re-show the dialog only if it was the trigger; closeStampRegisterImage
-  // also calls us but with the dialog already on its way out.
-  if (stampRegImageDialog && !stampRegImageDialog.hidden) {
-    /* already visible — nothing to do */
-  } else if (stampRegImageDialog && stampRegImageDialog.hidden && _stampRegImageState) {
-    stampRegImageDialog.hidden = false;
+  // Restore the dialog stack we hid on entry. Register dialog comes
+  // back first (so it ends up on top of the manager) — matches the
+  // visual order the user saw before clicking 試し置き.
+  if (_stampTrialPrevDialogState) {
+    if (_stampTrialPrevDialogState.manager && stampMgrDialog) {
+      stampMgrDialog.hidden = false;
+    }
+    if (_stampTrialPrevDialogState.register && stampRegImageDialog) {
+      stampRegImageDialog.hidden = false;
+    }
+    _stampTrialPrevDialogState = null;
   }
   wsStatus.textContent = "";
 }
