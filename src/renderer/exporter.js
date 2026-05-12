@@ -704,12 +704,16 @@ async function drawOverlay(ctx, ov, zoom) {
     ctx.textBaseline = "top";
     ctx.textAlign = "start";
     const text = props.text ?? "";
-    const padding = 3 * zoom;
+    // Mirror renderer-side layout: horizontal padding 5pt (CALLOUT_PAD_X),
+    // vertical 1pt (CALLOUT_PAD_Y_TOP / BOTTOM — border only, no slack)
+    // so the flatten output hugs the text the same way the viewer does.
+    const padX = 5 * zoom;
+    const padY = 1 * zoom;
     const lineHeight = fontSize * (props.lineHeight ?? 1);
-    const lines = wrapCanvasText(ctx, text, w - padding * 2);
+    const lines = wrapCanvasText(ctx, text, w - padX * 2);
     const boldOpt = { bold: !!props.bold };
     for (let i = 0; i < lines.length; i++) {
-      paintGlyphRun(ctx, lines[i], x + padding, y + padding + i * lineHeight, color, fontSize, boldOpt);
+      paintGlyphRun(ctx, lines[i], x + padX, y + padY + i * lineHeight, color, fontSize, boldOpt);
     }
     return;
   }

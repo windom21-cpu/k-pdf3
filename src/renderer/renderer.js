@@ -1533,57 +1533,46 @@ function alignSelectedOverlays(edge) {
   }揃えしました`;
 }
 
-function handleTextEditCommit(id, newText) {
+function handleTextEditCommit(id, newText, opts = {}) {
   if (!isOpen) return;
   const ov = projectStore.get(id);
   if (!ov) return;
   // Auto-fit the box to the entered text so longer / multi-line content
-  // doesn't overflow the initial placement size. Callouts and text
-  // overlays both grow; redaction / image stamps keep their drag bounds.
+  // doesn't overflow the initial placement size. Both callout and
+  // plain text overlays use the same recipe: the editor's reported
+  // visible size (already wrapped + pixel-rounded by Chromium) is the
+  // source of truth, and a measure-based fallback covers callers that
+  // can't report it. JS-side measureText approximations of Chromium's
+  // wrap differ by 1-2 lines on long paragraphs — invisible on
+  // borderless text overlays, but a visible gap below callouts.
   let sizePatch = {};
-  if (ov.type === "rect" && ov.properties?.kind === "callout") {
-    const m = measureCalloutSize(
-      newText,
-      ov.properties.fontSize ?? 12,
-      getTextFontStack(ov.properties.fontId, {
-        digitsHanko: !!ov.properties.digitsHanko,
-      }),
-    );
-    sizePatch = { w: m.w, h: m.h };
-  } else if (ov.type === "text") {
-    // Cap horizontal growth at the page edge: during inline edit the
-    // contentEditable's max-width was clipped to (page - overlayLeft),
-    // so the user types text that visually wraps inside the page. On
-    // commit, measureTextOverlaySize would otherwise grow `w` to the
-    // longest UNWRAPPED line — making the box (and thus the saved /
-    // printed text) extend past the paper. β15 testers reported the
-    // committed text "一行で紙の外まで長くなる".
-    //
-    // Compute the same canonical max-width the editor used, then pass
-    // it through so the committed box keeps wrapping at the page edge.
-    let maxCanonicalW = Infinity;
-    const row = viewer._pages?.find((p) => p.pageNo === ov.pageNo);
-    if (row) {
-      const cw = row.cropW ?? row.width ?? 595;
-      const ch = row.cropH ?? row.height ?? 842;
-      const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
-      const swap = userRot === 90 || userRot === 270;
-      const pageW = swap ? ch : cw;
-      maxCanonicalW = Math.max(60, pageW - (ov.x ?? 0) - 4);
+  const isCallout = ov.type === "rect" && ov.properties?.kind === "callout";
+  if (ov.type === "text" || isCallout) {
+    if (opts.visibleCanonicalW != null && opts.visibleCanonicalH != null) {
+      sizePatch = {
+        w: Math.max(40, Math.ceil(opts.visibleCanonicalW)),
+        h: Math.max(ov.properties?.fontSize ?? 12, Math.ceil(opts.visibleCanonicalH)),
+      };
+    } else {
+      // Legacy fallback: page-edge-capped measure (β.25 C1 recipe).
+      let maxCanonicalW = Infinity;
+      const row = viewer._pages?.find((p) => p.pageNo === ov.pageNo);
+      if (row) {
+        const cw = row.cropW ?? row.width ?? 595;
+        const ch = row.cropH ?? row.height ?? 842;
+        const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
+        const swap = userRot === 90 || userRot === 270;
+        const pageW = swap ? ch : cw;
+        maxCanonicalW = Math.max(60, pageW - (ov.x ?? 0) - 4);
+      }
+      const fontSize = ov.properties?.fontSize ?? 12;
+      const fontStack = getTextFontStack(ov.properties?.fontId, {
+        digitsHanko: !!ov.properties?.digitsHanko,
+      });
+      const measure = isCallout ? measureCalloutSize : measureTextOverlaySize;
+      const m = measure(newText, fontSize, fontStack, ov.w, maxCanonicalW);
+      sizePatch = { w: m.w, h: m.h };
     }
-    const m = measureTextOverlaySize(
-      newText,
-      ov.properties.fontSize ?? 12,
-      getTextFontStack(ov.properties.fontId, {
-        digitsHanko: !!ov.properties.digitsHanko,
-      }),
-      ov.w,
-      maxCanonicalW,
-    );
-    // Keep the existing width when it already accommodates the longest
-    // line; otherwise grow horizontally up to the page edge. Height
-    // always grows to fit all wrapped lines so nothing is clipped.
-    sizePatch = { w: m.w, h: m.h };
   }
   history.execute(
     new UpdateOverlayCommand(projectStore, id, {
@@ -1641,37 +1630,76 @@ function measureTextOverlaySize(text, fontSize, fontFamily, currentW, maxW = Inf
   return { w, h };
 }
 
-/** Measure the natural size of a callout's text in canonical points,
- *  given the font size and CSS font-family stack. Multiple lines (\n)
- *  contribute height; the widest line wins for width. Adds a small
- *  inner padding so the text doesn't touch the box outline. */
-function measureCalloutSize(text, fontSize, fontFamily) {
+/** Measure the natural size of a callout's text in canonical points.
+ *  Mirrors measureTextOverlaySize's signature so commit logic can call
+ *  either function uniformly: caller passes the current box width and
+ *  a page-edge max-width, the function returns the wrap-preserving box
+ *  size. */
+function measureCalloutSize(text, fontSize, fontFamily, currentW = 0, maxW = Infinity) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   ctx.font = `${fontSize}px ${fontFamily}`;
-  const lines = (text ?? "").split(/\r?\n/);
-  let maxWidth = 0;
-  for (const line of lines) {
+  const paras = (text ?? "").split(/\r?\n/);
+  let maxLineWidth = 0;
+  for (const line of paras) {
     const w = ctx.measureText(line).width;
-    if (w > maxWidth) maxWidth = w;
+    if (w > maxLineWidth) maxLineWidth = w;
   }
-  // Padding tuned to match the renderer's textNode (padding 2px 4px)
-  // + the 1px callout border, so the saved canonical w/h leaves no
-  // visible bottom gap.
   const padX = CALLOUT_PAD_X;
-  const padY = CALLOUT_PAD_Y;
-  const lineHeight = fontSize * CALLOUT_LINE_HEIGHT;
+  const minW = Math.max(40, fontSize * 4);
+  const targetW = Math.max(minW, Math.ceil(maxLineWidth) + padX * 2);
+  // Don't shrink below currentW (user may have widened); cap at maxW
+  // (page edge) so the committed callout stays inside the paper.
+  const w = Math.min(maxW, Math.max(currentW ?? 0, targetW));
+  // Wrap at the chosen w to count lines (same algorithm as
+  // measureCalloutWrappedHeight, kept inline so the function stays
+  // self-contained and parallel to measureTextOverlaySize).
+  const innerW = Math.max(20, w - padX * 2);
+  let lineCount = 0;
+  for (const para of paras) {
+    if (para === "") { lineCount += 1; continue; }
+    const chars = [...para];
+    let line = "";
+    for (const c of chars) {
+      const next = line + c;
+      if (ctx.measureText(next).width <= innerW) {
+        line = next;
+      } else {
+        if (line) lineCount += 1;
+        line = c;
+      }
+    }
+    if (line) lineCount += 1;
+  }
+  // Chromium rounds line-box height up to whole CSS pixels per line, so
+  // multiplying a float lineHeight by lineCount underestimates the real
+  // rendered height — visible as "下に余白がはみ出る" once the box has
+  // a border (callouts do; plain text overlays don't, which is why this
+  // ceil-per-line treatment isn't needed in measureTextOverlaySize).
+  const lineHeight = Math.ceil(fontSize * CALLOUT_LINE_HEIGHT);
   return {
-    w: Math.max(40, Math.ceil(maxWidth + padX * 2)),
-    h: Math.max(fontSize, Math.ceil(lineHeight * Math.max(1, lines.length) + padY * 2)),
+    w: Math.ceil(w),
+    h: Math.max(
+      fontSize,
+      lineHeight * Math.max(1, lineCount) + CALLOUT_PAD_Y_TOP + CALLOUT_PAD_Y_BOTTOM,
+    ),
   };
 }
 
-// Match renderer-side callout layout: textNode CSS padding 2px 4px,
-// + 1px border on the outer box, + line-height: 1.2.
-const CALLOUT_PAD_X = 5; // 4 (textNode) + 1 (border)
-const CALLOUT_PAD_Y = 3; // 2 (textNode) + 1 (border)
-const CALLOUT_LINE_HEIGHT = 1.2;
+// Callout layout: the box hugs the line-box — only the 1px outer
+// border separates the text from the frame. Horizontal padding 4px
+// remains for readability; vertical padding is zero so the frame
+// "上付きかつ下付き" — the text edges touch the frame top and bottom
+// (modulo CSS line-height leading inherent to the font). Exporter
+// matches this with padY = 1 * zoom for the border-only inset.
+const CALLOUT_PAD_X = 5;        // 4 (textNode horizontal) + 1 (border)
+const CALLOUT_PAD_Y_TOP = 1;    // 1 (border) only
+const CALLOUT_PAD_Y_BOTTOM = 1; // 1 (border) only
+// line-height 1.0 means the line-box equals the font-size, so glyphs
+// touch the frame on top and bottom (no leading slack). 1.2 left a
+// visible bottom gap because CJK font metrics push glyphs toward the
+// top of each line-box. Stay matched with editor-side style.lineHeight.
+const CALLOUT_LINE_HEIGHT = 1.0;
 
 function handleOverlayDragEnd(id, newX, newY) {
   if (!isOpen) return;
@@ -1737,7 +1765,6 @@ function measureCalloutWrappedHeight(text, fontSize, fontFamily, boxW) {
   const ctx = canvas.getContext("2d");
   ctx.font = `${fontSize}px ${fontFamily}`;
   const padX = CALLOUT_PAD_X;
-  const padY = CALLOUT_PAD_Y;
   const lineHeight = fontSize * CALLOUT_LINE_HEIGHT;
   const innerW = Math.max(20, boxW - padX * 2);
   // Wrap: hard breaks on \n, otherwise greedy character-by-character
@@ -1759,7 +1786,12 @@ function measureCalloutWrappedHeight(text, fontSize, fontFamily, boxW) {
     }
     if (line) lineCount += 1;
   }
-  return Math.max(fontSize, Math.ceil(lineHeight * Math.max(1, lineCount) + padY * 2));
+  // Match measureCalloutSize: ceil per-line for Chromium line-box rounding.
+  return Math.max(
+    fontSize,
+    Math.ceil(fontSize * CALLOUT_LINE_HEIGHT) * Math.max(1, lineCount)
+      + CALLOUT_PAD_Y_TOP + CALLOUT_PAD_Y_BOTTOM,
+  );
 }
 
 // ---- Overlay context menu (right-click) ------------------------------
