@@ -2823,6 +2823,16 @@ let _stampTrial = null;
 let _stampTrialPlacing = false;
 let _stampTrialCursorEl = null;
 async function openStampRegisterImage(prefill = null) {
+  // Snapshot the manager dialog visibility ONCE per register-flow entry
+  // so the user lands back where they were on 登録 / キャンセル —
+  // 試し置き / やり直す cycles inside the flow don't re-snapshot.
+  // (β30: was previously captured inside enterStampTrialPlacement, but
+  // re-entering placement via 「試し置きをやり直す」 lost the original
+  // manager state.)
+  _stampTrialPrevDialogState = {
+    manager: stampMgrDialog && !stampMgrDialog.hidden,
+  };
+  if (stampMgrDialog) stampMgrDialog.hidden = true;
   _editingPresetId = prefill?.id ?? null;
   _stampRegImageState = null;
   stampRegImageName.textContent = "(未選択)";
@@ -2877,6 +2887,14 @@ function closeStampRegisterImage() {
   clearStampTrial();
   cancelStampTrialPlacement();
   stampRegImageDialog.hidden = true;
+  // β30: restore the stamp manager dialog if it had been open before
+  // the register flow started. Manager is hidden during the entire
+  // register session (including 試し置き / やり直す cycles); this is
+  // the natural moment to put the user back where they came from.
+  if (_stampTrialPrevDialogState?.manager && stampMgrDialog) {
+    stampMgrDialog.hidden = false;
+  }
+  _stampTrialPrevDialogState = null;
 }
 function paintStampRegImagePreview() {
   paintStampPreview(stampRegImagePreview, {
@@ -3118,12 +3136,10 @@ function enterStampTrialPlacement() {
     return;
   }
   _stampTrialPlacing = true;
-  _stampTrialPrevDialogState = {
-    register: stampRegImageDialog && !stampRegImageDialog.hidden,
-    manager: stampMgrDialog && !stampMgrDialog.hidden,
-  };
+  // Hide the register dialog so the user can target the PDF. Manager
+  // is already hidden by openStampRegisterImage; the snapshot taken
+  // there survives through 試し置き / やり直す cycles.
   if (stampRegImageDialog) stampRegImageDialog.hidden = true;
-  if (stampMgrDialog) stampMgrDialog.hidden = true;
   // Hide the stamp-placement ghost too if we're entering trial from
   // inside placementMode === "stamp" — without this the trial cursor
   // and the placement ghost both follow the pointer, showing two
@@ -3143,18 +3159,10 @@ function cancelStampTrialPlacement() {
   viewerContainer.removeEventListener("mousemove", onTrialCursorMove);
   viewerContainer.removeEventListener("mouseleave", onTrialCursorLeave);
   window.removeEventListener("keydown", onTrialKeydown, true);
-  // Restore the dialog stack we hid on entry. Register dialog comes
-  // back first (so it ends up on top of the manager) — matches the
-  // visual order the user saw before clicking 試し置き.
-  if (_stampTrialPrevDialogState) {
-    if (_stampTrialPrevDialogState.manager && stampMgrDialog) {
-      stampMgrDialog.hidden = false;
-    }
-    if (_stampTrialPrevDialogState.register && stampRegImageDialog) {
-      stampRegImageDialog.hidden = false;
-    }
-    _stampTrialPrevDialogState = null;
-  }
+  // Esc-from-cursor case: re-show the register dialog (no has-trial
+  // because nothing was pinned). Manager stays hidden until the
+  // register flow itself ends — that's closeStampRegisterImage's job.
+  if (stampRegImageDialog) stampRegImageDialog.hidden = false;
   wsStatus.textContent = "";
 }
 
@@ -3169,75 +3177,247 @@ function placeStampTrial(pageNo, canonicalX, canonicalY, pageEl) {
   const x = canonicalX - params.width / 2;
   const y = canonicalY - params.height / 2;
   const z = viewer.zoom;
+  const wrap = buildStampTrialWrap(x, y, params, z);
+  pageEl.appendChild(wrap);
+  _stampTrial = { pageNo, x, y, wrap, canvas: wrap.firstElementChild, params };
+  if (stampRegImageTrialBtn) stampRegImageTrialBtn.textContent = "試し置きをやり直す";
+  // Trial is now interactive (corner handles for resize + body drag for
+  // move). Restore the register dialog into "has-trial" mode — pinned
+  // to top-right with a transparent backdrop — so the user can keep
+  // adjusting size visually while still having quick access to color /
+  // 枠 / 登録. The stamp manager (if it had been open behind the
+  // register dialog) stays hidden until 登録 / キャンセル closes the
+  // register flow.
+  _stampTrialPlacing = false;
+  if (_stampTrialCursorEl) _stampTrialCursorEl.hidden = true;
+  viewerContainer.removeEventListener("mousemove", onTrialCursorMove);
+  viewerContainer.removeEventListener("mouseleave", onTrialCursorLeave);
+  window.removeEventListener("keydown", onTrialKeydown, true);
+  if (stampRegImageDialog) stampRegImageDialog.hidden = false;
+  setStampRegHasTrial(true);
+  wsStatus.textContent =
+    "角をドラッグでサイズ調整 / 中央をドラッグで移動 / 「登録」で確定";
+}
+
+/** Build the DOM structure for a pinned trial: wrap div + canvas +
+ *  4 corner resize handles + drag-to-move on the wrap body. */
+function buildStampTrialWrap(x, y, params, z) {
+  const wrap = document.createElement("div");
+  wrap.className = "stamp-trial-wrap";
+  wrap.style.position = "absolute";
+  wrap.style.left = `${x * z}px`;
+  wrap.style.top = `${y * z}px`;
+  wrap.style.width = `${params.width * z}px`;
+  wrap.style.height = `${params.height * z}px`;
+
   const canvas = document.createElement("canvas");
   canvas.className = "stamp-trial-overlay";
   setupHiDPICanvas(canvas, params.width * z, params.height * z);
-  canvas.style.left = `${x * z}px`;
-  canvas.style.top = `${y * z}px`;
   paintStampTrialCanvas(canvas, params);
-  pageEl.appendChild(canvas);
-  _stampTrial = { pageNo, x, y, canvas, params };
-  if (stampRegImageTrialBtn) stampRegImageTrialBtn.textContent = "試し置きをやり直す";
-  cancelStampTrialPlacement();
+  wrap.appendChild(canvas);
+
+  for (const corner of ["nw", "ne", "sw", "se"]) {
+    const handle = document.createElement("div");
+    handle.className = `stamp-trial-handle stamp-trial-handle-${corner}`;
+    handle.dataset.corner = corner;
+    wrap.appendChild(handle);
+    attachStampTrialResize(handle, corner);
+  }
+  attachStampTrialDrag(wrap);
+  return wrap;
 }
 
-/** Re-paint the pinned trial canvas in place when the user tweaks w/h/
- *  color/frame in the dialog. Cheap; runs on every input change.
- *  Resize keeps the canvas centered on the originally-clicked point
- *  (otherwise the box grows out of its top-left corner, which makes
- *  it look like the trial wanders away from the user's intended
- *  spot — β28 testers).
- */
+/** Live-mutate _stampTrial's position + size and reflect everything
+ *  (canvas pixel buffer, CSS box, dialog inputs) in one place. */
+function applyTrialGeometry(newX, newY, newW, newH) {
+  if (!_stampTrial) return;
+  const z = viewer.zoom;
+  _stampTrial.x = newX;
+  _stampTrial.y = newY;
+  _stampTrial.params = { ..._stampTrial.params, width: newW, height: newH };
+  _stampTrial.wrap.style.left = `${newX * z}px`;
+  _stampTrial.wrap.style.top = `${newY * z}px`;
+  _stampTrial.wrap.style.width = `${newW * z}px`;
+  _stampTrial.wrap.style.height = `${newH * z}px`;
+  setupHiDPICanvas(_stampTrial.canvas, newW * z, newH * z);
+  paintStampTrialCanvas(_stampTrial.canvas, _stampTrial.params);
+  // Sync the dialog's W/H so 「登録」 commits the dragged dimensions
+  // and the user can switch between mouse + keyboard adjustment.
+  if (stampRegImageW) stampRegImageW.value = String(Math.round(newW));
+  if (stampRegImageH) stampRegImageH.value = String(Math.round(newH));
+}
+
+/** Pointer handlers for a corner handle. The opposite corner of the
+ *  wrap stays anchored; the dragged corner follows the mouse;
+ *  aspect ratio is preserved (image stamps don't stretch). */
+function attachStampTrialResize(handle, corner) {
+  let pointerId = null;
+  let anchor = null;
+  let aspectR = 1;
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || !_stampTrial) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pointerId = e.pointerId;
+    try { handle.setPointerCapture(pointerId); } catch { /* ignore */ }
+    const { x, y, params } = _stampTrial;
+    const w = params.width;
+    const h = params.height;
+    aspectR = w > 0 && h > 0 ? w / h : 1;
+    anchor = ({
+      nw: { x: x + w, y: y + h }, // anchored at SE
+      ne: { x: x,     y: y + h }, // anchored at SW
+      sw: { x: x + w, y: y     }, // anchored at NE
+      se: { x: x,     y: y     }, // anchored at NW
+    })[corner];
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== pointerId || !_stampTrial || !anchor) return;
+    const z = viewer.zoom;
+    const pageEl = _stampTrial.wrap?.parentNode;
+    if (!pageEl) return;
+    const rect = pageEl.getBoundingClientRect();
+    const mouseCx = (e.clientX - rect.left) / z;
+    const mouseCy = (e.clientY - rect.top) / z;
+    let newW = Math.abs(mouseCx - anchor.x);
+    let newH = Math.abs(mouseCy - anchor.y);
+    // Honor aspect ratio: pick the dim that makes the box larger so the
+    // pointer never falls inside the box during a drag-out gesture.
+    if (newW / aspectR > newH) newH = newW / aspectR;
+    else newW = newH * aspectR;
+    newW = Math.max(10, newW);
+    newH = Math.max(10, newW / aspectR);
+    let newX;
+    let newY;
+    if (corner === "nw") { newX = anchor.x - newW; newY = anchor.y - newH; }
+    else if (corner === "ne") { newX = anchor.x;       newY = anchor.y - newH; }
+    else if (corner === "sw") { newX = anchor.x - newW; newY = anchor.y; }
+    else /* se */            { newX = anchor.x;       newY = anchor.y; }
+    applyTrialGeometry(newX, newY, newW, newH);
+  });
+  const end = (e) => {
+    if (e.pointerId !== pointerId) return;
+    try { handle.releasePointerCapture(pointerId); } catch { /* ignore */ }
+    pointerId = null;
+    anchor = null;
+  };
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+}
+
+/** Pointer handlers on the wrap body — drag the trial to move it.
+ *  Handles inside the wrap stopPropagation, so this fires only on the
+ *  canvas/outline area. */
+function attachStampTrialDrag(wrap) {
+  let pointerId = null;
+  let startMouseX = 0;
+  let startMouseY = 0;
+  let startX = 0;
+  let startY = 0;
+  wrap.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || !_stampTrial) return;
+    if (e.target instanceof HTMLElement
+        && e.target.classList.contains("stamp-trial-handle")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pointerId = e.pointerId;
+    try { wrap.setPointerCapture(pointerId); } catch { /* ignore */ }
+    startMouseX = e.clientX;
+    startMouseY = e.clientY;
+    startX = _stampTrial.x;
+    startY = _stampTrial.y;
+  });
+  wrap.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== pointerId || !_stampTrial) return;
+    const z = viewer.zoom;
+    const dx = (e.clientX - startMouseX) / z;
+    const dy = (e.clientY - startMouseY) / z;
+    applyTrialGeometry(
+      startX + dx,
+      startY + dy,
+      _stampTrial.params.width,
+      _stampTrial.params.height,
+    );
+  });
+  const end = (e) => {
+    if (e.pointerId !== pointerId) return;
+    try { wrap.releasePointerCapture(pointerId); } catch { /* ignore */ }
+    pointerId = null;
+  };
+  wrap.addEventListener("pointerup", end);
+  wrap.addEventListener("pointercancel", end);
+}
+
+/** Toggle the "has-trial" CSS class on the register dialog. The class
+ *  re-styles the modal so it sits in the top-right corner and lets
+ *  clicks through to the PDF underneath while a trial is pinned. */
+function setStampRegHasTrial(has) {
+  if (!stampRegImageDialog) return;
+  stampRegImageDialog.classList.toggle("has-trial", !!has);
+}
+
+/** Re-paint the pinned trial in place when the user tweaks w / color /
+ *  frame from the dialog inputs. Cheap; runs on every input change.
+ *  Resize keeps the trial centered on its current center (so dialog
+ *  edits feel symmetric, unlike corner-handle drag which uses the
+ *  opposite corner as the anchor). */
 function updateStampTrialAppearance() {
   if (!_stampTrial) return;
   const params = getStampTrialParams();
   if (!params) return;
-  const z = viewer.zoom;
   const oldW = _stampTrial.params.width;
   const oldH = _stampTrial.params.height;
   const cx = _stampTrial.x + oldW / 2;
   const cy = _stampTrial.y + oldH / 2;
   const newX = cx - params.width / 2;
   const newY = cy - params.height / 2;
-  setupHiDPICanvas(_stampTrial.canvas, params.width * z, params.height * z);
-  _stampTrial.canvas.style.left = `${newX * z}px`;
-  _stampTrial.canvas.style.top = `${newY * z}px`;
-  paintStampTrialCanvas(_stampTrial.canvas, params);
-  _stampTrial.x = newX;
-  _stampTrial.y = newY;
-  _stampTrial.params = params;
+  // Refresh color / frame in the stored params before geometry update
+  // so the repaint inside applyTrialGeometry uses the latest look.
+  _stampTrial.params = { ..._stampTrial.params, color: params.color, frame: params.frame };
+  applyTrialGeometry(newX, newY, params.width, params.height);
 }
 
-/** Tear down the pinned trial canvas + reset the button label. Safe to
+/** Tear down the pinned trial (DOM wrap + state) and drop the
+ *  register dialog's has-trial CSS class so the next register-without-
+ *  trial session opens centered. Doesn't touch the manager / snapshot —
+ *  closeStampRegisterImage owns that at register-flow exit. Safe to
  *  call when nothing is pinned. */
 function clearStampTrial() {
-  if (_stampTrial?.canvas?.parentNode) {
+  if (_stampTrial?.wrap?.parentNode) {
+    _stampTrial.wrap.parentNode.removeChild(_stampTrial.wrap);
+  } else if (_stampTrial?.canvas?.parentNode) {
+    // Legacy structure fallback (pre-β30 builds with no wrap).
     _stampTrial.canvas.parentNode.removeChild(_stampTrial.canvas);
   }
   _stampTrial = null;
+  setStampRegHasTrial(false);
   if (stampRegImageTrialBtn) stampRegImageTrialBtn.textContent = "PDF に試し置き";
 }
 
-/** Re-create the pinned trial canvas inside the current page DOM after a
- *  viewer.setZoom rebuild has replaced the page elements. */
+/** Re-create the pinned trial inside the current page DOM after a
+ *  viewer.setZoom rebuild has replaced the page elements. Mirrors
+ *  placeStampTrial's DOM build but uses the existing _stampTrial
+ *  state for position / size. */
 function reattachStampTrial() {
   if (!_stampTrial) return;
   const pageEl = viewer.pageEls?.get(_stampTrial.pageNo);
   if (!pageEl) {
     // Page no longer exists in the new layout — drop the trial.
     _stampTrial = null;
+    setStampRegHasTrial(false);
     if (stampRegImageTrialBtn) stampRegImageTrialBtn.textContent = "PDF に試し置き";
     return;
   }
   const z = viewer.zoom;
-  const canvas = document.createElement("canvas");
-  canvas.className = "stamp-trial-overlay";
-  setupHiDPICanvas(canvas, _stampTrial.params.width * z, _stampTrial.params.height * z);
-  canvas.style.left = `${_stampTrial.x * z}px`;
-  canvas.style.top = `${_stampTrial.y * z}px`;
-  paintStampTrialCanvas(canvas, _stampTrial.params);
-  pageEl.appendChild(canvas);
-  _stampTrial.canvas = canvas;
+  const wrap = buildStampTrialWrap(
+    _stampTrial.x,
+    _stampTrial.y,
+    _stampTrial.params,
+    z,
+  );
+  pageEl.appendChild(wrap);
+  _stampTrial.wrap = wrap;
+  _stampTrial.canvas = wrap.firstElementChild;
 }
 
 stampRegImageTrialBtn?.addEventListener("click", () => {

@@ -961,13 +961,52 @@ button.toggled {
   opacity: 0.6;
 }
 .stamp-trial-cursor[hidden] { display: none !important; }
-.stamp-trial-overlay {
+/* Wrap container that holds the trial canvas + 4 corner handles. The
+ * wrap is the click target for drag-to-move; handles intercept their
+ * own pointerdown for resize. */
+.stamp-trial-wrap {
   position: absolute;
-  pointer-events: none;
   z-index: 5;
-  opacity: 0.65;
   outline: 1px dashed rgba(0, 0, 128, 0.7);
   outline-offset: 1px;
+  cursor: move;
+}
+.stamp-trial-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  opacity: 0.65;
+}
+/* Resize handles — 12px squares at the four corners, slightly outside
+ * the wrap so they're easy to grab even at small trial sizes. */
+.stamp-trial-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border: 1.5px solid #000080;
+  box-sizing: border-box;
+  z-index: 6;
+}
+.stamp-trial-handle-nw { top: -6px;    left: -6px;    cursor: nwse-resize; }
+.stamp-trial-handle-ne { top: -6px;    right: -6px;   cursor: nesw-resize; }
+.stamp-trial-handle-sw { bottom: -6px; left: -6px;    cursor: nesw-resize; }
+.stamp-trial-handle-se { bottom: -6px; right: -6px;   cursor: nwse-resize; }
+
+/* While a trial is pinned on the PDF, the image-stamp register dialog
+ * sits in the top-right corner with a transparent backdrop so the
+ * user can keep dragging / resizing the trial through the (former)
+ * modal area. The dialog's .window itself stays opaque + interactive. */
+#stamp-register-image.has-trial {
+  background: transparent;
+  align-items: flex-start;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+#stamp-register-image.has-trial > .window {
+  pointer-events: auto;
+  margin: 8px;
 }
 
 /* Overlay accepts pointer events (it sits inside an .overlay-layer with
