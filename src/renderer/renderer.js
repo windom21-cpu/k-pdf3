@@ -4371,6 +4371,23 @@ printPropertiesBtn.addEventListener("click", async () => {
   const r = await kpdf3.printerProperties(name);
   if (r && r.ok === false) {
     wsStatus.textContent = `プロパティ表示失敗: ${r.error ?? "unknown"}`;
+    return;
+  }
+  // The DocumentPropertiesW DEVMODE that the user modified in the
+  // driver dialog is read back in main and returned here. Propagate
+  // copies / orientation to the print dialog inputs so the next
+  // 「印刷」 actually uses those values — β15 testers reported that
+  // changing "枚数=5" in the driver dialog had no effect because the
+  // renderer dialog still held copies=1 (the default).
+  if (r && !r.cancelled) {
+    if (typeof r.copies === "number" && r.copies > 0) {
+      printCopiesInput.value = String(r.copies);
+    }
+    if (typeof r.landscape === "boolean") {
+      if (r.landscape) printOrientLandscape.checked = true;
+      else printOrientPortrait.checked = true;
+      refreshPreview();
+    }
   }
 });
 

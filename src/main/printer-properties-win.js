@@ -18,7 +18,33 @@
 import { spawn } from "child_process";
 
 // DocumentProperties fMode values (printer.h).
+const DM_OUT_BUFFER = 2;
 const DM_IN_PROMPT = 4;
+
+// DocumentProperties return values (IDOK=1 is implicit — anything
+// that isn't IDCANCEL or negative is OK).
+const IDCANCEL = 2;
+
+// DEVMODEW offsets (public-portion layout is stable across drivers
+// because dmDriverExtra holds any private data appended *after*).
+// See <wingdi.h> typedef _devicemodeW.
+//
+//   dmDeviceName: WCHAR[32]   -> 64 bytes at offset 0
+//   dmSpecVersion:WORD        -> offset 64
+//   dmDriverVersion:WORD      -> offset 66
+//   dmSize:       WORD        -> offset 68
+//   dmDriverExtra:WORD        -> offset 70
+//   dmFields:     DWORD       -> offset 72   (bitmask of valid fields)
+//   dmOrientation:short       -> offset 76   (only if DM_ORIENTATION)
+//   dmPaperSize:  short       -> offset 78
+//   ...
+//   dmCopies:     short       -> offset 86   (only if DM_COPIES)
+const DEVMODE_DM_FIELDS_OFFSET      = 72;
+const DEVMODE_DM_ORIENTATION_OFFSET = 76;
+const DEVMODE_DM_COPIES_OFFSET      = 86;
+const DM_ORIENTATION_FLAG = 0x00000001;
+const DM_COPIES_FLAG      = 0x00000100;
+const DMORIENT_LANDSCAPE  = 2;
 
 // DPI_AWARENESS_CONTEXT_SYSTEM_AWARE is defined as ((HANDLE)-2). Pass
 // as int64 so koffi puts the raw bit pattern into the parameter slot,
@@ -119,20 +145,56 @@ export async function openPrinterPropertiesNative(deviceName, parentHwndBuf) {
       throw new Error("OpenPrinter returned NULL handle");
     }
 
-    const ret = native.DocumentPropertiesW(
-      parentHwnd,
+    // First call with fMode=0 + null buffers returns the size in bytes
+    // needed for the DEVMODEW output buffer (driver-private extension
+    // data is included via dmDriverExtra). Then we allocate that buffer
+    // and call again with DM_IN_PROMPT|DM_OUT_BUFFER to both display
+    // the driver UI and capture the user's modified DEVMODE.
+    //
+    // Without DM_OUT_BUFFER, "プロパティ→枚数を5に→OK" is shown by the
+    // driver UI but the modified DEVMODE is dropped on the floor, so
+    // the next print job reverts to the renderer's default (1 copy).
+    // β15 testers reproduced this with FUJIFILM Apeos C2360.
+    const sizeNeeded = native.DocumentPropertiesW(
+      0n,
       hPrinter,
       deviceName,
       null,
       null,
-      DM_IN_PROMPT,
+      0,
+    );
+    if (sizeNeeded < 0) {
+      throw new Error(`DocumentProperties size query returned ${sizeNeeded}`);
+    }
+    const devmodeOut = Buffer.alloc(sizeNeeded);
+
+    const ret = native.DocumentPropertiesW(
+      parentHwnd,
+      hPrinter,
+      deviceName,
+      devmodeOut,
+      null,
+      DM_IN_PROMPT | DM_OUT_BUFFER,
     );
     // ret values:
     //   IDOK     (1) → user clicked OK
     //   IDCANCEL (2) → user clicked Cancel
     //   < 0          → error
     if (ret < 0) throw new Error(`DocumentProperties returned ${ret}`);
-    return { ok: true };
+    if (ret === IDCANCEL) return { ok: true, cancelled: true };
+
+    // IDOK — parse DEVMODE for the fields we propagate to the renderer.
+    const result = { ok: true, cancelled: false };
+    const dmFields = devmodeOut.readUInt32LE(DEVMODE_DM_FIELDS_OFFSET);
+    if (dmFields & DM_COPIES_FLAG) {
+      const copies = devmodeOut.readInt16LE(DEVMODE_DM_COPIES_OFFSET);
+      if (copies > 0) result.copies = copies;
+    }
+    if (dmFields & DM_ORIENTATION_FLAG) {
+      const orient = devmodeOut.readInt16LE(DEVMODE_DM_ORIENTATION_OFFSET);
+      result.landscape = (orient === DMORIENT_LANDSCAPE);
+    }
+    return result;
   } catch (err) {
     console.warn(
       "[printer-props] native call failed, falling back to rundll32:",
