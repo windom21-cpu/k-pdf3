@@ -31,6 +31,12 @@ export const TEXT_FONT_LABELS = {
   sans: "Sans",
 };
 
+/** β32: family name of the digits-only @font-face declared in style.css.
+ *  Prepended to the resolved text stack when `digitsHanko` is on, so
+ *  half-width digits 0-9 render in hanko style while every other
+ *  character keeps the user's chosen main font. */
+export const TEXT_DIGITS_HANKO_FAMILY = '"CrashNumberingDigits"';
+
 /** New text overlays default to mincho per §17.9. */
 export const TEXT_FONT_DEFAULT_ID = "mincho";
 
@@ -44,9 +50,24 @@ export const TEXT_FONT_SIZE_PRESETS = [8, 10, 12, 14, 18, 24, 36];
  * Resolve a fontId (possibly missing or unknown) to a CSS font-family
  * stack. Falls back to the legacy `default` stack so older overlays
  * keep rendering even if a fontId gets removed in the future.
+ *
+ * β32: pass `{ digitsHanko: true }` to prepend the digits-only hanko
+ * face onto the resolved stack. The CrashNumberingDigits @font-face
+ * has unicode-range U+0030-0039, so only 0-9 land in the hanko face;
+ * letters / punctuation / CJK fall straight through to the main stack.
+ *
+ * β31 compatibility: text overlays saved with fontId === "numeric"
+ * (the short-lived single-axis design) are re-routed to mincho + hanko
+ * digits so existing pages keep looking close to what the user saw.
  */
-export function getTextFontStack(fontId) {
-  return TEXT_FONT_STACKS[fontId] ?? TEXT_FONT_STACKS.default;
+export function getTextFontStack(fontId, opts = {}) {
+  if (fontId === "numeric") {
+    // β31 legacy — map to the new two-axis form (mincho + hanko digits)
+    return `${TEXT_DIGITS_HANKO_FAMILY}, ${TEXT_FONT_STACKS.mincho}`;
+  }
+  const main = TEXT_FONT_STACKS[fontId] ?? TEXT_FONT_STACKS.default;
+  if (opts.digitsHanko) return `${TEXT_DIGITS_HANKO_FAMILY}, ${main}`;
+  return main;
 }
 
 // ---- Stamp fonts (ADR-0019 後半) ----------------------------------------

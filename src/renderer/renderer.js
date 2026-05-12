@@ -105,6 +105,7 @@ const redactionColorSel = $("redaction-color");
 const textFontSel = $("text-font");
 const textSizeSel = $("text-size");
 const textColorSel = $("text-color");
+const textDigitsHankoChk = $("text-digits-hanko");
 const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
 const btnModeCallout = $("btn-mode-callout");
@@ -829,6 +830,7 @@ function placeCallout(pageNo, x, y, w, h, arrowDx, arrowDy) {
       fontSize,
       color: "#000000",
       fontId: currentTextFontId(),
+      digitsHanko: currentTextDigitsHanko(),
       rotation: 0,
       arrowDx,
       arrowDy,
@@ -951,6 +953,9 @@ function currentTextFontSize() {
 function currentTextColor() {
   return textColorSel?.value || "#000000";
 }
+function currentTextDigitsHanko() {
+  return !!textDigitsHankoChk?.checked;
+}
 
 function placeText(pageNo, x, y) {
   const fontSize = currentTextFontSize();
@@ -975,6 +980,7 @@ function placeText(pageNo, x, y) {
       fontSize,
       color: currentTextColor(),
       fontId: currentTextFontId(),
+      digitsHanko: currentTextDigitsHanko(),
       rotation: 0, // page-rotation tracked here so content stays upright on rotated paper
     },
   });
@@ -1062,6 +1068,7 @@ async function applyPageNumbers() {
         fontSize,
         color: "#000000",
         fontId: currentTextFontId(),
+        digitsHanko: currentTextDigitsHanko(),
         rotation: 0,
       },
     });
@@ -1531,7 +1538,9 @@ function handleTextEditCommit(id, newText) {
     const m = measureCalloutSize(
       newText,
       ov.properties.fontSize ?? 12,
-      getTextFontStack(ov.properties.fontId),
+      getTextFontStack(ov.properties.fontId, {
+        digitsHanko: !!ov.properties.digitsHanko,
+      }),
     );
     sizePatch = { w: m.w, h: m.h };
   } else if (ov.type === "text") {
@@ -1558,7 +1567,9 @@ function handleTextEditCommit(id, newText) {
     const m = measureTextOverlaySize(
       newText,
       ov.properties.fontSize ?? 12,
-      getTextFontStack(ov.properties.fontId),
+      getTextFontStack(ov.properties.fontId, {
+        digitsHanko: !!ov.properties.digitsHanko,
+      }),
       ov.w,
       maxCanonicalW,
     );
@@ -1700,7 +1711,9 @@ function handleOverlayResizeEnd(id, bbox) {
     const wrappedH = measureCalloutWrappedHeight(
       ov.properties.text ?? "",
       ov.properties.fontSize ?? 12,
-      getTextFontStack(ov.properties.fontId),
+      getTextFontStack(ov.properties.fontId, {
+        digitsHanko: !!ov.properties.digitsHanko,
+      }),
       bbox.w,
     );
     bbox = { ...bbox, h: wrappedH };
@@ -8308,13 +8321,14 @@ function applyFontSizeToEditingOverlay() {
   const fontId = currentTextFontId();
   const fontSize = currentTextFontSize();
   const color = currentTextColor();
+  const digitsHanko = currentTextDigitsHanko();
   projectStore.update(id, {
-    properties: { ...ov.properties, fontId, fontSize, color },
+    properties: { ...ov.properties, fontId, fontSize, color, digitsHanko },
   });
   // Keep the inline-edit element visually in sync (the store update
   // alone doesn't repaint the editing element — see viewer's preserve-
   // editing logic).
-  viewer.applyEditingTextStyle({ fontId, fontSize, color });
+  viewer.applyEditingTextStyle({ fontId, fontSize, color, digitsHanko });
 }
 
 if (textFontSel) {
@@ -8347,6 +8361,22 @@ if (textColorSel) {
   }
   textColorSel.addEventListener("change", () => {
     localStorage.setItem(TEXT_COLOR_STORAGE_KEY, currentTextColor());
+    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+      setPlacementMode("text");
+    }
+    applyFontSizeToEditingOverlay();
+  });
+}
+const TEXT_DIGITS_HANKO_STORAGE_KEY = "kpdf3.textDigitsHanko";
+if (textDigitsHankoChk) {
+  if (localStorage.getItem(TEXT_DIGITS_HANKO_STORAGE_KEY) === "1") {
+    textDigitsHankoChk.checked = true;
+  }
+  textDigitsHankoChk.addEventListener("change", () => {
+    localStorage.setItem(
+      TEXT_DIGITS_HANKO_STORAGE_KEY,
+      textDigitsHankoChk.checked ? "1" : "0",
+    );
     if (isOpen && placementMode !== "text" && !viewer._editingId) {
       setPlacementMode("text");
     }

@@ -71,18 +71,38 @@ CREATE TABLE inserted_pages (
     width           REAL NOT NULL DEFAULT 595,   -- A4 portrait, points
     height          REAL NOT NULL DEFAULT 842,
     user_rotation   INTEGER NOT NULL DEFAULT 0 CHECK(user_rotation IN (0, 90, 180, 270)),
-    -- image_blob は外部 PDF 取り込みの場合に PNG バイト列を保持。NULL の
-    -- 行は純粋な白紙 / テキスト挿入。image_w/h は PNG のピクセル寸法
-    -- (width/height は PDF point 単位の表示寸法なので別管理)。
+    -- image_blob は外部 PDF 取り込みの場合に PNG バイト列を保持（viewer
+    -- 用プレビュー）。NULL の行は純粋な白紙 / テキスト挿入。image_w/h は
+    -- PNG のピクセル寸法（width/height は PDF point 単位の表示寸法）。
     image_blob      BLOB,
     image_w         INTEGER,
     image_h         INTEGER,
+    -- β31: 外部 PDF を vector のまま inserted_source_pdfs に dedup 保存し、
+    -- 書き出し/印刷時は image_blob ではなく元 PDF を copyPages して vector
+    -- 維持。source_pdf_id NULL = β30 以前に挿入した image-only ページ
+    -- （後方互換、export 時は image_blob にフォールバック）。
+    source_pdf_id     INTEGER REFERENCES inserted_source_pdfs(id),
+    source_page_index INTEGER,
     -- 元ページと共通の正規順序キー。NULL のときは after_page_no/order_in_slot
     -- に基づくスロット位置を使う（後方互換）。並び替え後は INTEGER で詰まる。
     display_order   REAL,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_inserted_pages_slot ON inserted_pages(after_page_no, order_in_slot);
+
+-- ===================================================================
+-- inserted_source_pdfs (β31): 外部 PDF を挿入した時に元の PDF バイト列を
+-- vector のまま保持。SHA-256 で dedup（複数ページを同じ PDF から挿入し
+-- ても 1 行のみ）。書き出し / 印刷時は inserted_pages.source_pdf_id 経由で
+-- この blob を取り出し、pdf-lib copyPages で vector のまま貼る。
+-- ===================================================================
+CREATE TABLE inserted_source_pdfs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    sha256      TEXT NOT NULL UNIQUE,
+    pdf_blob    BLOB NOT NULL,
+    byte_size   INTEGER NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- ===================================================================
 -- overlays: 編集可能な overlay object
