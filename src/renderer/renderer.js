@@ -4175,7 +4175,34 @@ const printState = {
   renderToken: 0,     // monotonic — bail outdated renders
 };
 
-function showPrintDialog(printers, pages, currentPageNo) {
+/**
+ * Compress a list of page numbers into the shortest "1-3, 5, 8-10"
+ * style range string accepted by the print dialog's custom-range input.
+ * Returns "" for empty/invalid input.
+ */
+function compressPageList(pageNos) {
+  if (!Array.isArray(pageNos) || pageNos.length === 0) return "";
+  const sorted = [...new Set(pageNos)]
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .sort((a, b) => a - b);
+  if (sorted.length === 0) return "";
+  const ranges = [];
+  let start = sorted[0];
+  let end = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === end + 1) {
+      end = sorted[i];
+    } else {
+      ranges.push(start === end ? `${start}` : `${start}-${end}`);
+      start = sorted[i];
+      end = sorted[i];
+    }
+  }
+  ranges.push(start === end ? `${start}` : `${start}-${end}`);
+  return ranges.join(", ");
+}
+
+function showPrintDialog(printers, pages, currentPageNo, preselected = null) {
   printState.pages = pages;
   printState.printers = printers;
 
@@ -4201,10 +4228,21 @@ function showPrintDialog(printers, pages, currentPageNo) {
   }
 
   printCopiesInput.value = "1";
-  printRangeAll.checked = true;
-  printRangeInput.value = `1-${pages.length}`;
   printSizeActual.checked = true;
   printOrientPortrait.checked = true;
+
+  // When the caller hands in a pre-selected page set (e.g. split-view
+  // multi-selection at 印刷 time), seed the custom-range input with
+  // those pages and switch to "カスタム" so the user doesn't have to
+  // retype the selection. Otherwise default to "すべて".
+  const compressed = compressPageList(preselected);
+  if (compressed) {
+    printRangeCustom.checked = true;
+    printRangeInput.value = compressed;
+  } else {
+    printRangeAll.checked = true;
+    printRangeInput.value = `1-${pages.length}`;
+  }
 
   // Initial preview = current page (or 1)
   recomputeVisiblePages();
@@ -4826,7 +4864,16 @@ async function actionPrint() {
   }
 
   const currentPageNo = viewer.currentPage || 1;
-  const choice = await showPrintDialog(printers, pages, currentPageNo);
+  // Split-view selection takes precedence as the print-range seed.
+  // Users select pages in the split flow specifically to act on that
+  // subset; expecting 印刷 to honour that selection mirrors the same
+  // pattern used by rotate (see resolveRotationTargets) and the
+  // sidebar's right-click 「選択した N ページを PDF として保存」 path.
+  let preselected = null;
+  if (isSplitMode && splitThumbSelection.pageNos.size > 0) {
+    preselected = [...splitThumbSelection.pageNos];
+  }
+  const choice = await showPrintDialog(printers, pages, currentPageNo, preselected);
   if (!choice) {
     wsStatus.textContent = "印刷をキャンセルしました";
     return;
