@@ -440,16 +440,36 @@ async function drawOverlay(ctx, ov, zoom) {
 
   if (ov.type === "text") {
     const fontSize = (props.fontSize ?? 12) * zoom;
-    ctx.fillStyle = props.color ?? "#000000";
+    const color = props.color ?? "#000000";
+    ctx.fillStyle = color;
     ctx.font = `${fontSize}px ${getTextFontStack(props.fontId)}`;
     ctx.textBaseline = "top";
+    // β15 testers reported the rasterised text overlay prints lighter /
+    // thinner than expected. Canvas 2D fillText anti-aliases glyph
+    // edges to subpixel alpha, which a printer reproduces as light
+    // gray; the dark glyph core is surrounded by gray fringes, giving
+    // the overall "黒が薄い" impression. Overstroking the same glyph
+    // with a thin line at the same colour blackens those fringes
+    // without changing the font weight — gives the printed output
+    // the saturation of a real "black" ink fill while preserving the
+    // glyph's original shape. Stroke width is 3% of the rendered
+    // glyph height; at 600 dpi for a 12pt font that's ≈3 px, just
+    // enough to plug the AA fringe.
+    ctx.strokeStyle = color;
+    ctx.lineWidth = fontSize * 0.03;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
     const text = props.text ?? "";
     const lineHeight = fontSize * (props.lineHeight ?? 1);
     const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+    const paintLine = (line, px, py) => {
+      ctx.strokeText(line, px, py);
+      ctx.fillText(line, px, py);
+    };
     if (rot === 0) {
       const lines = wrapCanvasText(ctx, text, w);
       for (let i = 0; i < lines.length; i++) {
-        ctx.fillText(lines[i], x, y + i * lineHeight);
+        paintLine(lines[i], x, y + i * lineHeight);
       }
     } else {
       // Match the viewer's "rotate the content within the new rect"
@@ -463,7 +483,7 @@ async function drawOverlay(ctx, ov, zoom) {
       ctx.rotate((rot * Math.PI) / 180);
       const lines = wrapCanvasText(ctx, text, naturalW);
       for (let i = 0; i < lines.length; i++) {
-        ctx.fillText(lines[i], -naturalW / 2, -naturalH / 2 + i * lineHeight);
+        paintLine(lines[i], -naturalW / 2, -naturalH / 2 + i * lineHeight);
       }
       ctx.restore();
     }
