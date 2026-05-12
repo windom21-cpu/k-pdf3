@@ -3920,7 +3920,12 @@ function activateFileEntry(entry) {
     return;
   }
   if (entry.isDir) {
-    loadFileBrowserDir(joinPath(fileBrowserState.currentPath, entry.name));
+    // Windows .lnk shortcut to folder: targetPath holds the resolved
+    // destination (set in main's list-directory handler). Navigate
+    // there instead of trying to descend into the .lnk path itself.
+    const dest = entry.targetPath
+      || joinPath(fileBrowserState.currentPath, entry.name);
+    loadFileBrowserDir(dest);
     return;
   }
   if (fileBrowserState.mode === "open") {
@@ -4265,11 +4270,22 @@ function showPrintDialog(printers, pages, currentPageNo, preselected = null) {
   } else {
     printConfirmBtn.disabled = false;
     printPropertiesBtn.disabled = false;
+    // Remember the printer the user picked last time (localStorage).
+    // Falls back to the OS default when no remembered choice exists
+    // or the remembered printer is no longer connected. β15 testers
+    // asked for "最後に選んだプリンタを覚えておいてほしい".
+    let remembered = null;
+    try { remembered = localStorage.getItem("kpdf3.lastPrinter"); }
+    catch { /* private mode etc. — ignore */ }
+    const rememberedExists = remembered
+      && printers.some((p) => p.name === remembered);
     for (const p of printers) {
       const opt = document.createElement("option");
       opt.value = p.name;
       opt.textContent = p.displayName ?? p.name;
-      if (p.isDefault) opt.selected = true;
+      const matchRemembered = rememberedExists && p.name === remembered;
+      const matchDefault = !rememberedExists && p.isDefault;
+      if (matchRemembered || matchDefault) opt.selected = true;
       printPrinterSelect.appendChild(opt);
     }
   }
@@ -4422,8 +4438,16 @@ printConfirmBtn.addEventListener("click", () => {
     wsStatus.textContent = "印刷範囲が無効です";
     return;
   }
+  const deviceName = printPrinterSelect.value;
+  // Persist the picked printer so the next print dialog opens with
+  // it pre-selected. localStorage is renderer-local; if it throws
+  // (private mode / quota), the print still proceeds.
+  if (deviceName) {
+    try { localStorage.setItem("kpdf3.lastPrinter", deviceName); }
+    catch { /* ignore */ }
+  }
   settlePrintDialog({
-    deviceName: printPrinterSelect.value,
+    deviceName,
     copies: Math.max(1, Number(printCopiesInput.value) || 1),
     pageNos: range,
     sizing: printSizeFit.checked ? "fit" : "actual",
