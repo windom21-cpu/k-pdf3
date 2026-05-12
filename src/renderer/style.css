@@ -759,6 +759,16 @@ button.toggled {
   position: absolute;
 }
 
+/* β35 F1: page canvas は oversample で大きく描き、CSS で page slot へ
+ * 縮小表示している。デフォルトの bilinear smoothing は輪郭が眠くなり
+ * 「ぼやけて見える」原因になるので、Chromium 系の sharper resampling
+ * (-webkit-optimize-contrast) に切替える。挿入した外部 PDF (vector
+ * render path) で特に効くが、既存ページにも自然な改善が乗る。 */
+.viewer-page canvas,
+#viewer-container canvas {
+  image-rendering: -webkit-optimize-contrast;
+}
+
 /* When edit mode is on, switch the page cursor so it's clear that a click
  * will create something. Per-mode override after the generic crosshair
  * makes text mode an I-beam (text-insertion semantics). */
