@@ -569,6 +569,10 @@ async function closeTabWithConfirm(tabId) {
 
 function handlePagePointerDown(pageNo, x, y, evt, div) {
   if (!isOpen) return;
+  // Right-click / middle-click should never drop a placement. Without
+  // this guard the contextmenu handler that pops the mode-toggle menu
+  // would also fire placeText / placeStamp / etc. on the same point.
+  if (evt && typeof evt.button === "number" && evt.button !== 0) return;
   // Trial-stamp placement (§17.5) is its own dispatch — it runs while
   // the register dialog is hidden, with placementMode possibly === "none",
   // so it must be checked BEFORE the placementMode branches.
@@ -1843,6 +1847,72 @@ viewerContainer.addEventListener("pointerdown", (ev) => {
   if (!selectedOverlayId) return;
   if (ev.target instanceof HTMLElement && ev.target.closest(".overlay")) return;
   setSelectedOverlay(null);
+});
+
+// ---- Page context menu (placement mode toggle) ------------------------
+// β15 testers asked for a way to chain text/stamp/marker insertions
+// without going back to the toolbar each time. Right-click on the page
+// background (not on an existing overlay) opens a menu that toggles
+// placement mode. Clicking the active mode again exits to "none".
+const ctxPage = $("ctx-page");
+function showPageContextMenu(x, y) {
+  if (!ctxPage) return;
+  // Mark the currently-active mode with the existing ".checked" style
+  // (✓ left of the item) so the user can see what's on.
+  for (const item of ctxPage.querySelectorAll(".menu-item")) {
+    const mode = item.dataset.ctx;
+    const isActive =
+      (mode === "none" && placementMode === "none") ||
+      (mode !== "none" && mode === placementMode);
+    item.classList.toggle("checked", isActive);
+  }
+  ctxPage.style.left = `${x}px`;
+  ctxPage.style.top = `${y}px`;
+  ctxPage.hidden = false;
+}
+function hidePageContextMenu() {
+  if (!ctxPage) return;
+  ctxPage.hidden = true;
+}
+function dispatchPageCtx(target) {
+  hidePageContextMenu();
+  if (!(target instanceof HTMLElement)) return;
+  const mode = target.dataset.ctx;
+  if (!mode) return;
+  if (mode === "none") {
+    setPlacementMode("none");
+  } else if (placementMode === mode) {
+    setPlacementMode("none");
+  } else {
+    setPlacementMode(mode);
+  }
+}
+viewerContainer.addEventListener("contextmenu", (e) => {
+  if (!isOpen) return;
+  // Let overlay's own contextmenu (which stops propagation) handle
+  // right-clicks landing inside an overlay. Only act on the page
+  // background itself.
+  if (e.target instanceof HTMLElement && e.target.closest(".overlay")) return;
+  if (e.target instanceof HTMLElement && !e.target.closest(".viewer-page")) return;
+  e.preventDefault();
+  showPageContextMenu(e.clientX, e.clientY);
+});
+ctxPage?.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  let el = e.target;
+  while (el && el !== ctxPage && !(el.dataset && el.dataset.ctx)) {
+    el = el.parentElement;
+  }
+  if (el && el !== ctxPage) dispatchPageCtx(el);
+});
+ctxPage?.addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("pointerdown", (ev) => {
+  if (!ctxPage || ctxPage.hidden) return;
+  if (ev.target instanceof Node && ctxPage.contains(ev.target)) return;
+  hidePageContextMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hidePageContextMenu();
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
