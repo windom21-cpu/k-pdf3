@@ -4900,14 +4900,38 @@ async function actionPrint() {
   }
 
   const currentPageNo = viewer.currentPage || 1;
-  // Split-view selection takes precedence as the print-range seed.
-  // Users select pages in the split flow specifically to act on that
-  // subset; expecting 印刷 to honour that selection mirrors the same
-  // pattern used by rotate (see resolveRotationTargets) and the
-  // sidebar's right-click 「選択した N ページを PDF として保存」 path.
+  // Split-view or sidebar selection seeds the print range so the user
+  // doesn't have to retype it. Mirrors the same pattern used by rotate
+  // (see resolveRotationTargets) and the sidebar's right-click
+  // 「選択した N ページを PDF として保存」 path.
+  //
+  // Selection precedence:
+  //   1. split-view selection (any size, explicit batch intent)
+  //   2. sidebar selection of 2+ pages — single-page sidebar selection
+  //      is often a navigation side-effect (clicking a thumb both
+  //      selects AND scrolls), so we ignore size===1 to avoid surprising
+  //      the user with "今見ているページだけを印刷" when they wanted all.
   let preselected = null;
-  if (isSplitMode && splitThumbSelection.pageNos.size > 0) {
+  let preselectedSource = null;
+  if (splitThumbSelection.pageNos.size > 0) {
     preselected = [...splitThumbSelection.pageNos];
+    preselectedSource = "split";
+  } else if (sidebarThumbSelection.pageNos.size >= 2) {
+    preselected = [...sidebarThumbSelection.pageNos];
+    preselectedSource = "sidebar";
+  }
+  console.log(
+    "[print] preselect:",
+    preselectedSource ?? "none",
+    "splitSize=", splitThumbSelection.pageNos.size,
+    "sidebarSize=", sidebarThumbSelection.pageNos.size,
+    "isSplitMode=", isSplitMode,
+    "preselected=", preselected,
+  );
+  if (preselected && preselected.length > 0) {
+    wsStatus.textContent = preselectedSource === "split"
+      ? `分割画面で選択した ${preselected.length} ページを印刷範囲に設定しました`
+      : `選択した ${preselected.length} ページを印刷範囲に設定しました`;
   }
   const choice = await showPrintDialog(printers, pages, currentPageNo, preselected);
   if (!choice) {
