@@ -494,7 +494,9 @@ async function drawOverlay(ctx, ov, zoom) {
   if (ov.type === "text") {
     const fontSize = (props.fontSize ?? 12) * zoom;
     const color = props.color ?? "#000000";
-    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId)}`;
+    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId, {
+      digitsHanko: !!props.digitsHanko,
+    })}`;
     ctx.textBaseline = "top";
     ctx.textAlign = "start";
     // β15/β31: see paintGlyphRun for why we stroke-then-fill at the
@@ -677,7 +679,9 @@ async function drawOverlay(ctx, ov, zoom) {
     ctx.restore();
     // Text inside the box. β31: same overstroke as text overlay.
     const fontSize = (props.fontSize ?? 12) * zoom;
-    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId)}`;
+    ctx.font = `${fontSize}px ${getTextFontStack(props.fontId, {
+      digitsHanko: !!props.digitsHanko,
+    })}`;
     ctx.textBaseline = "top";
     ctx.textAlign = "start";
     const text = props.text ?? "";
