@@ -17,6 +17,12 @@ export const TEXT_FONT_STACKS = {
     '"MS UI Gothic", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Noto Sans JP", sans-serif',
   mincho:
     '"MS 明朝", "MS Mincho", "Hiragino Mincho ProN", "Yu Mincho", "IPAexMincho", "Noto Serif JP", serif',
+  // β31 #4: bundled CrashNumberingSerif puts hanko-風 numerals into
+  // text overlays. Half-width digits land in the bundled face; CJK
+  // characters fall through to MS 明朝 via the stack so mixed text
+  // (e.g.「平成8年」) shows kanji in mincho + digits in numbering serif.
+  numeric:
+    '"CrashNumberingSerif", "MS 明朝", "MS Mincho", "Hiragino Mincho ProN", "Yu Mincho", "IPAexMincho", "Noto Serif JP", serif',
   serif:
     '"Times New Roman", "MS 明朝", "Hiragino Mincho ProN", serif',
   sans:
@@ -27,6 +33,7 @@ export const TEXT_FONT_STACKS = {
 export const TEXT_FONT_LABELS = {
   mincho: "明朝",
   gothic: "ゴシック",
+  numeric: "数字明朝（hanko 風）",
   serif: "Serif",
   sans: "Sans",
 };

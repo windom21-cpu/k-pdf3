@@ -60,6 +60,7 @@ export function openWorkspace(filePath, opts = {}) {
     verifyWorkspace(db, filePath);
     migrateExportsSchema(db);
     migratePagesIsDeleted(db);
+    migrateInsertedSourcePdfsTable(db);
     migrateInsertedPagesTable(db);
     migrateOverlaysDropPageFk(db);
     migrateBookmarksDropPageFk(db);
@@ -217,6 +218,28 @@ function migrateInsertedPagesTable(db) {
   if (!cols.some((c) => c.name === "display_order")) {
     db.exec("ALTER TABLE inserted_pages ADD COLUMN display_order REAL");
   }
+  // β31: vector-preserving external PDF insertion. source_pdf_id points
+  // into inserted_source_pdfs (dedup by SHA-256); source_page_index is
+  // the 0-based page within that PDF. NULL on both = legacy image-only
+  // synthetic page (export falls back to the rasterised image_blob).
+  if (!cols.some((c) => c.name === "source_pdf_id")) {
+    db.exec("ALTER TABLE inserted_pages ADD COLUMN source_pdf_id INTEGER");
+    db.exec("ALTER TABLE inserted_pages ADD COLUMN source_page_index INTEGER");
+  }
+}
+
+/** β31: vector-preserving external PDF storage (dedup by SHA-256).
+ *  Idempotent — safe to call on every open. */
+function migrateInsertedSourcePdfsTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS inserted_source_pdfs (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      sha256      TEXT NOT NULL UNIQUE,
+      pdf_blob    BLOB NOT NULL,
+      byte_size   INTEGER NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
 }
 
 /**
@@ -430,6 +453,9 @@ export function listInsertedPages(db) {
   // hasImage as 0/1 flag — keeps the (potentially large) image_blob
   // out of the per-page list query. Renderer fetches the bytes via
   // getInsertedPageImage when it actually needs to paint the page.
+  // β31: sourcePdfId / sourcePageIndex expose the vector-preserving
+  // backing PDF (when present) so the exporter can choose copyPages
+  // over rasterised fallback.
   return db
     .prepare(
       `SELECT id, after_page_no AS afterPageNo, order_in_slot AS orderInSlot,
@@ -437,6 +463,8 @@ export function listInsertedPages(db) {
               user_rotation AS userRotation,
               CASE WHEN image_blob IS NULL THEN 0 ELSE 1 END AS hasImage,
               image_w AS imageW, image_h AS imageH,
+              source_pdf_id AS sourcePdfId,
+              source_page_index AS sourcePageIndex,
               display_order AS displayOrder,
               created_at AS createdAt
        FROM inserted_pages
@@ -445,7 +473,11 @@ export function listInsertedPages(db) {
     .all();
 }
 
-/** Insert a new pre-rasterised image page (external PDF import). */
+/** Insert a new pre-rasterised image page (external PDF import).
+ *  β31: when `sourcePdfId` + `sourcePageIndex` are supplied, the row
+ *  doubles as a vector-preserving reference into inserted_source_pdfs
+ *  so the exporter can copyPages instead of using the rasterised image.
+ *  The image_blob is still stored as a viewer-preview path. */
 export function addInsertedImagePage(db, {
   afterPageNo,
   imageBlob,
@@ -453,6 +485,8 @@ export function addInsertedImagePage(db, {
   imageH,
   width,
   height,
+  sourcePdfId = null,
+  sourcePageIndex = null,
 }) {
   const orderRow = db
     .prepare(
@@ -465,10 +499,15 @@ export function addInsertedImagePage(db, {
     .prepare(
       `INSERT INTO inserted_pages
          (after_page_no, order_in_slot, text, width, height,
-          image_blob, image_w, image_h)
-       VALUES (?, ?, NULL, ?, ?, ?, ?, ?)`,
+          image_blob, image_w, image_h,
+          source_pdf_id, source_page_index)
+       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(afterPageNo, nextOrder, width, height, imageBlob, imageW, imageH);
+    .run(
+      afterPageNo, nextOrder, width, height,
+      imageBlob, imageW, imageH,
+      sourcePdfId, sourcePageIndex,
+    );
   return Number(info.lastInsertRowid);
 }
 
@@ -481,6 +520,37 @@ export function getInsertedPageImage(db, id) {
     )
     .get(id);
   if (!row || !row.imageBlob) return null;
+  return row;
+}
+
+/** β31: get-or-create a row in inserted_source_pdfs keyed by SHA-256.
+ *  Returns the row id (existing or newly inserted). Caller is expected
+ *  to compute the hash from `pdfBlob`. Same content → same id, so
+ *  many-page insertions of the same external PDF share one blob. */
+export function getOrCreateInsertedSourcePdf(db, { sha256, pdfBlob, byteSize }) {
+  const existing = db
+    .prepare("SELECT id FROM inserted_source_pdfs WHERE sha256 = ?")
+    .get(sha256);
+  if (existing) return existing.id;
+  const info = db
+    .prepare(
+      `INSERT INTO inserted_source_pdfs (sha256, pdf_blob, byte_size)
+       VALUES (?, ?, ?)`,
+    )
+    .run(sha256, pdfBlob, byteSize);
+  return Number(info.lastInsertRowid);
+}
+
+/** β31: read the raw PDF bytes of a stored external source. Used by
+ *  the exporter to copyPages for vector-preserving assembly. */
+export function getInsertedSourcePdf(db, id) {
+  const row = db
+    .prepare(
+      `SELECT pdf_blob AS pdfBlob, byte_size AS byteSize
+       FROM inserted_source_pdfs WHERE id = ?`,
+    )
+    .get(id);
+  if (!row || !row.pdfBlob) return null;
   return row;
 }
 
