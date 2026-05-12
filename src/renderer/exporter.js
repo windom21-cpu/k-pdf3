@@ -108,15 +108,30 @@ async function getTintedAssetCanvas(assetId, color) {
  * Canvas 2D fillText anti-aliases edges to subpixel alpha → printer
  * reproduces the halo as gray dots ("ドット感"). A thin stroke under
  * the fill at the same color paints over the halo so the glyph reads
- * as solid color on paper. lineWidth = 6% of rendered font size: at
- * 900 dpi for 12pt that's ≈9 px, enough to cover the AA fringe.
- * Caller pre-configures ctx.font / ctx.textBaseline / ctx.textAlign.
+ * as solid color on paper. Caller pre-configures ctx.font /
+ * ctx.textBaseline / ctx.textAlign.
+ *
+ * β34: the rasterised output ALWAYS overstrokes regardless of the
+ * on-screen 太字 toggle — printed paper must stay dark whether or not
+ * the user wanted the on-screen glyphs to look thin. The toggle only
+ * affects the viewer's CSS (-webkit-text-stroke), so:
+ *
+ *   太字 OFF (default) → viewer: no stroke / exporter: lineWidth 0.03 ×
+ *                                   fontSize (β25 baseline, just enough
+ *                                   to plug the AA fringe)
+ *   太字 ON           → viewer: stroke 0.06×fontSize / exporter: same
+ *
+ * Stamp / distribute-3 keep their original bold print weight (opts
+ * omitted → bold default true).
  */
-function paintGlyphRun(ctx, text, x, y, color, fontSize) {
+function paintGlyphRun(ctx, text, x, y, color, fontSize, opts = {}) {
+  const bold = opts.bold !== false; // default true for stamp / 印影 compat
   ctx.save();
   ctx.fillStyle = color;
   ctx.strokeStyle = color;
-  ctx.lineWidth = fontSize * 0.06;
+  // Plain text: 0.03 keeps glyphs readable as thin but covers AA halo so
+  // printed pages don't look gray. Bold: 0.06 for visibly thicker text.
+  ctx.lineWidth = fontSize * (bold ? 0.06 : 0.03);
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
   ctx.strokeText(text, x, y);
@@ -501,13 +516,16 @@ async function drawOverlay(ctx, ov, zoom) {
     ctx.textAlign = "start";
     // β15/β31: see paintGlyphRun for why we stroke-then-fill at the
     // same color — plugs the AA halo that prints as gray dots.
+    // β34: overstroke is now opt-in via props.bold (default off for
+    // text overlay so the glyph is its natural weight).
     const text = props.text ?? "";
     const lineHeight = fontSize * (props.lineHeight ?? 1);
     const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+    const boldOpt = { bold: !!props.bold };
     if (rot === 0) {
       const lines = wrapCanvasText(ctx, text, w);
       for (let i = 0; i < lines.length; i++) {
-        paintGlyphRun(ctx, lines[i], x, y + i * lineHeight, color, fontSize);
+        paintGlyphRun(ctx, lines[i], x, y + i * lineHeight, color, fontSize, boldOpt);
       }
     } else {
       // Match the viewer's "rotate the content within the new rect"
@@ -521,7 +539,7 @@ async function drawOverlay(ctx, ov, zoom) {
       ctx.rotate((rot * Math.PI) / 180);
       const lines = wrapCanvasText(ctx, text, naturalW);
       for (let i = 0; i < lines.length; i++) {
-        paintGlyphRun(ctx, lines[i], -naturalW / 2, -naturalH / 2 + i * lineHeight, color, fontSize);
+        paintGlyphRun(ctx, lines[i], -naturalW / 2, -naturalH / 2 + i * lineHeight, color, fontSize, boldOpt);
       }
       ctx.restore();
     }
@@ -678,6 +696,7 @@ async function drawOverlay(ctx, ov, zoom) {
     ctx.fill();
     ctx.restore();
     // Text inside the box. β31: same overstroke as text overlay.
+    // β34: same opt-in bold semantics as text overlay.
     const fontSize = (props.fontSize ?? 12) * zoom;
     ctx.font = `${fontSize}px ${getTextFontStack(props.fontId, {
       digitsHanko: !!props.digitsHanko,
@@ -688,8 +707,9 @@ async function drawOverlay(ctx, ov, zoom) {
     const padding = 3 * zoom;
     const lineHeight = fontSize * (props.lineHeight ?? 1);
     const lines = wrapCanvasText(ctx, text, w - padding * 2);
+    const boldOpt = { bold: !!props.bold };
     for (let i = 0; i < lines.length; i++) {
-      paintGlyphRun(ctx, lines[i], x + padding, y + padding + i * lineHeight, color, fontSize);
+      paintGlyphRun(ctx, lines[i], x + padding, y + padding + i * lineHeight, color, fontSize, boldOpt);
     }
     return;
   }

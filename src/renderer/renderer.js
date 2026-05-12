@@ -106,6 +106,7 @@ const textFontSel = $("text-font");
 const textSizeSel = $("text-size");
 const textColorSel = $("text-color");
 const textDigitsHankoChk = $("text-digits-hanko");
+const textBoldChk = $("text-bold");
 const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
 const btnModeCallout = $("btn-mode-callout");
@@ -831,6 +832,7 @@ function placeCallout(pageNo, x, y, w, h, arrowDx, arrowDy) {
       color: "#000000",
       fontId: currentTextFontId(),
       digitsHanko: currentTextDigitsHanko(),
+      bold: currentTextBold(),
       rotation: 0,
       arrowDx,
       arrowDy,
@@ -956,6 +958,9 @@ function currentTextColor() {
 function currentTextDigitsHanko() {
   return !!textDigitsHankoChk?.checked;
 }
+function currentTextBold() {
+  return !!textBoldChk?.checked;
+}
 
 function placeText(pageNo, x, y) {
   const fontSize = currentTextFontSize();
@@ -981,6 +986,7 @@ function placeText(pageNo, x, y) {
       color: currentTextColor(),
       fontId: currentTextFontId(),
       digitsHanko: currentTextDigitsHanko(),
+      bold: currentTextBold(),
       rotation: 0, // page-rotation tracked here so content stays upright on rotated paper
     },
   });
@@ -1069,6 +1075,7 @@ async function applyPageNumbers() {
         color: "#000000",
         fontId: currentTextFontId(),
         digitsHanko: currentTextDigitsHanko(),
+        bold: currentTextBold(),
         rotation: 0,
       },
     });
@@ -8322,13 +8329,14 @@ function applyFontSizeToEditingOverlay() {
   const fontSize = currentTextFontSize();
   const color = currentTextColor();
   const digitsHanko = currentTextDigitsHanko();
+  const bold = currentTextBold();
   projectStore.update(id, {
-    properties: { ...ov.properties, fontId, fontSize, color, digitsHanko },
+    properties: { ...ov.properties, fontId, fontSize, color, digitsHanko, bold },
   });
   // Keep the inline-edit element visually in sync (the store update
   // alone doesn't repaint the editing element — see viewer's preserve-
   // editing logic).
-  viewer.applyEditingTextStyle({ fontId, fontSize, color, digitsHanko });
+  viewer.applyEditingTextStyle({ fontId, fontSize, color, digitsHanko, bold });
 }
 
 if (textFontSel) {
@@ -8376,6 +8384,22 @@ if (textDigitsHankoChk) {
     localStorage.setItem(
       TEXT_DIGITS_HANKO_STORAGE_KEY,
       textDigitsHankoChk.checked ? "1" : "0",
+    );
+    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+      setPlacementMode("text");
+    }
+    applyFontSizeToEditingOverlay();
+  });
+}
+const TEXT_BOLD_STORAGE_KEY = "kpdf3.textBold";
+if (textBoldChk) {
+  if (localStorage.getItem(TEXT_BOLD_STORAGE_KEY) === "1") {
+    textBoldChk.checked = true;
+  }
+  textBoldChk.addEventListener("change", () => {
+    localStorage.setItem(
+      TEXT_BOLD_STORAGE_KEY,
+      textBoldChk.checked ? "1" : "0",
     );
     if (isOpen && placementMode !== "text" && !viewer._editingId) {
       setPlacementMode("text");

@@ -109,6 +109,9 @@ let activePages = [];
 /** Point the module-level "active *" refs at the given tab (or null). */
 function activateTab(tabId) {
   const h = tabId ? tabHandles.get(tabId) : null;
+  // β34: inserted-source-pdf doc cache is workspace-scoped — destroy when
+  // switching workspaces so mupdf doesn't keep handles into a closed file.
+  _destroyInsertedSourceCache();
   if (!h) {
     activeTabId = null;
     activeWorkspace = null;
@@ -395,6 +398,10 @@ app.on("before-quit", () => {
   // Close every tab so SQLite WAL flushes for each workspace.
   for (const id of [...tabHandles.keys()]) disposeTab(id);
   disposeActiveDoc();
+  // β34: release mupdf handles for inserted-source-pdf cache so no
+  // dangling Document/Page/Pixmap objects are left when the WASM heap
+  // tears down.
+  _destroyInsertedSourceCache();
   if (activeWorkspace) {
     try { activeWorkspace.close(); } catch { /* ignore */ }
     activeWorkspace = null;
@@ -1785,6 +1792,88 @@ ipcMain.handle("kpdf3:get-inserted-page-image", async (_, id) => {
     ? row.imageBlob
     : new Uint8Array(row.imageBlob);
   return { imageBlob: u8, imageW: row.imageW, imageH: row.imageH };
+});
+
+/**
+ * β34: viewer-side vector render for external-PDF-backed synthetic pages.
+ * Opens the stored source PDF via mupdf (cached per source_pdf_id) and
+ * rasterises the referenced page at the requested zoom — same RGBA
+ * payload shape as the regular `kpdf3:render-page` IPC so the renderer
+ * can reuse the existing draw loop. This makes the viewer pixel-sharp at
+ * any zoom (the legacy image_blob path was a 300dpi raster that softened
+ * past 100% zoom).
+ *
+ * Cache lifetime: per-workspace. Documents are destroyed when the workspace
+ * closes — see `_destroyInsertedSourceCache` invocations below.
+ */
+const _insertedSourcePdfDocCache = new Map(); // sourcePdfId → mupdf.Document
+function _destroyInsertedSourceCache() {
+  for (const doc of _insertedSourcePdfDocCache.values()) {
+    try { doc.destroy?.(); } catch { /* ignore */ }
+  }
+  _insertedSourcePdfDocCache.clear();
+}
+
+function _getInsertedSourcePdfDoc(sourcePdfId) {
+  if (_insertedSourcePdfDocCache.has(sourcePdfId)) {
+    return _insertedSourcePdfDocCache.get(sourcePdfId);
+  }
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const row = activeWorkspace.getInsertedSourcePdf(sourcePdfId);
+  if (!row || !row.pdfBlob) {
+    throw new Error(`inserted_source_pdfs id=${sourcePdfId} not found`);
+  }
+  const buf = row.pdfBlob instanceof Uint8Array
+    ? row.pdfBlob
+    : new Uint8Array(row.pdfBlob);
+  const doc = mupdf.Document.openDocument(buf, "application/pdf");
+  _insertedSourcePdfDocCache.set(sourcePdfId, doc);
+  return doc;
+}
+
+ipcMain.handle("kpdf3:render-inserted-source-page", async (_, payload) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const { syntheticId, zoom } = payload ?? {};
+  if (!Number.isFinite(syntheticId) || syntheticId <= 0) {
+    throw new Error(`render-inserted-source-page: invalid syntheticId ${syntheticId}`);
+  }
+  if (!Number.isFinite(zoom) || zoom <= 0) {
+    throw new Error(`render-inserted-source-page: invalid zoom ${zoom}`);
+  }
+  // Locate the inserted_pages row. listInsertedPages is cheap (no blobs)
+  // and avoids adding a new sqlite-store helper for a single field lookup.
+  const rows = activeWorkspace.listInsertedPages();
+  const row = rows.find((r) => r.id === syntheticId);
+  if (!row) throw new Error(`Inserted page id=${syntheticId} not found`);
+  if (row.sourcePdfId == null || row.sourcePageIndex == null) {
+    throw new Error(`Inserted page id=${syntheticId} has no vector source`);
+  }
+  const doc = _getInsertedSourcePdfDoc(row.sourcePdfId);
+  const page = doc.loadPage(row.sourcePageIndex);
+  try {
+    const matrix = mupdf.Matrix.scale(zoom, zoom);
+    const pixmap = page.toPixmap(
+      matrix,
+      mupdf.ColorSpace.DeviceRGB,
+      true,  // alpha — match the regular render-page IPC's default
+      false,
+    );
+    try {
+      const width = pixmap.getWidth();
+      const height = pixmap.getHeight();
+      const pixels = pixmap.getPixels();
+      return {
+        width,
+        height,
+        channels: 4,
+        pixels: Buffer.from(pixels),
+      };
+    } finally {
+      pixmap.destroy?.();
+    }
+  } finally {
+    page.destroy?.();
+  }
 });
 
 ipcMain.handle("kpdf3:get-app-info", async () => {
