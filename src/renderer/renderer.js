@@ -1531,15 +1531,36 @@ function handleTextEditCommit(id, newText) {
     );
     sizePatch = { w: m.w, h: m.h };
   } else if (ov.type === "text") {
+    // Cap horizontal growth at the page edge: during inline edit the
+    // contentEditable's max-width was clipped to (page - overlayLeft),
+    // so the user types text that visually wraps inside the page. On
+    // commit, measureTextOverlaySize would otherwise grow `w` to the
+    // longest UNWRAPPED line — making the box (and thus the saved /
+    // printed text) extend past the paper. β15 testers reported the
+    // committed text "一行で紙の外まで長くなる".
+    //
+    // Compute the same canonical max-width the editor used, then pass
+    // it through so the committed box keeps wrapping at the page edge.
+    let maxCanonicalW = Infinity;
+    const row = viewer._pages?.find((p) => p.pageNo === ov.pageNo);
+    if (row) {
+      const cw = row.cropW ?? row.width ?? 595;
+      const ch = row.cropH ?? row.height ?? 842;
+      const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
+      const swap = userRot === 90 || userRot === 270;
+      const pageW = swap ? ch : cw;
+      maxCanonicalW = Math.max(60, pageW - (ov.x ?? 0) - 4);
+    }
     const m = measureTextOverlaySize(
       newText,
       ov.properties.fontSize ?? 12,
       getTextFontStack(ov.properties.fontId),
       ov.w,
+      maxCanonicalW,
     );
     // Keep the existing width when it already accommodates the longest
-    // line; otherwise grow horizontally. Height always grows to fit all
-    // wrapped lines so nothing is clipped.
+    // line; otherwise grow horizontally up to the page edge. Height
+    // always grows to fit all wrapped lines so nothing is clipped.
     sizePatch = { w: m.w, h: m.h };
   }
   history.execute(
@@ -1551,13 +1572,15 @@ function handleTextEditCommit(id, newText) {
 }
 
 /** Measure the natural size of a plain text overlay. Width: longest
- *  unwrapped line OR the current box width (whichever is larger, capped
- *  near page width). Height: number of wrapped lines × line height.
+ *  unwrapped line OR the current box width (whichever is larger), then
+ *  capped at `maxW` (default Infinity — caller may pass page-edge minus
+ *  overlay left so the committed box doesn't extend past the paper).
+ *  Height: number of wrapped lines × line height at the chosen width.
  *
  *  The implementation mirrors measureCalloutSize / wrapCanvasText so the
  *  saved canonical w/h matches what the renderer and exporter draw.
  */
-function measureTextOverlaySize(text, fontSize, fontFamily, currentW) {
+function measureTextOverlaySize(text, fontSize, fontFamily, currentW, maxW = Infinity) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   ctx.font = `${fontSize}px ${fontFamily}`;
@@ -1570,8 +1593,9 @@ function measureTextOverlaySize(text, fontSize, fontFamily, currentW) {
   const minW = Math.max(60, fontSize * 6);
   const targetW = Math.max(minW, Math.ceil(maxLineWidth) + 4);
   // Don't shrink below current — user may have manually widened the
-  // box and we shouldn't undo that.
-  const w = Math.max(currentW ?? 0, targetW);
+  // box and we shouldn't undo that. Don't exceed maxW (page edge) so
+  // the committed box stays inside the paper (β15 regression).
+  const w = Math.min(maxW, Math.max(currentW ?? 0, targetW));
   // Wrap at the chosen width to compute height (mirrors wrapCanvasText).
   let lineCount = 0;
   for (const para of lines) {
