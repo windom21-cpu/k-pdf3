@@ -4696,6 +4696,19 @@ function createThumbElement(pageRow, visualPos) {
     handleThumbSelectionClick(splitThumbSelection, ordered, pageRow.pageNo, e);
     wrap.focus();
   });
+  // β15 testers wanted a fast way back to the main viewer from a
+  // page they had been examining in the split flow. Double-click
+  // closes the split view and scrolls the main viewer to the
+  // double-clicked page (mirrors how a sidebar thumb click already
+  // scrolls there).
+  wrap.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSplitMode(false);
+    if (typeof pageRow.pageNo === "number") {
+      viewer.scrollToPage(pageRow.pageNo);
+    }
+  });
   attachThumbContextMenu(wrap, pageRow.pageNo);
   // Same D&D handler as the sidebar thumbs — a single mechanism for
   // page reordering means split-save view picks up the same display_
