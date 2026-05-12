@@ -4199,13 +4199,13 @@ const printState = {
 };
 
 /**
- * Compress a list of page numbers into the shortest "1-3, 5, 8-10"
- * style range string accepted by the print dialog's custom-range input.
- * Returns "" for empty/invalid input.
+ * Compress a list of positive integers (1-indexed visual positions) into
+ * the shortest "1-3, 5, 8-10" style range string accepted by the print
+ * dialog's custom-range input. Returns "" for empty/invalid input.
  */
-function compressPageList(pageNos) {
-  if (!Array.isArray(pageNos) || pageNos.length === 0) return "";
-  const sorted = [...new Set(pageNos)]
+function compressPageList(positions) {
+  if (!Array.isArray(positions) || positions.length === 0) return "";
+  const sorted = [...new Set(positions)]
     .filter((n) => Number.isInteger(n) && n > 0)
     .sort((a, b) => a - b);
   if (sorted.length === 0) return "";
@@ -4258,7 +4258,18 @@ function showPrintDialog(printers, pages, currentPageNo, preselected = null) {
   // multi-selection at 印刷 time), seed the custom-range input with
   // those pages and switch to "カスタム" so the user doesn't have to
   // retype the selection. Otherwise default to "すべて".
-  const compressed = compressPageList(preselected);
+  //
+  // preselected is in pageNo space (positive for source pages, negative
+  // for inserted/synthetic pages). The range input shows 1-indexed
+  // visual positions, so translate each pageNo to its position in the
+  // current visible `pages` array. Pages whose pageNo isn't found are
+  // silently dropped (workspace edits since selection time could have
+  // removed them).
+  const pageNoToPos = new Map(pages.map((p, i) => [p.pageNo, i + 1]));
+  const positions = Array.isArray(preselected)
+    ? preselected.map((pn) => pageNoToPos.get(pn)).filter((p) => p != null)
+    : [];
+  const compressed = compressPageList(positions);
   if (compressed) {
     printRangeCustom.checked = true;
     printRangeInput.value = compressed;
@@ -4285,8 +4296,17 @@ function recomputeVisiblePages() {
     const cur = viewer.currentPage || 1;
     printState.visiblePageNos = [cur];
   } else if (printRangeCustom.checked) {
+    // parsePageList returns 1-indexed visual positions; translate to the
+    // underlying pageNo values so downstream code (preview lookup,
+    // filteredPages filter in actionPrint) can match against p.pageNo
+    // uniformly. Without this translation, workspaces with inserted
+    // (synthetic, negative pageNo) pages or reordered pages would
+    // silently lose pages from the print job because p.pageNo wouldn't
+    // equal its visual position.
     const parsed = parsePageList(printRangeInput.value, total);
-    printState.visiblePageNos = parsed.length > 0 ? parsed : [];
+    printState.visiblePageNos = parsed
+      .map((pos) => printState.pages[pos - 1]?.pageNo)
+      .filter((n) => n !== undefined && n !== null);
   } else {
     printState.visiblePageNos = printState.pages.map((p) => p.pageNo);
   }
