@@ -2130,6 +2130,16 @@ function attachThumbContextMenu(el, pageNo) {
  * @param {'none' | 'text' | 'stamp'} mode
  */
 function setPlacementMode(mode) {
+  // Whenever we LEAVE stamp placement mode, clear the active preset
+  // selection so the next entry into stamp mode lands in the
+  // 「未選択」 state. β28 testers found that the previously-active
+  // palette tile stayed highlighted across sessions / mode toggles
+  // because the id is persisted in localStorage; clearing on exit
+  // (rather than at app start) keeps a deliberate selection alive
+  // within a single stamp-mode visit but resets between visits.
+  if (placementMode === "stamp" && mode !== "stamp" && _activeStampPresetId) {
+    setActiveStampPreset(null);
+  }
   placementMode = mode;
   viewer.setEditMode(mode);
   btnModeText.classList.toggle("toggled", mode === "text");
@@ -2819,9 +2829,17 @@ async function openStampRegisterImage(prefill = null) {
   stampRegImageW.value = String(prefill?.width ?? 80);
   stampRegImageH.value = String(prefill?.height ?? 80);
   stampRegImageFrame.checked = prefill ? prefill.frame !== "none" : false;
-  // Tint color: empty string means "no tint" (image as-is). Persisted
-  // as "" in stamp_presets.color so existing presets keep working.
-  if (stampRegImageColor) stampRegImageColor.value = prefill?.color ?? "";
+  // Tint color: "bg-transparent" is the recommended default for new
+  // image stamps — most users want the source image's white background
+  // dropped to alpha so the stamp blends with paper, regardless of
+  // pixel color. β4 introduced this default; somewhere between then
+  // and β28 a refactor set the JS value to "" (which the <select>
+  // resolves to 「そのまま（無加工）」), overriding the HTML's own
+  // `selected` attribute. Restore the bg-transparent default for new
+  // registrations; existing presets are loaded verbatim via prefill.color.
+  if (stampRegImageColor) {
+    stampRegImageColor.value = prefill?.color ?? "bg-transparent";
+  }
   stampRegImageLabel.value = prefill?.label ?? "";
   stampRegImageOk.disabled = !prefill?.assetId;
   if (stampRegImageTrialBtn) {
@@ -3106,6 +3124,11 @@ function enterStampTrialPlacement() {
   };
   if (stampRegImageDialog) stampRegImageDialog.hidden = true;
   if (stampMgrDialog) stampMgrDialog.hidden = true;
+  // Hide the stamp-placement ghost too if we're entering trial from
+  // inside placementMode === "stamp" — without this the trial cursor
+  // and the placement ghost both follow the pointer, showing two
+  // different stamp previews at once (β28 tester report).
+  if (stampGhostEl) stampGhostEl.hidden = true;
   paintStampTrialCursor(params);
   viewerContainer.addEventListener("mousemove", onTrialCursorMove);
   viewerContainer.addEventListener("mouseleave", onTrialCursorLeave);
@@ -3159,16 +3182,29 @@ function placeStampTrial(pageNo, canonicalX, canonicalY, pageEl) {
 }
 
 /** Re-paint the pinned trial canvas in place when the user tweaks w/h/
- *  color/frame in the dialog. Cheap; runs on every input change. */
+ *  color/frame in the dialog. Cheap; runs on every input change.
+ *  Resize keeps the canvas centered on the originally-clicked point
+ *  (otherwise the box grows out of its top-left corner, which makes
+ *  it look like the trial wanders away from the user's intended
+ *  spot — β28 testers).
+ */
 function updateStampTrialAppearance() {
   if (!_stampTrial) return;
   const params = getStampTrialParams();
   if (!params) return;
   const z = viewer.zoom;
+  const oldW = _stampTrial.params.width;
+  const oldH = _stampTrial.params.height;
+  const cx = _stampTrial.x + oldW / 2;
+  const cy = _stampTrial.y + oldH / 2;
+  const newX = cx - params.width / 2;
+  const newY = cy - params.height / 2;
   setupHiDPICanvas(_stampTrial.canvas, params.width * z, params.height * z);
-  _stampTrial.canvas.style.left = `${_stampTrial.x * z}px`;
-  _stampTrial.canvas.style.top = `${_stampTrial.y * z}px`;
+  _stampTrial.canvas.style.left = `${newX * z}px`;
+  _stampTrial.canvas.style.top = `${newY * z}px`;
   paintStampTrialCanvas(_stampTrial.canvas, params);
+  _stampTrial.x = newX;
+  _stampTrial.y = newY;
   _stampTrial.params = params;
 }
 
@@ -3324,6 +3360,16 @@ function moveStampGhost(clientX, clientY) {
 
 function onViewerMouseMoveForStampGhost(e) {
   if (placementMode !== "stamp") return;
+  // While 試し置き is hunting for a click, the trial cursor follows
+  // the mouse with the NEW (to-be-registered) image. The placement
+  // ghost would otherwise also follow with the previously-active
+  // palette preset, giving the user two stamps under the pointer at
+  // once ("違うスタンプのプレビューも付いてきている" — β28 testers).
+  // Suppress the placement ghost for the duration of the trial.
+  if (_stampTrialPlacing) {
+    if (stampGhostEl) stampGhostEl.hidden = true;
+    return;
+  }
   // Size has to track viewer.zoom which the user can change while in
   // stamp mode; cheap enough to set on every move.
   updateStampGhostSize();
