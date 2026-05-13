@@ -333,7 +333,35 @@ function createMainWindow() {
   // still has live bounds; `closed` would return zeros. Saving inside
   // close (not on resize/move) avoids hammering the disk while the user
   // is dragging the edge.
-  mainWindow.on("close", () => {
+  //
+  // β50 J6: when a print job is still in flight, block the close and
+  // ask the user whether to wait for it or cancel the spool. Adobe-
+  // style: clicking 「キャンセルして終了」kills Sumatra / tears down
+  // the FAX OS dialog before quitting. Default = wait so an accidental
+  // X click doesn't murder a long-running print.
+  mainWindow.on("close", (event) => {
+    if (isPrintInFlight()) {
+      const choice = dialog.showMessageBoxSync(mainWindow, {
+        type: "warning",
+        buttons: ["完了まで待つ", "印刷をキャンセルして終了"],
+        defaultId: 0,
+        cancelId: 0,
+        title: "印刷ジョブ進行中",
+        message: "印刷ジョブが進行中です。",
+        detail:
+          "今アプリを閉じると印刷が途中で止まる可能性があります。" +
+          "完了まで待つか、印刷をキャンセルして終了するか選んでください。",
+      });
+      if (choice === 0) {
+        // "wait" — keep the window alive. User clicks X again later
+        // (after status bar shows print completed).
+        event.preventDefault();
+        return;
+      }
+      // Cancel + quit path: kill the active spool then fall through to
+      // the normal close save / disposal flow below.
+      cancelInFlightPrint();
+    }
     saveWindowState(mainWindow);
   });
   mainWindow.on("closed", () => {
@@ -1717,6 +1745,28 @@ ipcMain.handle("kpdf3:list-printers", async () => {
  *     deviceName: string,
  *     copies?: number }
  */
+// β50 J6: track in-flight print job so we can block window close with
+// a confirmation dialog ("印刷中です。完了を待ちますか / キャンセル
+// して終了しますか") rather than letting the user kill the app mid-
+// spool and end up with a half-printed page or unsent FAX.
+let _printInFlight = false;
+function isPrintInFlight() { return _printInFlight; }
+function cancelInFlightPrint() {
+  if (_activeSumatraProcess) {
+    try { _activeSumatraProcess.kill(); } catch { /* ignore */ }
+    _activeSumatraProcess = null;
+  }
+  // Chromium path (FAX / byte-copy): destroying printWindow tears down
+  // the offscreen renderer that owns webContents.print's OS dialog.
+  // For a FAX that's still in the driver-side fax-number dialog this
+  // dismisses without sending; for one already submitted to the OS
+  // spooler it's already too late to recall (correct semantics).
+  if (printWindow && !printWindow.isDestroyed()) {
+    try { printWindow.destroy(); } catch { /* ignore */ }
+    printWindow = null;
+  }
+}
+
 ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   const {
@@ -1778,6 +1828,7 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   if (process.platform === "win32") {
     devmodeToken = await applyUserPrinterDevmode(deviceName);
   }
+  _printInFlight = true;
   try {
     if (useSumatra) {
       await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
@@ -1785,6 +1836,7 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
       await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
     }
   } finally {
+    _printInFlight = false;
     if (devmodeToken) await restoreUserPrinterDevmode(devmodeToken);
   }
   return { tempPath, deviceName, copies, landscape };
