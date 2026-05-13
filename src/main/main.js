@@ -1883,9 +1883,16 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   // does not stall.
   const isFax = isFaxDevice(deviceName);
   const sumatraExe = sumatraPath();
+  // β53 J8: byte-copy も Sumatra に流す。β3 で「Chromium silent print
+  // は FUJIFILM Apeos C2360 でハング (~55s timeout)」と分かっていて
+  // rasterized 経路だけ Sumatra に逃がしていたが、byte-copy (overlay
+  // なしの元 PDF をそのまま送信) も同じ Chromium silent 経路を通る
+  // ので同じハングが発生していた (β52 crash.log の print-route から
+  // 確認 — pageCount=0 / source=byte-copy / printer=Apeos C2360)。
+  // Sumatra は通常 PDF も問題なく扱えるので Win + 非 FAX なら常に
+  // Sumatra に統一。これで FAX 以外は Chromium silent 経路を踏まない。
   const useSumatra =
     process.platform === "win32"
-    && source === "rasterized"
     && !isFax
     && sumatraExe !== null;
   // β52 J7b: log the routing decision to crash.log so when print fails
