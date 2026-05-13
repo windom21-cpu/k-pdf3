@@ -311,9 +311,14 @@ async function applyTab(tabId) {
       console.warn("[tabs] switchTab failed (tab may not be opened on main side):", err);
     }
     await refreshViewer();
-    // Restore scroll after layout settles.
+    // Restore scroll after layout settles. scrollLeft is reset to 0 —
+    // fit-width / fit-page centre the inner via `margin: 0 auto`, so a
+    // non-zero scrollLeft from the previous tab (e.g. transient overflow
+    // during page rebuild) would offset the content to the right and
+    // leave gray padding on the left after re-fit.
     requestAnimationFrame(() => {
       viewerContainer.scrollTop = tab.scrollPosition || 0;
+      viewerContainer.scrollLeft = 0;
     });
   } else {
     try { await kpdf3.switchTab(null); } catch { /* noop */ }
@@ -6514,12 +6519,24 @@ function dispatchBookmarkCtx(target) {
   if (!(target instanceof HTMLElement) || !ctx) return;
   const action = target.dataset.ctx;
   if (action === "rename") {
-    startInlineRenameBookmark(ctx.li, ctx.node);
+    // Defer to next frame so the pointerdown/up/click sequence on the
+    // menu item fully settles before we create the rename <input>.
+    // Otherwise a trailing focus shift (or other listener triggered by
+    // the same click) can race against input.focus() and the blur path
+    // fires finish() before the user types anything.
+    requestAnimationFrame(() => startInlineRenameBookmark(ctx.li, ctx.node));
   } else if (action === "delete") {
     actionRemoveBookmark();
   }
 }
 ctxBookmark?.addEventListener("pointerdown", (e) => {
+  // preventDefault stops the browser's native mousedown→focus shift that
+  // would otherwise steal focus from the rename <input> that
+  // startInlineRenameBookmark creates synchronously inside dispatchBookmarkCtx.
+  // Without this the input loses focus immediately, its blur listener
+  // fires finish(commit=true) with an unchanged value, and the rename
+  // silently no-ops — looking like "右クリック→名前を変更が効かない".
+  e.preventDefault();
   e.stopPropagation();
   let el = e.target;
   while (el && el !== ctxBookmark && !(el.dataset && el.dataset.ctx)) {
