@@ -5485,7 +5485,16 @@ async function actionPrint() {
       });
     }
     if (printCancelled) return;
-    updateBusy(`${choice.deviceName} に送信中...`, 90);
+    // Heuristic: name に fax 系文字列が混じっていればドライバ UI が
+    // 出る可能性が高いので、待ち画面でその旨を予告する (main 側は同じ
+    // 検出ロジックで silent を外す)。
+    const looksLikeFax = /fax/i.test(choice.deviceName)
+      || /ファックス|ファクス|ﾌｧｯｸｽ|ﾌｧｸｽ/.test(choice.deviceName);
+    if (looksLikeFax) {
+      updateBusy(`${choice.deviceName} に送信中... ドライバの送信先入力ダイアログをご確認ください`, 90);
+    } else {
+      updateBusy(`${choice.deviceName} に送信中...`, 90);
+    }
     await kpdf3.printPdfSilent({
       source: isCopy ? "byte-copy" : "rasterized",
       pages: composed,

@@ -1322,9 +1322,13 @@ function silentPrintPdf(pdfPath, opts) {
       setTimeout(() => {
         if (settled) return;
         try {
+          // FAX: silent:true で送信すると Chromium がドライバ UI を
+          // 抑止し送信先入力ダイアログ無しで失敗 → silent:false で OS
+          // 印刷ダイアログを通す。FAX 以外は従来通り silent:true。
+          const useSilent = !isFaxDevice(opts.deviceName);
           win.webContents.print(
             {
-              silent: true,
+              silent: useSilent,
               deviceName: opts.deviceName,
               copies: opts.copies ?? 1,
               printBackground: true,
@@ -1399,6 +1403,20 @@ function sumatraPath() {
  *  on exit or by `kpdf3:cancel-print`. */
 let _activeSumatraProcess = null;
 
+/**
+ * Heuristic: does the device name look like a FAX device?
+ * Most FAX drivers pop a「送信先番号」prompt during the print spool
+ * call, and -silent suppresses driver UI → driver fails with exit 1
+ * (β41 user report on a複合機 FAX 経路). Latin "fax" + Japanese
+ * カタカナ variants. False positives (a normal printer named "Fax-
+ * Server") just lose the silent flag, which is harmless.
+ */
+function isFaxDevice(name) {
+  if (!name) return false;
+  if (/fax/i.test(name)) return true;
+  return /ファックス|ファクス|ﾌｧｯｸｽ|ﾌｧｸｽ/.test(name);
+}
+
 function sumatraPrintPdf(pdfPath, opts) {
   return new Promise((resolve, reject) => {
     const exe = sumatraPath();
@@ -1410,10 +1428,14 @@ function sumatraPrintPdf(pdfPath, opts) {
     if (opts.copies && opts.copies > 1) settings.push(`${opts.copies}x`);
     if (opts.landscape) settings.push("landscape");
     settings.push("noscale");
+    const isFax = isFaxDevice(opts.deviceName);
     const args = [
       "-print-to", opts.deviceName,
       "-print-settings", settings.join(","),
-      "-silent",
+      // FAX devices: drop -silent so the driver's 送信先入力ダイアログが
+      // 立ち上がれる経路を空ける。-silent 付きだとドライバ UI が抑止
+      // されて driver は exit 1 (stderr 出力もなし) で失敗する。
+      ...(isFax ? [] : ["-silent"]),
       "-exit-when-done",
       pdfPath,
     ];
