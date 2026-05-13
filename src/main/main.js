@@ -1597,9 +1597,20 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   // Apeos C2360 wireless) when handed our mupdf-generated PDFs with
   // large PNG XObjects. byte-copy keeps using Chromium silent print —
   // the source PDF is normal-shape and goes through quickly.
+  //
+  // β42 J2: FAX devices CANNOT go through Sumatra at all — mupdf +
+  // WinSpool fails to initialize the FAX driver ("プリンタを初期化でき
+  // ませんでした" / exit 1). Routing FAX to silentPrintPdf, which in
+  // turn already uses silent:false for FAX (β42 J1) → OS print dialog
+  // pops, user enters fax number through the driver UI, send. The
+  // β3-era Chromium stall was specifically silent:TRUE + mupdf PDFs;
+  // silent:false uses a different code path (interactive spool) that
+  // does not stall.
+  const isFax = isFaxDevice(deviceName);
   const useSumatra =
     process.platform === "win32"
     && source === "rasterized"
+    && !isFax
     && sumatraPath() !== null;
   if (useSumatra) {
     await sumatraPrintPdf(tempPath, { deviceName, copies, landscape });
