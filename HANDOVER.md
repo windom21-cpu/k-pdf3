@@ -1,6 +1,6 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-05-13（β53 配布中 / β33 撤回 / 開発リポ Public 化済 / CI 案 B-2 適用済） / 現在のバージョン: **v2.0.0-beta.53（β37-β41 で日付スタンプ年月のみバリアント + プレビュー / ゴースト統一 + 印刷 overstroke 調整、β42-β43 で FAX 経路対応、β44 でウインドウサイズ永続化、β45 で削除ダイアログ視覚位置 + サムネ右クリック削除、β46-β50 で印刷プロパティ完全反映 + DEVMODE 同期 restore + 印刷中クローズ確認、β51 で診断クラッシュロガー、β52-β53 で FAX 誤検出修正 + byte-copy も Sumatra 経路統一による Apeos C2360 ハング解消）**
+最終更新: 2026-05-14（β53 配布中 / Actions storage budget fix / **B2 リファクタ S1+S2 着地**） / 現在のバージョン: **v2.0.0-beta.53（β37-β41 で日付スタンプ年月のみバリアント + プレビュー / ゴースト統一 + 印刷 overstroke 調整、β42-β43 で FAX 経路対応、β44 でウインドウサイズ永続化、β45 で削除ダイアログ視覚位置 + サムネ右クリック削除、β46-β50 で印刷プロパティ完全反映 + DEVMODE 同期 restore + 印刷中クローズ確認、β51 で診断クラッシュロガー、β52-β53 で FAX 誤検出修正 + byte-copy も Sumatra 経路統一による Apeos C2360 ハング解消）** / **2026-05-14 内に: GitHub Actions storage を 0.5GB 上限内に収める CI 改修 + B2 リファクタ S1+S2 完了 (renderer.js 8631→7297、-15.5%、6 ファイルに分散)**
 
 このドキュメントは、K-PDF3 の開発を引き継ぐ次の AI アシスタント（または別環境の自分）が会話履歴なしで作業継続できるよう書かれています。**着手前に §0 → §1 → §2 → §3 → §6 → §8 → §17 の順で必ず読んでください**。
 
@@ -919,7 +919,31 @@ npm run dev                        # electronmon 起動（推奨、自動 reload
 - **annotation read-only proxy** — §15.3 参照。新セッション規模。
 - **qpdf sanitize** — secure export pipeline、配布版の metadata strip。
 - **IPAex 同梱** — 出力 PDF はラスタ化されるので強い必要性はない（書き出す側に何かしらの明朝が入っていれば OK）。配布先での字形差異が問題になった時に着手。
-- **renderer.js モジュール分離 (§15.6)** — 5800+ 行に肥大。タブが安定したので別 session で 8-10 ファイルに分割推奨。
+- **renderer.js モジュール分離 (§15.6)** — 5800+ 行に肥大。タブが安定したので別 session で 8-10 ファイルに分割推奨。**着手済 (2026-05-14〜)**: 下記 §8.2.5 参照。
+
+### 8.2.5 進行中: B2 renderer.js モジュール分離 (2026-05-14〜)
+
+**B3 (タブ切出し D&D = フェーズ 2 本命) の前段** として、renderer.js の巨大グローバル state を整理。詳細・設計パターン・S3 着手手順は project memory [`project_kpdf3_b2_refactor.md`](../../.claude/projects/-home-sk--------k-pdf3/memory/project_kpdf3_b2_refactor.md) に集約。
+
+| Step | 内容 | 状態 | commit |
+|---|---|---|---|
+| S1 | busy-modal / dialogs / file-browser | ✅ | `2c86adc` |
+| S2 | overlay-edit / overlay-selection / overlay-placement | ✅ | `5ff6cfc` + `a57c114` |
+| S3 | stamp-manager / bookmark-pane (大物 ~2200 行) | ⏳ 未着手 | — |
+| S4 | print-flow (~800 行) | ⏳ | — |
+| S5 | tab-manager 抽出 + renderer.js 仕上げ (~530 行 + cleanup) | ⏳ | — |
+
+**S2 完了時点の累計**: `renderer.js` 8631 → 7297 行 (**-1334 / -15.5%**)、6 ファイルに分散 (`viewer.js` / `exporter.js` / `menu-bar.js` / `page-popup.js` / `fonts.js` には触らず)。全 380 テスト pass + 手動 smoke 通過。
+
+**設計パターン** (S2 で確立):
+- `state` (isOpen / projectStore / history / viewer) は `renderer.js` に残す。各モジュールは `init({ ...getters })` で getter callback を受け、`applyTab()` の alias 切替が live に追従する仕組み
+- DOM 単独要素 (modal / dialog / picker) は `document.getElementById` で直接取得 (ID は stable)
+- state が頻繁に書き換わるモジュール (selection が典型) は state も移動、外部参照は API (`isSelected(id)` / `getSelectedIds()` / `removeFromSelection(id)` / `clearSelectionState()`) 経由に書き換え
+- 例外: `handlePagePointerDown` は stamp 系 (S3) と placement 系を両方 dispatch するため `renderer.js` に残置
+
+**S3 着手前**: `git pull` → `npm test` (380 pass 維持) → `npm run dev` で baseline smoke。続いて `project_kpdf3_b2_refactor.md` の「S3 で扱う範囲」を読み込み、stamp の `_stampTrialPlacing` フラグ + 画像 trial DOM の扱いに注意して S3-a (stamp-manager) → S3-b (bookmark-pane) の順で切り出し。
+
+**別件 (B2 完了後)**: overlay クリック UX 改善 — 単一クリック=即編集を「単一=選択、ダブル=編集」に変更 (β54+ 候補)。詳細は project memory [`project_kpdf3_overlay_click_ux.md`](../../.claude/projects/-home-sk--------k-pdf3/memory/project_kpdf3_overlay_click_ux.md)。
 
 ### 8.3 推奨実装順序（タブ — M5 正式 exit）
 
