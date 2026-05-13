@@ -73,6 +73,15 @@ const DPI_AWARENESS_CONTEXT_SYSTEM_AWARE = -2n;
 let _native = null;
 let _nativeAttempted = false;
 
+// β48 J4b: Cache the full DEVMODE buffer (public part + driver-private
+// dmDriverExtra bytes) returned by the most recent IDOK on the driver
+// properties dialog, keyed by deviceName. The driver-private bytes
+// hold things like tray selection on FUJIFILM-class drivers that
+// otherwise leave the public dmDefaultSource field at a stale default.
+// Cleared per-key when the user reopens プロパティ for that printer
+// and clicks Cancel, so a previous OK doesn't leak forever.
+const _userDevmodeCache = new Map();
+
 async function tryLoadNative() {
   if (_nativeAttempted) return _native;
   _nativeAttempted = true;
@@ -105,6 +114,23 @@ async function tryLoadNative() {
         "DocumentPropertiesW",
         "long",
         ["int64", "int64", "str16", "void *", "void *", "uint32"],
+      ),
+      // β48 J4b: SetPrinter level 9 lets us push the user's modified
+      // DEVMODE (including the driver-private extension bytes where
+      // FUJIFILM Apeos / Xerox class drivers store tray selection) as
+      // the per-user default. Sumatra then picks it up via its own
+      // GetPrinter call. Adobe Reader uses the same approach.
+      GetPrinterW: winspool.func(
+        "__stdcall",
+        "GetPrinterW",
+        "bool",
+        ["int64", "uint32", "void *", "uint32", koffi.out(koffi.pointer("uint32"))],
+      ),
+      SetPrinterW: winspool.func(
+        "__stdcall",
+        "SetPrinterW",
+        "bool",
+        ["int64", "uint32", "void *", "uint32"],
       ),
       ClosePrinter: winspool.func(
         "__stdcall",
@@ -200,7 +226,18 @@ export async function openPrinterPropertiesNative(deviceName, parentHwndBuf) {
     //   IDCANCEL (2) → user clicked Cancel
     //   < 0          → error
     if (ret < 0) throw new Error(`DocumentProperties returned ${ret}`);
-    if (ret === IDCANCEL) return { ok: true, cancelled: true };
+    if (ret === IDCANCEL) {
+      // Don't wipe cached DEVMODE on Cancel — the user might have
+      // OK'd earlier, then later peeked at プロパティ and cancelled.
+      // Last successful OK still wins.
+      return { ok: true, cancelled: true };
+    }
+
+    // β48 J4b: cache the FULL DEVMODE buffer (public + driver-private
+    // dmDriverExtra) so the print path can push it as per-user default
+    // via SetPrinter level 9. This is the only way to forward tray /
+    // option presets that the driver stores in its private extension.
+    _userDevmodeCache.set(deviceName, Buffer.from(devmodeOut));
 
     // IDOK — parse DEVMODE for the fields we propagate to the renderer.
     // β46 J3: also extract duplex / tray (dmDefaultSource) / color so
@@ -252,6 +289,93 @@ export async function openPrinterPropertiesNative(deviceName, parentHwndBuf) {
       try {
         native.SetThreadDpiAwarenessContext(prevDpiCtx);
       } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * β48 J4b: push the most recently captured user DEVMODE to the printer
+ * as per-user default (SetPrinter level 9). Returns a token containing
+ * the previous per-user state so the caller can restore on cleanup.
+ * Returns null if there's no cached DEVMODE for this device, native
+ * binding unavailable, or the call failed — caller falls back to
+ * running the print job without DEVMODE override.
+ */
+export async function applyUserPrinterDevmode(deviceName) {
+  const native = await tryLoadNative();
+  if (!native) return null;
+  const devmodeBuf = _userDevmodeCache.get(deviceName);
+  if (!devmodeBuf) return null;
+
+  let hPrinter = 0n;
+  try {
+    const out = [0n];
+    if (!native.OpenPrinterW(deviceName, out, null)) {
+      throw new Error("OpenPrinterW failed");
+    }
+    hPrinter = out[0];
+    if (!hPrinter) throw new Error("OpenPrinter returned NULL handle");
+
+    // Size query for level 9 (GetPrinter returns false + sets cbNeeded
+    // when buffer too small — for the size query we pass null + 0).
+    const neededRef = [0];
+    native.GetPrinterW(hPrinter, 9, null, 0, neededRef);
+    const cbNeeded = neededRef[0];
+    let savedOriginal = null;
+    if (cbNeeded > 0) {
+      const orig = Buffer.alloc(cbNeeded);
+      const got = native.GetPrinterW(hPrinter, 9, orig, cbNeeded, neededRef);
+      if (got) savedOriginal = orig;
+    }
+
+    // PRINTER_INFO_9 = { LPDEVMODE pDevMode; } — 8 bytes on 64-bit.
+    // Write the address of our cached DEVMODE into that field.
+    const info9 = Buffer.alloc(8);
+    info9.writeBigInt64LE(native.koffi.address(devmodeBuf), 0);
+    const ok = native.SetPrinterW(hPrinter, 9, info9, 0);
+    if (!ok) throw new Error("SetPrinterW level 9 failed");
+
+    return { deviceName, savedOriginal, devmodeBuf };
+  } catch (err) {
+    console.warn(
+      "[printer-props] applyUserPrinterDevmode failed:",
+      err?.message ?? err,
+    );
+    return null;
+  } finally {
+    if (hPrinter) {
+      try { native.ClosePrinter(hPrinter); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Restore the per-user DEVMODE saved by applyUserPrinterDevmode.
+ *  Safe to call with a null token (no-op) so the caller can pair
+ *  apply/restore without checking. */
+export async function restoreUserPrinterDevmode(token) {
+  if (!token) return;
+  const native = await tryLoadNative();
+  if (!native) return;
+  // savedOriginal is the level-9 buffer GetPrinter populated — its
+  // PRINTER_INFO_9 header has pDevMode pointing at a DEVMODE struct
+  // inside the same buffer, so passing it back to SetPrinter restores
+  // the previous per-user default verbatim.
+  if (!token.savedOriginal) return;
+  let hPrinter = 0n;
+  try {
+    const out = [0n];
+    if (!native.OpenPrinterW(token.deviceName, out, null)) return;
+    hPrinter = out[0];
+    if (!hPrinter) return;
+    native.SetPrinterW(hPrinter, 9, token.savedOriginal, 0);
+  } catch (err) {
+    console.warn(
+      "[printer-props] restoreUserPrinterDevmode failed:",
+      err?.message ?? err,
+    );
+  } finally {
+    if (hPrinter) {
+      try { native.ClosePrinter(hPrinter); } catch { /* ignore */ }
     }
   }
 }

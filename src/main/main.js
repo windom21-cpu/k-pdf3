@@ -41,7 +41,11 @@ import {
   closeStampStore,
 } from "./global-stamp-store.js";
 import { setupAutoUpdater } from "./updater.js";
-import { openPrinterPropertiesNative } from "./printer-properties-win.js";
+import {
+  openPrinterPropertiesNative,
+  applyUserPrinterDevmode,
+  restoreUserPrinterDevmode,
+} from "./printer-properties-win.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -401,22 +405,33 @@ let gotInstanceLock = app.requestSingleInstanceLock();
 if (!gotInstanceLock
     && process.platform === "win32"
     && pdfPathsFromArgv(process.argv).length === 0) {
+  // β48 J5b: β47 used Atomics.wait + SharedArrayBuffer for a precise
+  // synchronous sleep but Electron's main process disables shared
+  // memory by default → the call threw, the unhandled error escaped
+  // the script and the new instance crashed silently on launch. The
+  // user saw the same "click does nothing" symptom and had to manually
+  // kill via Task Manager. Replace with a plain busy-wait inside a
+  // try/catch so any koffi/taskkill failure can't take down startup.
   try {
     spawnSync(
       "taskkill",
       ["/F", "/IM", "K-PDF3.exe", "/FI", `PID ne ${process.pid}`],
       { stdio: "ignore", windowsHide: true },
     );
-  } catch { /* none to kill — ignore */ }
-  // Busy-wait up to 1s for the killed process's mutex to be released.
-  // 1s is plenty for the kernel to reap a force-killed process.
-  const deadline = Date.now() + 1000;
-  while (Date.now() < deadline) {
-    gotInstanceLock = app.requestSingleInstanceLock();
-    if (gotInstanceLock) break;
-    // ~50ms tick — Atomics.wait gives a precise synchronous sleep
-    // without depending on a spawned subprocess.
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    // Busy-wait up to 1s for the killed process's mutex to be released.
+    // 50ms ticks; CPU pegging at startup is acceptable for this rescue
+    // path. 1s is plenty for the kernel to reap a force-killed process.
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      gotInstanceLock = app.requestSingleInstanceLock();
+      if (gotInstanceLock) break;
+      const tick = Date.now() + 50;
+      while (Date.now() < tick) { /* spin */ }
+    }
+  } catch (err) {
+    // Last-resort log to stderr — visible if run with --enable-logging
+    // or when the user attaches a console. Never throw from here.
+    console.warn("[startup] zombie-kill recovery failed:", err?.message ?? err);
   }
 }
 if (!gotInstanceLock) {
@@ -1743,10 +1758,25 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     && source === "rasterized"
     && !isFax
     && sumatraPath() !== null;
-  if (useSumatra) {
-    await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
-  } else {
-    await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
+  // β48 J4b: push the user-modified DEVMODE (with driver-private
+  // extension intact) as per-user default. Sumatra reads it via its
+  // own GetPrinter call → tray + preset choices land correctly even
+  // when stored in the driver's private DEVMODE extension. Chromium
+  // (FAX / byte-copy) also benefits because webContents.print's OS
+  // dialog uses the same per-user default. Best-effort: null token =
+  // no cached DEVMODE → run without override.
+  let devmodeToken = null;
+  if (process.platform === "win32") {
+    devmodeToken = await applyUserPrinterDevmode(deviceName);
+  }
+  try {
+    if (useSumatra) {
+      await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
+    } else {
+      await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
+    }
+  } finally {
+    if (devmodeToken) await restoreUserPrinterDevmode(devmodeToken);
   }
   return { tempPath, deviceName, copies, landscape };
 });
