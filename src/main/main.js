@@ -45,6 +45,7 @@ import {
   openPrinterPropertiesNative,
   applyUserPrinterDevmode,
   restoreUserPrinterDevmode,
+  restoreInflightDevmodeSync,
 } from "./printer-properties-win.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -515,6 +516,14 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  // β49 J4c: emergency restore of per-user printer DEVMODE if a print
+  // job was in-flight when the user closed the window. process.exit()
+  // doesn't wait for the print-pdf-silent Promise's finally clause, so
+  // without this hook the printer would be left with our modified
+  // per-user default (e.g. mono / tray2 / duplex) and the next app
+  // would print with those settings unexpectedly. Synchronous call so
+  // it completes before the process actually exits.
+  try { restoreInflightDevmodeSync(); } catch { /* ignore */ }
   // Close every tab so SQLite WAL flushes for each workspace.
   for (const id of [...tabHandles.keys()]) disposeTab(id);
   disposeActiveDoc();

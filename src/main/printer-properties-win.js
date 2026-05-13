@@ -82,6 +82,14 @@ let _nativeAttempted = false;
 // and clicks Cancel, so a previous OK doesn't leak forever.
 const _userDevmodeCache = new Map();
 
+// β49 J4c: in-flight token across an apply/restore window. Tracked so
+// the app-shutdown hook in main can run an emergency synchronous
+// restore if the user closes the window while a print job is still
+// spawning (process.exit doesn't wait for in-flight Promises, so the
+// finally clause in print-pdf-silent would otherwise be skipped and
+// the per-user printer DEVMODE would leak into the next app's print).
+let _inflightDevmodeToken = null;
+
 async function tryLoadNative() {
   if (_nativeAttempted) return _native;
   _nativeAttempted = true;
@@ -335,7 +343,9 @@ export async function applyUserPrinterDevmode(deviceName) {
     const ok = native.SetPrinterW(hPrinter, 9, info9, 0);
     if (!ok) throw new Error("SetPrinterW level 9 failed");
 
-    return { deviceName, savedOriginal, devmodeBuf };
+    const token = { deviceName, savedOriginal, devmodeBuf };
+    _inflightDevmodeToken = token;
+    return token;
   } catch (err) {
     console.warn(
       "[printer-props] applyUserPrinterDevmode failed:",
@@ -356,27 +366,51 @@ export async function restoreUserPrinterDevmode(token) {
   if (!token) return;
   const native = await tryLoadNative();
   if (!native) return;
+  _restoreSyncImpl(token, native);
+}
+
+/** Synchronous emergency restore for app-shutdown hooks. Skips the
+ *  async tryLoadNative — relies on _native being already initialized
+ *  (which it is, since apply was called before to set the in-flight
+ *  token). Called from main's before-quit hook. */
+export function restoreInflightDevmodeSync() {
+  const token = _inflightDevmodeToken;
+  if (!token || !_native) return;
+  _restoreSyncImpl(token, _native);
+}
+
+function _restoreSyncImpl(token, native) {
   // savedOriginal is the level-9 buffer GetPrinter populated — its
   // PRINTER_INFO_9 header has pDevMode pointing at a DEVMODE struct
   // inside the same buffer, so passing it back to SetPrinter restores
   // the previous per-user default verbatim.
-  if (!token.savedOriginal) return;
+  if (!token.savedOriginal) {
+    _inflightDevmodeToken = null;
+    return;
+  }
   let hPrinter = 0n;
   try {
     const out = [0n];
-    if (!native.OpenPrinterW(token.deviceName, out, null)) return;
+    if (!native.OpenPrinterW(token.deviceName, out, null)) {
+      _inflightDevmodeToken = null;
+      return;
+    }
     hPrinter = out[0];
-    if (!hPrinter) return;
+    if (!hPrinter) {
+      _inflightDevmodeToken = null;
+      return;
+    }
     native.SetPrinterW(hPrinter, 9, token.savedOriginal, 0);
   } catch (err) {
     console.warn(
-      "[printer-props] restoreUserPrinterDevmode failed:",
+      "[printer-props] restore failed:",
       err?.message ?? err,
     );
   } finally {
     if (hPrinter) {
       try { native.ClosePrinter(hPrinter); } catch { /* ignore */ }
     }
+    _inflightDevmodeToken = null;
   }
 }
 
