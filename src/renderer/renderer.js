@@ -2009,18 +2009,23 @@ function showThumbContextMenu(pageNo, x, y) {
   ctxThumb.dataset.targetPageNo = String(pageNo);
   ctxThumb.style.left = `${x}px`;
   ctxThumb.style.top = `${y}px`;
-  // Reflect multi-selection in the「保存」menu item so the user can tell
-  // (before clicking) whether the action will save just the clicked page
-  // or the whole sidebar multi-selection. Mirrors the dispatch logic in
-  // dispatchThumbCtx.
+  // Reflect multi-selection in the「保存」/「削除」menu items so the
+  // user can tell (before clicking) whether the action will hit just
+  // the clicked page or the whole sidebar multi-selection. Mirrors the
+  // dispatch logic in dispatchThumbCtx.
+  const sel = sidebarThumbSelection.pageNos;
+  const useMulti = sel.size > 1 && sel.has(pageNo);
   const saveItem = ctxThumb.querySelector('[data-ctx="save-page"]');
   if (saveItem) {
-    const sel = sidebarThumbSelection.pageNos;
-    if (sel.size > 1 && sel.has(pageNo)) {
-      saveItem.textContent = `選択した ${sel.size} ページを PDF として保存…`;
-    } else {
-      saveItem.textContent = "このページを PDF として保存…";
-    }
+    saveItem.textContent = useMulti
+      ? `選択した ${sel.size} ページを PDF として保存…`
+      : "このページを PDF として保存…";
+  }
+  const deleteItem = ctxThumb.querySelector('[data-ctx="delete-page"]');
+  if (deleteItem) {
+    deleteItem.textContent = useMulti
+      ? `選択した ${sel.size} ページを削除`
+      : "このページを削除";
   }
   ctxThumb.hidden = false;
 }
@@ -2049,6 +2054,20 @@ function dispatchThumbCtx(target) {
       actionSavePagesAsPdf([...sel]);
     } else {
       actionSavePagesAsPdf([pageNo]);
+    }
+  } else if (action === "delete-page") {
+    // Same multi-select semantics as save-page: if the right-clicked
+    // page is part of the active multi-selection, delete the whole
+    // set; otherwise delete just the clicked page. Mirrors the Del
+    // shortcut path (deleteSelectedPages) so confirmation dialog +
+    // pending/synthetic split logic stays unified.
+    const sel = sidebarThumbSelection.pageNos;
+    const useMulti = sel.size > 1 && sel.has(pageNo);
+    if (useMulti) {
+      deleteSelectedPages();
+    } else {
+      const oneShot = { pageNos: new Set([pageNo]), anchor: null };
+      deleteSelectedPages(oneShot);
     }
   }
 }
@@ -7393,8 +7412,21 @@ async function deleteSelectedPages(state = sidebarThumbSelection) {
   if (all.length === 0) return;
   const sourceDeletes = all.filter((n) => n > 0);
   const syntheticDeletes = all.filter((n) => n < 0);
+  // Label by *visual position* (1-indexed) — the user complained that
+  // raw pageNo skipped over inserted pages and didn't match what they
+  // saw in the sidebar / split view. Falls back to a kind-only label
+  // if the page isn't currently in the viewer registry (shouldn't
+  // happen in practice but keeps the dialog robust).
+  const posOf = (n) => {
+    const pos = viewer.registry?.posOfPageNo?.(n);
+    return Number.isInteger(pos) && pos >= 0 ? pos + 1 : null;
+  };
   const labels = all
-    .map((n) => (n > 0 ? `p.${n}` : "挿入ページ"))
+    .map((n) => {
+      const pos = posOf(n);
+      const kind = n > 0 ? "元" : "挿入";
+      return pos != null ? `${pos} ページ目 (${kind})` : (n > 0 ? `p.${n}` : "挿入ページ");
+    })
     .join(", ");
   const ok = await customConfirm({
     title: "ページ削除の確認",
