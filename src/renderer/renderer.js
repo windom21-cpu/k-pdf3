@@ -3565,6 +3565,33 @@ function updateStampGhostPreset() {
     stampGhostEl.style.color = "transparent";
     return;
   }
+  // distribute-2 / distribute-3: build space-between token spans so the
+  // ghost matches the actual placed stamp (viewer.js / exporter.js use
+  // the same layout). Without this the ghost is a single text node like
+  // "-8 -5" inside a flex-center container — and because the box width
+  // is sized to the measured stamp-font width while the ghost CSS
+  // doesn't pin the stamp font, body-font metrics overflow the box and
+  // CSS wraps at the space, stacking tokens vertically.
+  if (preset.spacingMode === "distribute-2" || preset.spacingMode === "distribute-3") {
+    stampGhostEl.style.color = preset.color;
+    const tokens = String(preset.text ?? "").split(/\s+/).filter(Boolean);
+    const wrap = document.createElement("span");
+    wrap.style.display = "flex";
+    wrap.style.justifyContent = "space-between";
+    wrap.style.alignItems = "center";
+    wrap.style.width = "100%";
+    wrap.style.whiteSpace = "nowrap";
+    for (const t of tokens) {
+      const sp = document.createElement("span");
+      sp.textContent = t;
+      wrap.appendChild(sp);
+    }
+    stampGhostEl.appendChild(wrap);
+    if (preset.frame === "circle") stampGhostEl.classList.add("stamp-ghost-circle");
+    else if (preset.frame === "rect") stampGhostEl.classList.add("stamp-ghost-rect");
+    else stampGhostEl.classList.add("stamp-ghost-none");
+    return;
+  }
   stampGhostEl.textContent = preset.text;
   stampGhostEl.style.color = preset.color;
   // Frame class — explicit "none" branch so frame:none stamps don't
