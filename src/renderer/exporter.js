@@ -603,9 +603,10 @@ async function drawOverlay(ctx, ov, zoom) {
     const fullStack = getStampFontStack(full);
     const halfStack = getStampFontStack(half);
     const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
-    // 不動文字フィット: 3 numbers distributed across the box width;
+    // 不動文字フィット: N numbers distributed across the box width;
     // separator characters from the source format are dropped.
-    if (props.spacingMode === "distribute-3") {
+    // distribute-2 = year+month only; distribute-3 = year+month+day.
+    if (props.spacingMode === "distribute-3" || props.spacingMode === "distribute-2") {
       const tokens = String(props.text ?? "").split(/\s+/).filter(Boolean);
       const drawSpaced = (cx, cy) => {
         drawSpacedTokensOnCanvas(ctx, tokens, cx, cy, w, fontSize, color, halfStack);

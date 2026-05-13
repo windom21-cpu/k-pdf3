@@ -1172,15 +1172,19 @@ function currentStampPreset() {
     label: p.label,
   };
   if (p.kind === "date") {
-    // The date-numeric-spaced format is a unique distribution-rendered
-    // variant: 3 numbers spaced across the box, with separator chars
-    // dropped. spacingMode flag is plumbed through to the overlay so
-    // the viewer / exporter pick the alternate render path.
-    const isSpaced = p.text === "date-numeric-spaced";
+    // date-numeric-spaced* are distribution-rendered variants: N
+    // numbers spaced across the box, with separator chars dropped.
+    // spacingMode flag is plumbed through to the overlay so the
+    // viewer / exporter pick the alternate render path. The -2
+    // variant carries only year+month; day is left blank for the
+    // user to hand-write on the printed form.
+    let spacingMode;
+    if (p.text === "date-numeric-spaced") spacingMode = "distribute-3";
+    else if (p.text === "date-numeric-spaced-2") spacingMode = "distribute-2";
     return {
       ...base,
       text: renderDateText(p.text),
-      spacingMode: isSpaced ? "distribute-3" : undefined,
+      spacingMode,
     };
   }
   if (p.kind === "text") return { ...base, text: p.text ?? "" };
@@ -2412,6 +2416,12 @@ function renderDateText(formatKey) {
     // instead of laying them out as a single text line.
     return `${dp(reiwa)} ${dp(m)} ${dp(day)}`;
   }
+  if (formatKey === "date-numeric-spaced-2") {
+    // Year + month only; day is left blank so the user can hand-
+    // write it on the printed form. Placement adds spacingMode=
+    // 'distribute-2' so the two tokens sit at the box edges.
+    return `${dp(reiwa)} ${dp(m)}`;
+  }
   return `${dp(reiwa)}.${dp(m)}.${dp(day)}`; // default = numeric-dash
 }
 
@@ -2747,19 +2757,20 @@ $("stamp-reg-date-ok")?.addEventListener("click", async () => {
     "date-numeric-fw": "-8．-5．-9",
     "date-kanji-dash": "令和-8年-5月-9日",
     "date-numeric-spaced": "-8 -5 -9 (字間調整)",
+    "date-numeric-spaced-2": "-8 -5 (年月のみ・字間調整)",
   };
   const label = stampRegDateLabel.value.trim() || formatLabels[formatKey] || "日付";
   const fontSize = Math.max(6, Math.min(72, Number(stampRegDateFontSize?.value) || 14));
-  // distribute-3 needs a width that matches the dialog's preview —
-  // the previous fixed-90pt default put the leftmost/rightmost token
-  // way out at the box edges, well wider than the centred preview.
-  // Measure the natural rendered width at the actual font / size so
-  // the placed stamp matches the preview by default. Users can still
-  // drag-resize the box wider afterwards — distribute-3 will spread
+  // distribute-3 / distribute-2 need a width that matches the dialog's
+  // preview — the previous fixed-90pt default put the leftmost/right-
+  // most token way out at the box edges, well wider than the centred
+  // preview. Measure the natural rendered width at the actual font /
+  // size so the placed stamp matches the preview by default. Users
+  // can still drag-resize the box wider afterwards — distribute spreads
   // the tokens evenly across the new width to fit preprinted
   //「  年  月  日」forms.
   let finalWidth;
-  if (formatKey === "date-numeric-spaced") {
+  if (formatKey === "date-numeric-spaced" || formatKey === "date-numeric-spaced-2") {
     const probe = document.createElement("canvas");
     const ctx = probe.getContext("2d");
     const { half } = getStampFontDefaults();
