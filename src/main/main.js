@@ -8,7 +8,7 @@
 //
 // This is the M1 skeleton. Real workspace UI lands in M2.
 
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell, globalShortcut } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell, globalShortcut, screen } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -182,10 +182,72 @@ function disposeActiveDoc() {
   activePages = [];
 }
 
+/** Persisted window-state path. Keeping it next to stamps.db in userData
+ *  so it lives across upgrades but is wiped if the user removes the app
+ *  config. */
+function windowStatePath() {
+  return join(app.getPath("userData"), "window-state.json");
+}
+
+/** Read last-saved bounds + maximized flag. Returns null on any failure
+ *  (missing file, malformed JSON, off-screen bounds). The caller falls
+ *  back to the historical default size. */
+function loadWindowState() {
+  try {
+    const p = windowStatePath();
+    if (!existsSync(p)) return null;
+    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const w = Number(raw.width), h = Number(raw.height);
+    const x = raw.x == null ? null : Number(raw.x);
+    const y = raw.y == null ? null : Number(raw.y);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w < 320 || h < 240) return null;
+    // Off-screen guard: if the saved x/y put the top-left outside every
+    // current display, drop the position (Electron will center). Width/
+    // height are still honoured.
+    let pos = null;
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      const onScreen = screen.getAllDisplays().some((d) => {
+        const a = d.workArea;
+        return x >= a.x && x < a.x + a.width && y >= a.y && y < a.y + a.height;
+      });
+      if (onScreen) pos = { x, y };
+    }
+    return {
+      width: Math.round(w),
+      height: Math.round(h),
+      ...(pos ?? {}),
+      maximized: raw.maximized === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Persist current bounds + maximized state. Called on the window's
+ *  close event. `getNormalBounds` returns the un-maximized rect so we
+ *  remember the user's manual size for next launch. */
+function saveWindowState(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    const maximized = win.isMaximized();
+    const b = maximized ? win.getNormalBounds() : win.getBounds();
+    writeFileSync(
+      windowStatePath(),
+      JSON.stringify({ ...b, maximized }, null, 2),
+      "utf8",
+    );
+  } catch (err) {
+    console.warn("[window-state] save failed:", err);
+  }
+}
+
 function createMainWindow() {
+  const saved = loadWindowState();
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 820,
+    width: saved?.width ?? 1100,
+    height: saved?.height ?? 820,
+    ...(saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)
+      ? { x: saved.x, y: saved.y } : {}),
     title: "K-PDF3",
     icon: join(__dirname, "..", "renderer", "vendor", "app-icon.png"),
     frame: false,
@@ -196,6 +258,7 @@ function createMainWindow() {
       sandbox: false, // sandbox=false to allow preload using require('electron')
     },
   });
+  if (saved?.maximized) mainWindow.maximize();
   mainWindow.loadFile(join(__dirname, "..", "renderer", "index.html"));
   // Flush any PDF paths the OS handed us via argv / open-file once the
   // renderer is ready to receive IPC. did-finish-load fires after the
@@ -261,6 +324,13 @@ function createMainWindow() {
   mainWindow.on("focus", registerShortcuts);
   mainWindow.on("blur", unregisterShortcuts);
   app.on("will-quit", unregisterShortcuts);
+  // Persist size + position on close. `close` fires before `closed` and
+  // still has live bounds; `closed` would return zeros. Saving inside
+  // close (not on resize/move) avoids hammering the disk while the user
+  // is dragging the edge.
+  mainWindow.on("close", () => {
+    saveWindowState(mainWindow);
+  });
   mainWindow.on("closed", () => {
     disposeActiveDoc();
     if (activeWorkspace) {
