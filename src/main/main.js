@@ -14,7 +14,7 @@ import { basename, dirname, extname, join } from "node:path";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
@@ -383,7 +383,42 @@ function pdfPathsFromArgv(argv) {
 // Single-instance: when the user double-clicks another PDF while K-PDF3
 // is already running, route the new path to the existing window instead
 // of launching a duplicate process.
-const gotInstanceLock = app.requestSingleInstanceLock();
+//
+// β47 J5: zombie auto-recovery. If autoUpdater's process kill failed to
+// fully reap the previous version, a stale K-PDF3.exe lingers in the
+// task list and holds the singleton mutex. The next launch then
+// silently quits because requestSingleInstanceLock() returns false,
+// looking like "nothing happens" to the user. Heuristic recovery:
+//   - PDF arg present (Explorer double-click on .pdf): a healthy first
+//     instance handles the OS file event via second-instance. Quit
+//     normally so we don't murder a live editor session.
+//   - No PDF arg (user clicked the K-PDF3 icon to launch): the lock
+//     fail almost certainly means zombie. Kill all other K-PDF3.exe
+//     processes (except us) via taskkill, busy-wait briefly for the
+//     mutex to release, then retry. If retry succeeds, continue
+//     normally.
+let gotInstanceLock = app.requestSingleInstanceLock();
+if (!gotInstanceLock
+    && process.platform === "win32"
+    && pdfPathsFromArgv(process.argv).length === 0) {
+  try {
+    spawnSync(
+      "taskkill",
+      ["/F", "/IM", "K-PDF3.exe", "/FI", `PID ne ${process.pid}`],
+      { stdio: "ignore", windowsHide: true },
+    );
+  } catch { /* none to kill — ignore */ }
+  // Busy-wait up to 1s for the killed process's mutex to be released.
+  // 1s is plenty for the kernel to reap a force-killed process.
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    gotInstanceLock = app.requestSingleInstanceLock();
+    if (gotInstanceLock) break;
+    // ~50ms tick — Atomics.wait gives a precise synchronous sleep
+    // without depending on a spawned subprocess.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+}
 if (!gotInstanceLock) {
   app.quit();
 } else {

@@ -217,21 +217,26 @@ export async function openPrinterPropertiesNative(deviceName, parentHwndBuf) {
       const orient = devmodeOut.readInt16LE(DEVMODE_DM_ORIENTATION_OFFSET);
       result.landscape = (orient === DMORIENT_LANDSCAPE);
     }
-    if (dmFields & DM_DUPLEX_FLAG) {
-      const duplex = devmodeOut.readInt16LE(DEVMODE_DM_DUPLEX_OFFSET);
-      if (duplex === DMDUP_SIMPLEX) result.duplex = "simplex";
-      else if (duplex === DMDUP_VERTICAL) result.duplex = "long-edge";
-      else if (duplex === DMDUP_HORIZONTAL) result.duplex = "short-edge";
-    }
-    if (dmFields & DM_DEFAULTSOURCE_FLAG) {
-      const bin = devmodeOut.readInt16LE(DEVMODE_DM_DEFAULTSOURCE_OFFSET);
-      if (bin > 0) result.bin = bin;
-    }
-    if (dmFields & DM_COLOR_FLAG) {
-      const color = devmodeOut.readInt16LE(DEVMODE_DM_COLOR_OFFSET);
-      if (color === DMCOLOR_MONOCHROME) result.color = "mono";
-      else if (color === DMCOLOR_COLOR) result.color = "color";
-    }
+    // β47 J4: dmFields flag gates were too strict — when the user had
+    // already set tray/duplex/color via Windows control panel as the
+    // printer's persistent default, the driver returns the current
+    // value at the offset but DOES NOT set the corresponding "modified"
+    // flag in dmFields (the user didn't touch it in our dialog session).
+    // Read the values unconditionally and gate on value validity instead;
+    // we want to forward whatever the driver shows as the active choice
+    // to Sumatra, even if it came from a previous OK / system default.
+    const duplex = devmodeOut.readInt16LE(DEVMODE_DM_DUPLEX_OFFSET);
+    if (duplex === DMDUP_SIMPLEX) result.duplex = "simplex";
+    else if (duplex === DMDUP_VERTICAL) result.duplex = "long-edge";
+    else if (duplex === DMDUP_HORIZONTAL) result.duplex = "short-edge";
+    const bin = devmodeOut.readInt16LE(DEVMODE_DM_DEFAULTSOURCE_OFFSET);
+    if (bin > 0) result.bin = bin;
+    const color = devmodeOut.readInt16LE(DEVMODE_DM_COLOR_OFFSET);
+    if (color === DMCOLOR_MONOCHROME) result.color = "mono";
+    else if (color === DMCOLOR_COLOR) result.color = "color";
+    // dmFields kept around in case we want to log / surface a "this
+    // was modified" hint in the future. (Currently unused.)
+    void dmFields;
     return result;
   } catch (err) {
     console.warn(
