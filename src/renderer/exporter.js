@@ -121,20 +121,30 @@ async function getTintedAssetCanvas(assetId, color) {
  *                                   to plug the AA fringe)
  *   太字 ON           → viewer: stroke 0.06×fontSize / exporter: same
  *
- * Stamp / distribute-3 keep their original bold print weight (opts
+ * Text stamp / distribute-3 keep their original bold print weight (opts
  * omitted → bold default true).
+ *
+ * β41 (I4): date stamps explicitly opt OUT of overstroke (opts.stroke
+ * = false) — β31 had unintentionally bolded them along with text
+ * overlay, but a date 押印 is not 印影 and the user wants the original
+ * pre-β31 weight back. Skipping strokeText entirely (rather than just
+ * thinning) matches the original look. The 900dpi raster has enough
+ * resolution that fillText's AA halo doesn't reproduce as gray.
  */
 function paintGlyphRun(ctx, text, x, y, color, fontSize, opts = {}) {
+  const stroke = opts.stroke !== false; // default true (legacy)
   const bold = opts.bold !== false; // default true for stamp / 印影 compat
   ctx.save();
   ctx.fillStyle = color;
-  ctx.strokeStyle = color;
-  // Plain text: 0.03 keeps glyphs readable as thin but covers AA halo so
-  // printed pages don't look gray. Bold: 0.06 for visibly thicker text.
-  ctx.lineWidth = fontSize * (bold ? 0.06 : 0.03);
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-  ctx.strokeText(text, x, y);
+  if (stroke) {
+    ctx.strokeStyle = color;
+    // Plain text: 0.03 keeps glyphs readable as thin but covers AA halo so
+    // printed pages don't look gray. Bold: 0.06 for visibly thicker text.
+    ctx.lineWidth = fontSize * (bold ? 0.06 : 0.03);
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.strokeText(text, x, y);
+  }
   ctx.fillText(text, x, y);
   ctx.restore();
 }
@@ -149,35 +159,37 @@ function paintGlyphRun(ctx, text, x, y, color, fontSize, opts = {}) {
  *  band centred at (cx, cy). First token left-anchored, last right-
  *  anchored, middle ones at evenly-spaced midpoints. Tokens are the
  *  digits already split out of the rendered date string — separators
- *  are not drawn (matches preprinted「  年    月    日」forms). */
+ *  are not drawn (matches preprinted「  年    月    日」forms).
+ *  Always a date stamp → no overstroke (β41 I4). */
 function drawSpacedTokensOnCanvas(ctx, tokens, cx, cy, width, fontSize, color, halfStack) {
   if (!tokens || tokens.length === 0) return;
   ctx.font = `bold ${fontSize}px ${halfStack}`;
   ctx.textBaseline = "middle";
   const left = cx - width / 2;
   const right = cx + width / 2;
+  const glyphOpts = { stroke: false };
   if (tokens.length === 1) {
     ctx.textAlign = "center";
-    paintGlyphRun(ctx, tokens[0], cx, cy, color, fontSize);
+    paintGlyphRun(ctx, tokens[0], cx, cy, color, fontSize, glyphOpts);
     return;
   }
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
     if (i === 0) {
       ctx.textAlign = "left";
-      paintGlyphRun(ctx, tok, left, cy, color, fontSize);
+      paintGlyphRun(ctx, tok, left, cy, color, fontSize, glyphOpts);
     } else if (i === tokens.length - 1) {
       ctx.textAlign = "right";
-      paintGlyphRun(ctx, tok, right, cy, color, fontSize);
+      paintGlyphRun(ctx, tok, right, cy, color, fontSize, glyphOpts);
     } else {
       ctx.textAlign = "center";
       const tcx = left + (width * i) / (tokens.length - 1);
-      paintGlyphRun(ctx, tok, tcx, cy, color, fontSize);
+      paintGlyphRun(ctx, tok, tcx, cy, color, fontSize, glyphOpts);
     }
   }
 }
 
-function drawStampMixedTextOnCanvas(ctx, text, cx, cy, fontSize, color, fullStack, halfStack) {
+function drawStampMixedTextOnCanvas(ctx, text, cx, cy, fontSize, color, fullStack, halfStack, opts = {}) {
   const runs = splitStampRuns(text);
   const widths = [];
   let total = 0;
@@ -193,7 +205,7 @@ function drawStampMixedTextOnCanvas(ctx, text, cx, cy, fontSize, color, fullStac
   for (let i = 0; i < runs.length; i++) {
     const run = runs[i];
     ctx.font = `bold ${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
-    paintGlyphRun(ctx, run.text, pen, cy, color, fontSize);
+    paintGlyphRun(ctx, run.text, pen, cy, color, fontSize, opts);
     pen += widths[i];
   }
 }
@@ -622,9 +634,19 @@ async function drawOverlay(ctx, ov, zoom) {
       ctx.textAlign = "start";
       return;
     }
+    // Date stamps (non-distribute formats like -8.-5.-9 / 令和-8年-5月-9日)
+    // also skip overstroke — β31 unintentionally bolded them and the user
+    // wants 印影 weight only for text stamps. Detection priority:
+    //   1. props.stampKind (set on new placements from β41+)
+    //   2. props.spacingMode (definitive: distribute-* = always date)
+    // Existing date stamps placed before β41 without stampKind will
+    // continue to print bold via drawStampMixedTextOnCanvas; user can
+    // re-place if needed.
+    const isDateStamp = props.stampKind === "date";
+    const stampTextOpts = isDateStamp ? { stroke: false } : {};
     const drawAt = (cx, cy) => {
       drawStampMixedTextOnCanvas(
-        ctx, props.text ?? "", cx, cy, fontSize, color, fullStack, halfStack,
+        ctx, props.text ?? "", cx, cy, fontSize, color, fullStack, halfStack, stampTextOpts,
       );
     };
     if (rot === 0) {

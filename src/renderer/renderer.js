@@ -1188,12 +1188,13 @@ function currentStampPreset() {
     else if (p.text === "date-numeric-spaced-2") spacingMode = "distribute-2";
     return {
       ...base,
+      presetKind: "date",
       text: renderDateText(p.text),
       spacingMode,
     };
   }
-  if (p.kind === "text") return { ...base, text: p.text ?? "" };
-  if (p.kind === "image") return { ...base, kind: "image", assetId: p.assetId, text: "" };
+  if (p.kind === "text") return { ...base, presetKind: "text", text: p.text ?? "" };
+  if (p.kind === "image") return { ...base, presetKind: "image", kind: "image", assetId: p.assetId, text: "" };
   return null;
 }
 
@@ -1208,6 +1209,11 @@ function placeStamp(pageNo, x, y) {
   const H = preset.h;
   const properties = {
     kind: preset.kind ?? "text-frame",
+    // stampKind = preset's underlying kind ("date" | "text" | "image").
+    // Persisted so the exporter / print path can tell a date stamp from
+    // a text stamp and skip overstroke for dates (印影 ではないので
+    // 太字 で印刷したくない、§β31 D1 で混じってしまった分の撤回)。
+    stampKind: preset.presetKind,
     text: preset.text,
     color: preset.color,
     frame: preset.frame,
