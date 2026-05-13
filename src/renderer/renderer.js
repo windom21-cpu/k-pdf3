@@ -33,6 +33,34 @@ import {
 import { showBusy, updateBusy, hideBusy } from "./busy-modal.js";
 import { customConfirm } from "./dialogs.js";
 import { showFileBrowser } from "./file-browser.js";
+import {
+  initOverlayEdit,
+  handleTextEditCommit,
+  handleOverlayDragEnd,
+  handleOverlayResizeEnd,
+  handleCalloutArrowEnd,
+  measureTextOverlaySize,
+  measureCalloutSize,
+  measureCalloutWrappedHeight,
+} from "./overlay-edit.js";
+import {
+  initOverlaySelection,
+  handleOverlayClick,
+  selectOverlay,
+  setSelectedOverlay,
+  clearSelection,
+  reapplySelectionDom,
+  syncPrimaryFromSet,
+  syncAlignToolbar,
+  alignSelectedOverlays,
+  isSelected,
+  hasSelection,
+  getSelectionSize,
+  getSelectedIds,
+  getPrimarySelectedId,
+  removeFromSelection,
+  clearSelectionState,
+} from "./overlay-selection.js";
 
 const { kpdf3 } = window;
 
@@ -181,6 +209,24 @@ let isOpen = false;
 /** @type {'none' | 'text' | 'stamp' | 'redaction'} */
 let placementMode = "none";
 let activeSourceName = "";
+
+// Wire the overlay-edit / overlay-selection modules up to renderer.js
+// state once all the scratch-slot lets above are declared. Getters keep
+// the bindings live across applyTab() (projectStore / history get
+// rebound per tab).
+initOverlayEdit({
+  isOpen: () => isOpen,
+  projectStore: () => projectStore,
+  history: () => history,
+  viewer,
+});
+initOverlaySelection({
+  isOpen: () => isOpen,
+  projectStore: () => projectStore,
+  history: () => history,
+  viewer,
+  wsStatus,
+});
 
 // ---- Tab management (ADR-0015 Phase 2/3) ------------------------------
 //
@@ -1191,568 +1237,7 @@ function placeStamp(pageNo, x, y) {
   // and entering edit on every placement breaks the rhythm.
 }
 
-function handleOverlayClick(id, mods = {}) {
-  if (!isOpen) return;
-  // Modifier-aware multi-select (β5 §17.13):
-  //   Ctrl/Cmd+click → toggle membership
-  //   Shift+click    → reading-order range from anchor to here
-  //   plain click    → replace (single)
-  // Inline-edit is suppressed when entering / staying in multi-select
-  // mode — otherwise Ctrl+click would immediately drop into edit mode
-  // on the new overlay, defeating the purpose.
-  let mode = "replace";
-  if (mods.ctrl || mods.meta) mode = "toggle";
-  else if (mods.shift) mode = "range";
-  const wasMultiSelected = selectedOverlayIds.size > 1;
-  selectOverlay(id, mode);
-  if (selectedOverlayIds.size > 1 || wasMultiSelected) {
-    // Don't enter inline edit when the user is building or shrinking a
-    // multi-selection. Selection alone is the visible outcome.
-    return;
-  }
-  // For text/stamp/callout this enters inline edit; for redaction /
-  // marker / image overlays it short-circuits inside enterTextEdit so
-  // selection alone is the visible result.
-  viewer.enterTextEdit(id);
-}
 
-// ---- Overlay selection — multi-overlay model + Delete / alignment ----
-//
-// β5 §17.13/#13 expansion. `selectedOverlayIds` is the full set;
-// `selectedOverlayId` is the "primary" — the most recently clicked
-// member of the set. Legacy single-selection call sites read/write
-// selectedOverlayId; multi-selection-aware sites (Delete, alignment,
-// new copy/paste flow) iterate selectedOverlayIds.
-//
-// `lastClickedOverlayId` (separate from primary) is the anchor for
-// Shift+click range select. It survives deselection so the user can
-// Click → click elsewhere → Shift+click and still get a range.
-
-/** @type {Set<string>} */
-const selectedOverlayIds = new Set();
-let selectedOverlayId = null;
-/** @type {string | null} anchor for Shift+click range */
-let lastClickedOverlayId = null;
-
-function _ovCssEscape(s) {
-  return globalThis.CSS?.escape
-    ? globalThis.CSS.escape(s)
-    : String(s).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
-}
-
-/** Synchronise the `selectedOverlayId` primary alias with the current
- *  set. Picks the last-clicked id when it's still in the set, otherwise
- *  any single remaining member, otherwise null. */
-function _syncPrimaryFromSet() {
-  if (selectedOverlayIds.size === 0) {
-    selectedOverlayId = null;
-    return;
-  }
-  if (lastClickedOverlayId && selectedOverlayIds.has(lastClickedOverlayId)) {
-    selectedOverlayId = lastClickedOverlayId;
-    return;
-  }
-  // First by iteration order — selection-stack order is not exposed.
-  for (const id of selectedOverlayIds) {
-    selectedOverlayId = id;
-    return;
-  }
-}
-
-/**
- * Update the selection set.
- *
- * @param {string|null} id
- * @param {"replace"|"toggle"|"range"|"add"} [mode]
- *   - "replace" (default): clear, then add id (or clear all if id is null)
- *   - "toggle": flip membership of id (Ctrl/Cmd+click)
- *   - "range": select all overlays between the anchor and id in reading
- *     order (Shift+click). Falls back to "replace" when there's no anchor.
- *   - "add": ensure id is in the set without removing anything
- */
-function selectOverlay(id, mode = "replace") {
-  if (id == null) {
-    if (mode === "replace") {
-      selectedOverlayIds.clear();
-      lastClickedOverlayId = null;
-    }
-    _syncPrimaryFromSet();
-    reapplySelectionDom();
-    return;
-  }
-  if (mode === "replace") {
-    selectedOverlayIds.clear();
-    selectedOverlayIds.add(id);
-    lastClickedOverlayId = id;
-  } else if (mode === "toggle") {
-    if (selectedOverlayIds.has(id)) {
-      selectedOverlayIds.delete(id);
-      if (lastClickedOverlayId === id) lastClickedOverlayId = null;
-    } else {
-      selectedOverlayIds.add(id);
-      lastClickedOverlayId = id;
-    }
-  } else if (mode === "add") {
-    selectedOverlayIds.add(id);
-    lastClickedOverlayId = id;
-  } else if (mode === "range") {
-    const anchor = lastClickedOverlayId;
-    if (!anchor || anchor === id || !projectStore.get(anchor)) {
-      // No usable anchor — fall back to replace.
-      selectedOverlayIds.clear();
-      selectedOverlayIds.add(id);
-      lastClickedOverlayId = id;
-    } else {
-      const ids = _overlayIdsInReadingOrderBetween(anchor, id);
-      // Shift+click conventionally REPLACES rather than adding to the
-      // current selection so the user gets the expected "range" result.
-      selectedOverlayIds.clear();
-      for (const x of ids) selectedOverlayIds.add(x);
-      lastClickedOverlayId = id;
-    }
-  }
-  _syncPrimaryFromSet();
-  reapplySelectionDom();
-}
-
-/** Drop the selection entirely. Convenience wrapper. */
-function clearSelection() {
-  selectOverlay(null, "replace");
-}
-
-/** Compute the set of overlay ids between (inclusive) anchor and target
- *  in document reading order — page order first, then top-to-bottom +
- *  left-to-right within a page. */
-function _overlayIdsInReadingOrderBetween(anchorId, targetId) {
-  const overlays = projectStore.list();
-  const ordered = overlays.slice().sort((a, b) => {
-    // Page order via PageRegistry positions (sparse / inserted pages
-    // make raw pageNo unreliable).
-    const aPos = viewer.registry?.posOfPageNo?.(a.pageNo) ?? a.pageNo;
-    const bPos = viewer.registry?.posOfPageNo?.(b.pageNo) ?? b.pageNo;
-    if (aPos !== bPos) return aPos - bPos;
-    // Same page → row-major: y first (with row tolerance), then x.
-    const ROW_TOL = 6; // PDF points — anything within this is "same row"
-    if (Math.abs(a.y - b.y) > ROW_TOL) return a.y - b.y;
-    return a.x - b.x;
-  });
-  const ai = ordered.findIndex((o) => o.id === anchorId);
-  const ti = ordered.findIndex((o) => o.id === targetId);
-  if (ai < 0 || ti < 0) return [targetId];
-  const [lo, hi] = ai < ti ? [ai, ti] : [ti, ai];
-  return ordered.slice(lo, hi + 1).map((o) => o.id);
-}
-
-// Back-compat shim: old call sites pass a single id (or null) and
-// expect "replace" semantics. Forwards to selectOverlay.
-function setSelectedOverlay(id) {
-  selectOverlay(id, "replace");
-}
-
-/** Re-paint the .is-selected class onto every currently-selected
- *  overlay element. Called after store-update events because the
- *  viewer rebuilds the overlay layer DOM. The × close button is
- *  injected only when exactly one overlay is selected — with multiple
- *  selected, Delete via keyboard is the unambiguous path. */
-function reapplySelectionDom() {
-  if (!viewer.container) return;
-  for (const el of viewer.container.querySelectorAll(".overlay.is-selected")) {
-    el.classList.remove("is-selected");
-    el.querySelector(":scope > .overlay-close-btn")?.remove();
-  }
-  if (selectedOverlayIds.size === 0) return;
-  for (const id of selectedOverlayIds) {
-    const el = viewer.container.querySelector(
-      `.overlay[data-overlay-id="${_ovCssEscape(id)}"]`,
-    );
-    if (!el) continue;
-    el.classList.add("is-selected");
-  }
-  // Only show the × close button when exactly one is selected, so the
-  // button's action is unambiguous. Multi-select uses keyboard Delete.
-  if (selectedOverlayIds.size !== 1) {
-    syncAlignToolbar();
-    return;
-  }
-  const onlyId = selectedOverlayId;
-  if (!onlyId) {
-    syncAlignToolbar();
-    return;
-  }
-  const el = viewer.container.querySelector(
-    `.overlay[data-overlay-id="${_ovCssEscape(onlyId)}"]`,
-  );
-  if (!el) {
-    syncAlignToolbar();
-    return;
-  }
-  if (!el.querySelector(":scope > .overlay-close-btn")) {
-    const btn = document.createElement("span");
-    btn.className = "overlay-close-btn";
-    btn.textContent = "×";
-    btn.title = "選択中の overlay を削除";
-    btn.addEventListener("pointerdown", (e) => e.stopPropagation());
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = selectedOverlayId;
-      if (!id) return;
-      // If this overlay is being inline-edited, abort the edit BEFORE
-      // firing the remove. Otherwise viewer._renderPageOverlays keeps
-      // the editing DOM around (preservedEditing branch), which makes
-      // the × click look like nothing happened until the contentEditable
-      // blurs by some unrelated action. (β2 bug: 日付スタンプの × が
-      // 効かない / 遅延)
-      viewer.exitTextEdit();
-      setSelectedOverlay(null);
-      history.execute(new RemoveOverlayCommand(projectStore, id));
-    });
-    el.appendChild(btn);
-  }
-  syncAlignToolbar();
-}
-
-/** Toolbar align-buttons (左/上/右/下揃え) enable/disable + counter
- *  text. Called from reapplySelectionDom. */
-function syncAlignToolbar() {
-  const bar = document.getElementById("align-bar");
-  if (!bar) return;
-  const n = selectedOverlayIds.size;
-  bar.hidden = n < 2;
-  const count = document.getElementById("align-count");
-  if (count) count.textContent = String(n);
-}
-
-/**
- * Align all currently-selected overlays along one edge.
- *
- * Per-page grouping: overlays on different pages are aligned within
- * their own page (each page's selection gets its own min/max), since
- * aligning across pages would yield a meaningless coordinate.
- *
- * Emits one CompositeCommand so the whole alignment is a single undo
- * unit. Overlays already at the target coordinate are skipped (no-op
- * Update would still record an entry; cheaper to filter here).
- *
- * @param {"left"|"top"|"right"|"bottom"} edge
- */
-function alignSelectedOverlays(edge) {
-  if (selectedOverlayIds.size < 2) return;
-  /** @type {Map<number, import("../domain/project-store.js").Overlay[]>} */
-  const byPage = new Map();
-  for (const id of selectedOverlayIds) {
-    const ov = projectStore.get(id);
-    if (!ov) continue;
-    const arr = byPage.get(ov.pageNo) ?? [];
-    arr.push(ov);
-    byPage.set(ov.pageNo, arr);
-  }
-  const subs = [];
-  for (const overlays of byPage.values()) {
-    if (overlays.length < 2) continue; // single-on-page → nothing to align against
-    let target;
-    let dim;
-    if (edge === "left") {
-      target = Math.min(...overlays.map((o) => o.x));
-      dim = "x";
-    } else if (edge === "top") {
-      target = Math.min(...overlays.map((o) => o.y));
-      dim = "y";
-    } else if (edge === "right") {
-      const maxRight = Math.max(...overlays.map((o) => o.x + o.w));
-      for (const ov of overlays) {
-        const newX = maxRight - ov.w;
-        if (Math.abs(newX - ov.x) < 1e-6) continue;
-        subs.push(new UpdateOverlayCommand(projectStore, ov.id, { x: newX }));
-      }
-      continue;
-    } else if (edge === "bottom") {
-      const maxBottom = Math.max(...overlays.map((o) => o.y + o.h));
-      for (const ov of overlays) {
-        const newY = maxBottom - ov.h;
-        if (Math.abs(newY - ov.y) < 1e-6) continue;
-        subs.push(new UpdateOverlayCommand(projectStore, ov.id, { y: newY }));
-      }
-      continue;
-    } else {
-      return;
-    }
-    for (const ov of overlays) {
-      const cur = ov[dim];
-      if (Math.abs(target - cur) < 1e-6) continue;
-      subs.push(new UpdateOverlayCommand(projectStore, ov.id, { [dim]: target }));
-    }
-  }
-  if (subs.length === 0) {
-    wsStatus.textContent = "整列: 既に揃っています";
-    return;
-  }
-  history.execute(new CompositeCommand(subs, `Align ${edge} (${subs.length} overlays)`));
-  wsStatus.textContent = `${subs.length} 個の overlay を${
-    edge === "left" ? "左" : edge === "top" ? "上" : edge === "right" ? "右" : "下"
-  }揃えしました`;
-}
-
-function handleTextEditCommit(id, newText, opts = {}) {
-  if (!isOpen) return;
-  const ov = projectStore.get(id);
-  if (!ov) return;
-  // Auto-fit the box to the entered text so longer / multi-line content
-  // doesn't overflow the initial placement size. Both callout and
-  // plain text overlays use the same recipe: the editor's reported
-  // visible size (already wrapped + pixel-rounded by Chromium) is the
-  // source of truth, and a measure-based fallback covers callers that
-  // can't report it. JS-side measureText approximations of Chromium's
-  // wrap differ by 1-2 lines on long paragraphs — invisible on
-  // borderless text overlays, but a visible gap below callouts.
-  let sizePatch = {};
-  const isCallout = ov.type === "rect" && ov.properties?.kind === "callout";
-  if (ov.type === "text" || isCallout) {
-    if (opts.visibleCanonicalW != null && opts.visibleCanonicalH != null) {
-      sizePatch = {
-        w: Math.max(40, Math.ceil(opts.visibleCanonicalW)),
-        h: Math.max(ov.properties?.fontSize ?? 12, Math.ceil(opts.visibleCanonicalH)),
-      };
-    } else {
-      // Legacy fallback: page-edge-capped measure (β.25 C1 recipe).
-      let maxCanonicalW = Infinity;
-      const row = viewer._pages?.find((p) => p.pageNo === ov.pageNo);
-      if (row) {
-        const cw = row.cropW ?? row.width ?? 595;
-        const ch = row.cropH ?? row.height ?? 842;
-        const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
-        const swap = userRot === 90 || userRot === 270;
-        const pageW = swap ? ch : cw;
-        maxCanonicalW = Math.max(60, pageW - (ov.x ?? 0) - 4);
-      }
-      const fontSize = ov.properties?.fontSize ?? 12;
-      const fontStack = getTextFontStack(ov.properties?.fontId, {
-        digitsHanko: !!ov.properties?.digitsHanko,
-      });
-      const measure = isCallout ? measureCalloutSize : measureTextOverlaySize;
-      const m = measure(newText, fontSize, fontStack, ov.w, maxCanonicalW);
-      sizePatch = { w: m.w, h: m.h };
-    }
-  }
-  history.execute(
-    new UpdateOverlayCommand(projectStore, id, {
-      ...sizePatch,
-      properties: { ...ov.properties, text: newText },
-    }),
-  );
-}
-
-/** Measure the natural size of a plain text overlay. Width: longest
- *  unwrapped line OR the current box width (whichever is larger), then
- *  capped at `maxW` (default Infinity — caller may pass page-edge minus
- *  overlay left so the committed box doesn't extend past the paper).
- *  Height: number of wrapped lines × line height at the chosen width.
- *
- *  The implementation mirrors measureCalloutSize / wrapCanvasText so the
- *  saved canonical w/h matches what the renderer and exporter draw.
- */
-function measureTextOverlaySize(text, fontSize, fontFamily, currentW, maxW = Infinity) {
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  ctx.font = `${fontSize}px ${fontFamily}`;
-  const lines = (text ?? "").split(/\r?\n/);
-  let maxLineWidth = 0;
-  for (const line of lines) {
-    const w = ctx.measureText(line).width;
-    if (w > maxLineWidth) maxLineWidth = w;
-  }
-  const minW = Math.max(60, fontSize * 6);
-  const targetW = Math.max(minW, Math.ceil(maxLineWidth) + 4);
-  // Don't shrink below current — user may have manually widened the
-  // box and we shouldn't undo that. Don't exceed maxW (page edge) so
-  // the committed box stays inside the paper (β15 regression).
-  const w = Math.min(maxW, Math.max(currentW ?? 0, targetW));
-  // Wrap at the chosen width to compute height (mirrors wrapCanvasText).
-  let lineCount = 0;
-  for (const para of lines) {
-    if (para.length === 0) { lineCount += 1; continue; }
-    let line = "";
-    let count = 0;
-    for (const ch of para) {
-      const candidate = line + ch;
-      if (line.length > 0 && ctx.measureText(candidate).width > w) {
-        count += 1;
-        line = ch;
-      } else {
-        line = candidate;
-      }
-    }
-    if (line.length > 0) count += 1;
-    lineCount += Math.max(count, 1);
-  }
-  const lineHeight = fontSize * 1.2;
-  const h = Math.max(fontSize, Math.ceil(lineCount * lineHeight));
-  return { w, h };
-}
-
-/** Measure the natural size of a callout's text in canonical points.
- *  Mirrors measureTextOverlaySize's signature so commit logic can call
- *  either function uniformly: caller passes the current box width and
- *  a page-edge max-width, the function returns the wrap-preserving box
- *  size. */
-function measureCalloutSize(text, fontSize, fontFamily, currentW = 0, maxW = Infinity) {
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  ctx.font = `${fontSize}px ${fontFamily}`;
-  const paras = (text ?? "").split(/\r?\n/);
-  let maxLineWidth = 0;
-  for (const line of paras) {
-    const w = ctx.measureText(line).width;
-    if (w > maxLineWidth) maxLineWidth = w;
-  }
-  const padX = CALLOUT_PAD_X;
-  const minW = Math.max(40, fontSize * 4);
-  const targetW = Math.max(minW, Math.ceil(maxLineWidth) + padX * 2);
-  // Don't shrink below currentW (user may have widened); cap at maxW
-  // (page edge) so the committed callout stays inside the paper.
-  const w = Math.min(maxW, Math.max(currentW ?? 0, targetW));
-  // Wrap at the chosen w to count lines (same algorithm as
-  // measureCalloutWrappedHeight, kept inline so the function stays
-  // self-contained and parallel to measureTextOverlaySize).
-  const innerW = Math.max(20, w - padX * 2);
-  let lineCount = 0;
-  for (const para of paras) {
-    if (para === "") { lineCount += 1; continue; }
-    const chars = [...para];
-    let line = "";
-    for (const c of chars) {
-      const next = line + c;
-      if (ctx.measureText(next).width <= innerW) {
-        line = next;
-      } else {
-        if (line) lineCount += 1;
-        line = c;
-      }
-    }
-    if (line) lineCount += 1;
-  }
-  // Chromium rounds line-box height up to whole CSS pixels per line, so
-  // multiplying a float lineHeight by lineCount underestimates the real
-  // rendered height — visible as "下に余白がはみ出る" once the box has
-  // a border (callouts do; plain text overlays don't, which is why this
-  // ceil-per-line treatment isn't needed in measureTextOverlaySize).
-  const lineHeight = Math.ceil(fontSize * CALLOUT_LINE_HEIGHT);
-  return {
-    w: Math.ceil(w),
-    h: Math.max(
-      fontSize,
-      lineHeight * Math.max(1, lineCount) + CALLOUT_PAD_Y_TOP + CALLOUT_PAD_Y_BOTTOM,
-    ),
-  };
-}
-
-// Callout layout: the box hugs the line-box — only the 1px outer
-// border separates the text from the frame. Horizontal padding 4px
-// remains for readability; vertical padding is zero so the frame
-// "上付きかつ下付き" — the text edges touch the frame top and bottom
-// (modulo CSS line-height leading inherent to the font). Exporter
-// matches this with padY = 1 * zoom for the border-only inset.
-const CALLOUT_PAD_X = 5;        // 4 (textNode horizontal) + 1 (border)
-const CALLOUT_PAD_Y_TOP = 1;    // 1 (border) only
-const CALLOUT_PAD_Y_BOTTOM = 1; // 1 (border) only
-// line-height 1.0 means the line-box equals the font-size, so glyphs
-// touch the frame on top and bottom (no leading slack). 1.2 left a
-// visible bottom gap because CJK font metrics push glyphs toward the
-// top of each line-box. Stay matched with editor-side style.lineHeight.
-const CALLOUT_LINE_HEIGHT = 1.0;
-
-function handleOverlayDragEnd(id, newX, newY) {
-  if (!isOpen) return;
-  const ov = projectStore.get(id);
-  if (!ov) return;
-  // No-op when the gesture didn't actually move anything (rounding edge).
-  if (ov.x === newX && ov.y === newY) return;
-  history.execute(
-    new UpdateOverlayCommand(projectStore, id, { x: newX, y: newY }),
-  );
-}
-
-function handleCalloutArrowEnd(id, arrowDx, arrowDy) {
-  if (!isOpen) return;
-  const ov = projectStore.get(id);
-  if (!ov || ov.type !== "rect" || ov.properties?.kind !== "callout") return;
-  const oldDx = ov.properties.arrowDx ?? -30;
-  const oldDy = ov.properties.arrowDy ?? ov.h + 25;
-  if (Math.abs(oldDx - arrowDx) < 1e-3 && Math.abs(oldDy - arrowDy) < 1e-3) return;
-  history.execute(new UpdateOverlayCommand(projectStore, id, {
-    properties: { ...ov.properties, arrowDx, arrowDy },
-  }));
-}
-
-function handleOverlayResizeEnd(id, bbox) {
-  if (!isOpen) return;
-  const ov = projectStore.get(id);
-  if (!ov) return;
-  if (
-    ov.x === bbox.x &&
-    ov.y === bbox.y &&
-    ov.w === bbox.w &&
-    ov.h === bbox.h
-  ) {
-    return;
-  }
-  // Callouts: respect the user's new width but snap height to the
-  // wrapped text. Previously we kept the user's dragged height when
-  // it exceeded the text (Math.max), which left visible empty space
-  // below the wrapped text inside the callout border. Now the border
-  // always hugs the bottom of the last line — matches "no whitespace"
-  // behaviour of regular text overlays.
-  if (ov.type === "rect" && ov.properties?.kind === "callout") {
-    const wrappedH = measureCalloutWrappedHeight(
-      ov.properties.text ?? "",
-      ov.properties.fontSize ?? 12,
-      getTextFontStack(ov.properties.fontId, {
-        digitsHanko: !!ov.properties.digitsHanko,
-      }),
-      bbox.w,
-    );
-    bbox = { ...bbox, h: wrappedH };
-  }
-  history.execute(new UpdateOverlayCommand(projectStore, id, bbox));
-}
-
-/** Measure the height (canonical pt) needed to fit `text` in a box of
- *  width `boxW` at the given font, including padding. Honours CJK
- *  word-wrap via the same character-by-character algorithm the
- *  exporter uses. */
-function measureCalloutWrappedHeight(text, fontSize, fontFamily, boxW) {
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  ctx.font = `${fontSize}px ${fontFamily}`;
-  const padX = CALLOUT_PAD_X;
-  const lineHeight = fontSize * CALLOUT_LINE_HEIGHT;
-  const innerW = Math.max(20, boxW - padX * 2);
-  // Wrap: hard breaks on \n, otherwise greedy character-by-character
-  // fit within innerW.
-  const paras = (text ?? "").split(/\r?\n/);
-  let lineCount = 0;
-  for (const para of paras) {
-    if (para === "") { lineCount += 1; continue; }
-    const chars = [...para]; // codepoint-safe
-    let line = "";
-    for (const c of chars) {
-      const next = line + c;
-      if (ctx.measureText(next).width <= innerW) {
-        line = next;
-      } else {
-        if (line) lineCount += 1;
-        line = c;
-      }
-    }
-    if (line) lineCount += 1;
-  }
-  // Match measureCalloutSize: ceil per-line for Chromium line-box rounding.
-  return Math.max(
-    fontSize,
-    Math.ceil(fontSize * CALLOUT_LINE_HEIGHT) * Math.max(1, lineCount)
-      + CALLOUT_PAD_Y_TOP + CALLOUT_PAD_Y_BOTTOM,
-  );
-}
 
 // ---- Overlay context menu (right-click) ------------------------------
 const ctxOverlay = $("ctx-overlay");
@@ -1856,7 +1341,7 @@ document.addEventListener("pointerdown", (ev) => {
 viewerContainer.addEventListener("pointerdown", (ev) => {
   if (ev.button !== 0) return;
   if (viewer._editingId) return;
-  if (!selectedOverlayId) return;
+  if (!getPrimarySelectedId()) return;
   if (ev.target instanceof HTMLElement && ev.target.closest(".overlay")) return;
   setSelectedOverlay(null);
 });
@@ -1940,7 +1425,7 @@ document.addEventListener("keydown", (e) => {
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA");
     if (inEdit) return;
-    if (selectedOverlayId) {
+    if (getPrimarySelectedId()) {
       setSelectedOverlay(null);
     } else if (placementMode !== "none") {
       setPlacementMode("none");
@@ -2131,8 +1616,9 @@ document.addEventListener("keydown", (e) => {
     if (tag === "input" || tag === "textarea" || t.isContentEditable) return;
   }
   if (key === "c") {
-    if (!selectedOverlayId) return;
-    const ov = projectStore.get(selectedOverlayId);
+    const selId = getPrimarySelectedId();
+    if (!selId) return;
+    const ov = projectStore.get(selId);
     if (!ov) return;
     _overlayClipboard = {
       ...ov,
@@ -3855,17 +3341,13 @@ function attachStoreSubscribers() {
     // (β5 §17.13): only the removed id leaves the set, others stay.
     if (event.kind === "remove" && event.overlay?.id) {
       const goneId = event.overlay.id;
-      if (selectedOverlayIds.has(goneId)) {
-        selectedOverlayIds.delete(goneId);
-        if (lastClickedOverlayId === goneId) lastClickedOverlayId = null;
-        _syncPrimaryFromSet();
+      if (isSelected(goneId)) {
+        removeFromSelection(goneId);
         setTimeout(() => reapplySelectionDom(), 0);
       }
     } else if (event.kind === "reset") {
-      selectedOverlayIds.clear();
-      lastClickedOverlayId = null;
-      selectedOverlayId = null;
-    } else if (event.kind === "update" && event.overlay?.id && selectedOverlayIds.has(event.overlay.id)) {
+      clearSelectionState();
+    } else if (event.kind === "update" && event.overlay?.id && isSelected(event.overlay.id)) {
       // _renderPageOverlays rebuilds the DOM on update — re-apply the
       // selection class to the freshly-built element on next tick.
       setTimeout(() => reapplySelectionDom(), 0);
@@ -7463,9 +6945,9 @@ window.addEventListener("keydown", (e) => {
   // input — Delete there should fall through to native behaviour.
   // β5 §17.13: multi-select aware — all currently-selected overlays
   // are removed in one undo unit via CompositeCommand.
-  if ((e.key === "Delete" || e.key === "Backspace") && selectedOverlayIds.size > 0 && !inText) {
+  if ((e.key === "Delete" || e.key === "Backspace") && hasSelection() && !inText) {
     e.preventDefault();
-    const ids = [...selectedOverlayIds];
+    const ids = getSelectedIds();
     clearSelection();
     if (ids.length === 1) {
       history.execute(new RemoveOverlayCommand(projectStore, ids[0]));
