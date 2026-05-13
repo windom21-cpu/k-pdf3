@@ -2690,7 +2690,30 @@ function paintStampPreview(canvas, props) {
   } else if (props.frame === "rect") {
     ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
   }
-  ctx.fillText(text, cx, cy);
+  // distribute-2 / distribute-3: tokens at box edges, matching the
+  // actual placed stamp's space-between layout (viewer.js / exporter.js).
+  // Without this the preview shows a centred single text line that
+  // doesn't reflect how the stamp will actually print on a preprinted
+  // 「  年  月  日」form.
+  if (props.spacingMode === "distribute-2" || props.spacingMode === "distribute-3") {
+    const tokens = text.split(/\s+/).filter(Boolean);
+    if (tokens.length === 1) {
+      ctx.fillText(tokens[0], cx, cy);
+    } else {
+      const left = cx - w / 2 + 4 * fitScale;
+      const right = cx + w / 2 - 4 * fitScale;
+      for (let i = 0; i < tokens.length; i++) {
+        let tx, align;
+        if (i === 0) { tx = left; align = "left"; }
+        else if (i === tokens.length - 1) { tx = right; align = "right"; }
+        else { tx = left + ((right - left) * i) / (tokens.length - 1); align = "center"; }
+        ctx.textAlign = align;
+        ctx.fillText(tokens[i], tx, cy);
+      }
+    }
+  } else {
+    ctx.fillText(text, cx, cy);
+  }
   ctx.restore();
 }
 
@@ -2737,11 +2760,15 @@ function getDateRegFormatKey() {
 function paintStampRegDatePreview() {
   const formatKey = getDateRegFormatKey();
   const fs = Math.max(6, Math.min(72, Number(stampRegDateFontSize?.value) || 14));
+  let spacingMode;
+  if (formatKey === "date-numeric-spaced") spacingMode = "distribute-3";
+  else if (formatKey === "date-numeric-spaced-2") spacingMode = "distribute-2";
   paintStampPreview(stampRegDatePreview, {
     text: renderDateText(formatKey),
     color: stampRegDateColor.value,
     frame: stampRegDateFrame.checked ? "rect" : "none",
     fontSize: fs,
+    spacingMode,
   });
 }
 stampRegDateDialog?.addEventListener("change", paintStampRegDatePreview);
