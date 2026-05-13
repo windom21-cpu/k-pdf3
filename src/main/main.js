@@ -1545,20 +1545,28 @@ function silentPrintPdf(pdfPath, opts) {
             : opts.duplex === "simplex" ? "simplex"
             : undefined;
           const colorOpt = opts.color === "mono" ? false : true;
+          const printOpts = {
+            silent: useSilent,
+            deviceName: opts.deviceName,
+            copies: opts.copies ?? 1,
+            printBackground: true,
+            color: colorOpt,
+            landscape: opts.landscape ?? false,
+            ...(duplexMode ? { duplexMode } : {}),
+          };
           win.webContents.print(
-            {
-              silent: useSilent,
-              deviceName: opts.deviceName,
-              copies: opts.copies ?? 1,
-              printBackground: true,
-              color: colorOpt,
-              landscape: opts.landscape ?? false,
-              ...(duplexMode ? { duplexMode } : {}),
-            },
+            printOpts,
             (success, errorType) => {
               if (success) {
                 settle(resolve, { success: true });
               } else {
+                // β52 J7b: log full context so the next failure tells us
+                // *why* Chromium rejected the job (empty errorType is the
+                // common case and was previously opaque).
+                logCrash("silent-print-failed", {
+                  errorType: errorType ?? "(empty)",
+                  opts: printOpts,
+                });
                 settle(reject, new Error(errorType || "silent print failed"));
               }
             },
@@ -1627,13 +1635,22 @@ let _activeSumatraProcess = null;
  * Heuristic: does the device name look like a FAX device?
  * Most FAX drivers pop a「送信先番号」prompt during the print spool
  * call, and -silent suppresses driver UI → driver fails with exit 1
- * (β41 user report on a複合機 FAX 経路). Latin "fax" + Japanese
- * カタカナ variants. False positives (a normal printer named "Fax-
- * Server") just lose the silent flag, which is harmless.
+ * (β41 user report on a複合機 FAX 経路).
+ *
+ * β52 J3b: the initial /fax/i substring match was too loose — printers
+ * with a name like "ApeosPort C2360 FAX対応" or "Brother MFC-XXX (Faxable)"
+ * tripped the substring even though they're regular print queues, which
+ * incorrectly routed them to Chromium silent:false instead of Sumatra
+ * and silent printing then failed (user β51 report). Tighten to a word-
+ * boundary match: "fax" must sit at the edge of a token (start/end or
+ * adjacent to whitespace / punctuation common in device names like
+ * " ", "-", "_", "(", ")", "/", "\"). The katakana variants stay
+ * substring because Japanese device names rarely surround them with
+ * spaces.
  */
 function isFaxDevice(name) {
   if (!name) return false;
-  if (/fax/i.test(name)) return true;
+  if (/(?:^|[\s_\-()/\\:])fax(?:$|[\s_\-()/\\:])/i.test(name)) return true;
   return /ファックス|ファクス|ﾌｧｯｸｽ|ﾌｧｸｽ/.test(name);
 }
 
@@ -1865,11 +1882,30 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   // silent:false uses a different code path (interactive spool) that
   // does not stall.
   const isFax = isFaxDevice(deviceName);
+  const sumatraExe = sumatraPath();
   const useSumatra =
     process.platform === "win32"
     && source === "rasterized"
     && !isFax
-    && sumatraPath() !== null;
+    && sumatraExe !== null;
+  // β52 J7b: log the routing decision to crash.log so when print fails
+  // we can see at a glance what path was taken without instrumenting
+  // the user's machine. deviceName drives FAX detection; sumatra
+  // missing means the build was stripped of vendor binary; source vs
+  // useSumatra mismatch points at the !isFax || sumatraExe gate.
+  logCrash("print-route", {
+    deviceName,
+    source,
+    pageCount: Array.isArray(pages) ? pages.length : 0,
+    isFax,
+    sumatraExe: sumatraExe ?? "(missing)",
+    useSumatra,
+    copies,
+    landscape,
+    duplex,
+    bin,
+    color,
+  });
   // β48 J4b: push the user-modified DEVMODE (with driver-private
   // extension intact) as per-user default. Sumatra reads it via its
   // own GetPrinter call → tray + preset choices land correctly even
