@@ -24,6 +24,14 @@
 # are still installable (right-click → 開く on macOS, SmartScreen
 # warning on Windows). macOS auto-update will not work until certs are
 # in place; Linux/Windows updates work fine unsigned.
+#
+# No `cache: "npm"` and no `upload-artifact` (storage budget fix
+# 2026-05-14): the free plan caps Actions storage at 0.5 GB. Each β
+# tag was depositing a 100+ MB npm cache and a 14-day artifact copy,
+# so 90 caches piled up to ~10 GiB and quota went 100%. Installers are
+# already on k-pdf3-releases (autoUpdater feed), so the workflow run
+# debug copies were redundant. `npm ci` is ~30s slower without cache,
+# negligible against the 5-min CI run.
 
 name: release
 
@@ -42,7 +50,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.22.2"
-          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
@@ -51,18 +58,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         run: npm run publish:win
-
-      - name: Upload artifacts (debugging copy)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: k-pdf3-windows-latest
-          path: |
-            release/*.exe
-            release/*.yml
-            release/*.blockmap
-          if-no-files-found: warn
-          retention-days: 14
 
   # macOS and Linux only run for stable tags (no `-beta` substring).
   # `!contains(...)` evaluates against the tag name (e.g. `v2.0.0-beta.34`
@@ -78,7 +73,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.22.2"
-          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
@@ -91,19 +85,6 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         run: npm run publish:mac
 
-      - name: Upload artifacts (debugging copy)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: k-pdf3-macos-latest
-          path: |
-            release/*.dmg
-            release/*.zip
-            release/*.yml
-            release/*.blockmap
-          if-no-files-found: warn
-          retention-days: 14
-
   build-linux:
     name: build-linux
     runs-on: ubuntu-latest
@@ -114,7 +95,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.22.2"
-          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
@@ -123,16 +103,3 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         run: npm run publish:linux
-
-      - name: Upload artifacts (debugging copy)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: k-pdf3-ubuntu-latest
-          path: |
-            release/*.AppImage
-            release/*.deb
-            release/*.yml
-            release/*.blockmap
-          if-no-files-found: warn
-          retention-days: 14
