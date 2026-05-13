@@ -945,6 +945,36 @@ npm run dev                        # electronmon 起動（推奨、自動 reload
 
 **別件 (B2 完了後)**: overlay クリック UX 改善 — 単一クリック=即編集を「単一=選択、ダブル=編集」に変更 (β54+ 候補)。詳細は project memory [`project_kpdf3_overlay_click_ux.md`](../../.claude/projects/-home-sk--------k-pdf3/memory/project_kpdf3_overlay_click_ux.md)。
 
+#### 🚨 Win 機で並行作業する時の注意 (B2 中)
+
+B2 は feature branch を切らず main で進めている。Win 機で β テスト中の細かい修正を main に commit するのは OK だが、**`src/renderer/renderer.js` の以下の領域に触る前に必ず claude (or 次セッションの自分) に申告** すること。後の B2 ステップで切り出す予定の領域を Win 機で直接編集すると、Ubuntu 機で S3-S5 再開時に手作業 merge が発生する。
+
+**Win 機で `src/renderer/renderer.js` を直接編集してはいけない領域**:
+
+| 領域 | 主な関数 / state | 担当 Step |
+|---|---|---|
+| stamp 関連 | `placeStamp` / `setActiveStampPreset` / `currentStampPreset` / `_stampTrialPlacing` / `placeStampTrial` / `enterStampTrialPlacement` / `cancelStampTrialPlacement` / `updateStampTrialAppearance` / `applyTrialGeometry` / `reattachStampTrial` / `openStampRegister*` / `closeStampRegister*` / `refreshStampPresetCacheAndSelect` / `syncStampPalettePopup` | S3-a |
+| bookmark 関連 | サイドバー bookmark CRUD / drag-reorder / `Tab/Shift+Tab` indent / `actionImportOutlines` / `moveBookmark` / `selectedBookmarkId` / `bookmarkSource` / `workspaceBookmarksCache` | S3-b |
+| print 関連 | `showPrintDialog` / `compressPageList` / `actionPrint` / 印刷 busy modal / `cancelPrint` / printer-properties handler | S4 |
+| tab 関連 | `tabs` Map / `activeTabId` / `applyTab` / `newTabAndOpen` / `closeTab` / `renderTabBar` / `attachTabDragHandlers` / `reorderTab` / `saveActiveTabSnapshot` / `closeTabWithConfirm` | S5 |
+
+**Win 機で触ってよい領域**:
+- `src/main/*` (main process / IPC / printer / autoUpdater 等)
+- `src/renderer/viewer.js` / `exporter.js` / `page-popup.js` / `menu-bar.js` / `fonts.js`
+- `src/renderer/style.css` / `index.html`
+- 既に切り出し済 (S1+S2) のモジュール: `busy-modal.js` / `dialogs.js` / `file-browser.js` / `overlay-edit.js` / `overlay-selection.js` / `overlay-placement.js`
+- `package.json` version bump、`README`、`build/*`
+
+**触る必要がある場合の判断フロー**:
+1. ユーザー → claude に「これから renderer.js の {stamp/bookmark/print/tab} 関連を触りたい」と申告
+2. claude は以下のどれかを返す:
+   - **業務凍結級の bug** → 「main で hotfix OK、β.N+1 リリース。Ubuntu で B2 再開時に該当 Step の切出しと統合」
+   - **軽微で待てる** → 「memo に残して B2 完了後 (S3-S5 該当 step の中で) 一緒に直すのが merge コストが低い」
+   - **既に切出し済モジュールに移った機能** → 「該当モジュールファイルを直接編集すれば conflict ゼロ」
+3. 緊急 hotfix の場合: Win 機で main に commit + push + β.N+1 タグ。Ubuntu に戻ったら `git pull --ff-only` で取り込み、B2 該当 Step で renderer.js から切り出す時に最新版を反映
+
+**次セッションの claude (or 次セッションの自分) へ**: ユーザーが Win 機で `src/renderer/renderer.js` の上記領域を編集しようとしたら、まず「B2 進行中、その領域は S{3-a/3-b/4/5} で切り出し予定。今 main で直すか / B2 完了後にやるか / 既存モジュールへの修正で済むか の判断」を提示して止めること。即実行しない。
+
 ### 8.3 推奨実装順序（タブ — M5 正式 exit）
 
 タブは大きい。一気にやらず以下の順序で：
