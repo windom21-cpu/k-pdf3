@@ -77,6 +77,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   updaterCheck:           ()    => ipcRenderer.invoke("kpdf3:updater-check"),
   updaterDownload:        ()    => ipcRenderer.invoke("kpdf3:updater-download"),
   updaterInstall:         ()    => ipcRenderer.invoke("kpdf3:updater-install"),
+  openCrashLog:           ()    => ipcRenderer.invoke("kpdf3:open-crash-log"),
   onUpdaterChecking:        (cb) => ipcRenderer.on("kpdf3:updater-checking",           ()      => cb()),
   onUpdaterUpdateAvailable: (cb) => ipcRenderer.on("kpdf3:updater-update-available",   (_, d)  => cb(d)),
   onUpdaterNotAvailable:    (cb) => ipcRenderer.on("kpdf3:updater-not-available",      ()      => cb()),

@@ -7751,6 +7751,19 @@ async function actionCheckForUpdates() {
   // Otherwise the response is handled via the updater events.
 }
 
+async function actionOpenCrashLog() {
+  // β51 J7: open the crash log in the OS default editor (メモ帳 on
+  // Windows). If the file doesn't exist yet, main returns ok:false
+  // and we surface a friendly status — no log means no crash, that's
+  // the happy path.
+  const r = await kpdf3.openCrashLog?.();
+  if (!r?.ok) {
+    wsStatus.textContent = r?.reason === "missing"
+      ? "クラッシュログはまだありません (前回起動以降の例外なし)"
+      : `クラッシュログを開けませんでした: ${r?.reason ?? "unknown"}`;
+  }
+}
+
 function actionExit() {
   window.close();
 }
@@ -7777,6 +7790,7 @@ const menuBar = new MenuBar({
     exit: actionExit,
     about: actionAbout,
     "check-update": actionCheckForUpdates,
+    "open-crash-log": actionOpenCrashLog,
     undo: actionUndo,
     redo: actionRedo,
     "zoom-in": actionZoomIn,
@@ -8157,6 +8171,7 @@ const MENU_HINTS = {
   "font-settings": "スタンプの全角・半角フォント既定を設定",
   about: "K-PDF3 のバージョン情報",
   "check-update": "新しいバージョンの有無を確認します",
+  "open-crash-log": "クラッシュログをメモ帳で開きます (β51〜)",
 };
 const DEFAULT_STATUS = "PDF を「開く」で読み込みます";
 let statusHintActive = false;

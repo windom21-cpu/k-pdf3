@@ -11,7 +11,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, shell, globalShortcut, screen } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -78,6 +78,48 @@ function legacySidecarPath(pdfPath) {
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
+
+// β51 J7: crash log. ユーザー報告「PDF 開いて閉じて、次の PDF を開こう
+// とするとクラッシュ」「アップデート時に zombie が残る」など、ハード
+// 落ち系の事象が再現性低めで根本原因の特定が難しい。 main process
+// のあらゆる例外 / 子プロセス死亡 / renderer 死亡を timestamp 付き
+// で userData/crash.log に append しておけば、次に発生したときに
+// ユーザーがファイルを共有してくれれば確実に診断できる。
+function crashLogPath() {
+  return join(app.getPath("userData"), "crash.log");
+}
+function logCrash(label, err) {
+  try {
+    const ts = new Date().toISOString();
+    let detail;
+    if (err == null) detail = "(no detail)";
+    else if (err instanceof Error) detail = err.stack ?? err.message ?? String(err);
+    else if (typeof err === "object") {
+      try { detail = JSON.stringify(err); } catch { detail = String(err); }
+    } else detail = String(err);
+    appendFileSync(crashLogPath(), `[${ts}] ${label}: ${detail}\n`);
+  } catch {
+    // Can't log? nothing we can do — don't cascade into another crash.
+  }
+}
+process.on("uncaughtException", (err) => {
+  logCrash("uncaughtException", err);
+});
+process.on("unhandledRejection", (reason) => {
+  logCrash("unhandledRejection", reason);
+});
+app.on("render-process-gone", (_event, webContents, details) => {
+  logCrash("render-process-gone", details);
+});
+app.on("child-process-gone", (_event, details) => {
+  logCrash("child-process-gone", details);
+});
+// Mark each session start so the log is easy to read chronologically.
+// Deferred to whenReady because logCrash uses app.getPath('userData')
+// which is only safe after the app is initialised.
+app.whenReady().then(() => {
+  logCrash("session-start", `pid=${process.pid} version=${app.getVersion()}`);
+});
 // ---- Tab registry (ADR-0015 案 B) ----------------------------------------
 //
 // Each tab owns an open Workspace + mupdf Document handle. The
@@ -1048,6 +1090,17 @@ ipcMain.handle("kpdf3:switch-tab", async (_, tabId) => {
 ipcMain.handle("kpdf3:close-tab", async (_, tabId) => {
   disposeTab(tabId);
   return { ok: true, remaining: tabHandles.size, activeTabId };
+});
+
+ipcMain.handle("kpdf3:open-crash-log", async () => {
+  const path = crashLogPath();
+  if (!existsSync(path)) return { ok: false, reason: "missing" };
+  try {
+    await shell.openPath(path);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err?.message ?? String(err) };
+  }
 });
 
 ipcMain.handle("kpdf3:list-recent-pdfs", async () => {
