@@ -4686,6 +4686,14 @@ const printState = {
   previewIndex: 0,    // 0-based index into the *visible* page list
   visiblePageNos: [], // page numbers selected by current range
   renderToken: 0,     // monotonic — bail outdated renders
+  // β46 J3: latest DEVMODE extras captured from the driver properties
+  // dialog (DocumentPropertiesW). Plumbed through to Sumatra so tray /
+  // duplex / color the user picked actually take effect. Reset when
+  // the user opens the print dialog so a previous session's choices
+  // don't leak; the user reopens プロパティ to set them again.
+  driverDuplex: null,  // "simplex" | "long-edge" | "short-edge" | null
+  driverBin: null,     // numeric tray id (dmDefaultSource) | null
+  driverColor: null,   // "mono" | "color" | null
 };
 
 /**
@@ -4718,6 +4726,11 @@ function compressPageList(positions) {
 function showPrintDialog(printers, pages, currentPageNo, preselected = null) {
   printState.pages = pages;
   printState.printers = printers;
+  // β46 J3: clear stale driver DEVMODE picks so they don't leak from
+  // a previous print session. The user re-opens プロパティ to set them.
+  printState.driverDuplex = null;
+  printState.driverBin = null;
+  printState.driverColor = null;
 
   // Populate printer select
   printPrinterSelect.innerHTML = "";
@@ -4978,6 +4991,12 @@ printPropertiesBtn.addEventListener("click", async () => {
       else printOrientPortrait.checked = true;
       refreshPreview();
     }
+    // β46 J3: capture duplex / tray / color from the driver DEVMODE
+    // and stash on printState. Forwarded to main in actionPrint so
+    // Sumatra's -print-settings reflects what the user picked.
+    printState.driverDuplex = typeof r.duplex === "string" ? r.duplex : null;
+    printState.driverBin = Number.isInteger(r.bin) && r.bin > 0 ? r.bin : null;
+    printState.driverColor = typeof r.color === "string" ? r.color : null;
   }
 });
 
@@ -5520,6 +5539,12 @@ async function actionPrint() {
       deviceName: choice.deviceName,
       copies: choice.copies,
       landscape: choice.landscape,
+      // β46 J3: driver-side picks (duplex / tray / color) captured from
+      // DocumentPropertiesW. Main forwards to Sumatra's -print-settings
+      // so the user's プロパティ choices actually take effect.
+      duplex: printState.driverDuplex,
+      bin: printState.driverBin,
+      color: printState.driverColor,
     });
     if (printCancelled) return;
     hideBusy();

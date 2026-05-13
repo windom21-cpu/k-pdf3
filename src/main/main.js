@@ -1396,14 +1396,24 @@ function silentPrintPdf(pdfPath, opts) {
           // 抑止し送信先入力ダイアログ無しで失敗 → silent:false で OS
           // 印刷ダイアログを通す。FAX 以外は従来通り silent:true。
           const useSilent = !isFaxDevice(opts.deviceName);
+          // β46 J3: webContents.print の duplexMode / color に駆動側
+          // プロパティを反映。Chromium API は tray (bin) を持たない
+          // ので opts.bin は無視される (Sumatra 経路でのみ効く)。
+          const duplexMode =
+            opts.duplex === "long-edge" ? "longEdge"
+            : opts.duplex === "short-edge" ? "shortEdge"
+            : opts.duplex === "simplex" ? "simplex"
+            : undefined;
+          const colorOpt = opts.color === "mono" ? false : true;
           win.webContents.print(
             {
               silent: useSilent,
               deviceName: opts.deviceName,
               copies: opts.copies ?? 1,
               printBackground: true,
-              color: true,
+              color: colorOpt,
               landscape: opts.landscape ?? false,
+              ...(duplexMode ? { duplexMode } : {}),
             },
             (success, errorType) => {
               if (success) {
@@ -1498,6 +1508,17 @@ function sumatraPrintPdf(pdfPath, opts) {
     if (opts.copies && opts.copies > 1) settings.push(`${opts.copies}x`);
     if (opts.landscape) settings.push("landscape");
     settings.push("noscale");
+    // β46 J3: forward duplex / tray / color from the driver プロパティ
+    // dialog so the user's picks aren't lost between dialog OK and
+    // spool. Sumatra -print-settings tokens (see vendor/sumatrapdf
+    // command-line docs): simplex / duplex (=duplexlong) / duplexshort,
+    // color / monochrome, bin=N for tray.
+    if (opts.duplex === "simplex") settings.push("simplex");
+    else if (opts.duplex === "long-edge") settings.push("duplex");
+    else if (opts.duplex === "short-edge") settings.push("duplexshort");
+    if (opts.color === "color") settings.push("color");
+    else if (opts.color === "mono") settings.push("monochrome");
+    if (Number.isInteger(opts.bin) && opts.bin > 0) settings.push(`bin=${opts.bin}`);
     const isFax = isFaxDevice(opts.deviceName);
     const args = [
       "-print-to", opts.deviceName,
@@ -1645,6 +1666,11 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     deviceName,
     copies = 1,
     landscape = false,
+    // β46 J3: extras from the driver プロパティダイアログ. null/
+    // undefined = leave Sumatra's defaults alone for that field.
+    duplex = null,   // "simplex" | "long-edge" | "short-edge"
+    bin = null,      // dmDefaultSource integer
+    color = null,    // "mono" | "color"
   } = payload ?? {};
   if (!deviceName) throw new Error("print-pdf-silent: deviceName missing");
 
@@ -1683,9 +1709,9 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     && !isFax
     && sumatraPath() !== null;
   if (useSumatra) {
-    await sumatraPrintPdf(tempPath, { deviceName, copies, landscape });
+    await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
   } else {
-    await silentPrintPdf(tempPath, { deviceName, copies, landscape });
+    await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
   }
   return { tempPath, deviceName, copies, landscape };
 });

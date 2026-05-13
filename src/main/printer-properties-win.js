@@ -29,22 +29,41 @@ const IDCANCEL = 2;
 // because dmDriverExtra holds any private data appended *after*).
 // See <wingdi.h> typedef _devicemodeW.
 //
-//   dmDeviceName: WCHAR[32]   -> 64 bytes at offset 0
-//   dmSpecVersion:WORD        -> offset 64
-//   dmDriverVersion:WORD      -> offset 66
-//   dmSize:       WORD        -> offset 68
-//   dmDriverExtra:WORD        -> offset 70
-//   dmFields:     DWORD       -> offset 72   (bitmask of valid fields)
-//   dmOrientation:short       -> offset 76   (only if DM_ORIENTATION)
-//   dmPaperSize:  short       -> offset 78
-//   ...
-//   dmCopies:     short       -> offset 86   (only if DM_COPIES)
-const DEVMODE_DM_FIELDS_OFFSET      = 72;
-const DEVMODE_DM_ORIENTATION_OFFSET = 76;
-const DEVMODE_DM_COPIES_OFFSET      = 86;
-const DM_ORIENTATION_FLAG = 0x00000001;
-const DM_COPIES_FLAG      = 0x00000100;
+//   dmDeviceName:    WCHAR[32]  -> 64 bytes at offset 0
+//   dmSpecVersion:   WORD       -> offset 64
+//   dmDriverVersion: WORD       -> offset 66
+//   dmSize:          WORD       -> offset 68
+//   dmDriverExtra:   WORD       -> offset 70
+//   dmFields:        DWORD      -> offset 72   (bitmask of valid fields)
+//   dmOrientation:   short      -> offset 76   (only if DM_ORIENTATION)
+//   dmPaperSize:     short      -> offset 78
+//   dmPaperLength:   short      -> offset 80
+//   dmPaperWidth:    short      -> offset 82
+//   dmScale:         short      -> offset 84
+//   dmCopies:        short      -> offset 86   (only if DM_COPIES)
+//   dmDefaultSource: short      -> offset 88   (tray; only if DM_DEFAULTSOURCE)
+//   dmPrintQuality:  short      -> offset 90
+//   dmColor:         short      -> offset 92   (only if DM_COLOR)
+//   dmDuplex:        short      -> offset 94   (only if DM_DUPLEX)
+const DEVMODE_DM_FIELDS_OFFSET         = 72;
+const DEVMODE_DM_ORIENTATION_OFFSET    = 76;
+const DEVMODE_DM_COPIES_OFFSET         = 86;
+const DEVMODE_DM_DEFAULTSOURCE_OFFSET  = 88;
+const DEVMODE_DM_COLOR_OFFSET          = 92;
+const DEVMODE_DM_DUPLEX_OFFSET         = 94;
+const DM_ORIENTATION_FLAG    = 0x00000001;
+const DM_COPIES_FLAG         = 0x00000100;
+const DM_DEFAULTSOURCE_FLAG  = 0x00000200;
+const DM_COLOR_FLAG          = 0x00000800;
+const DM_DUPLEX_FLAG         = 0x00001000;
 const DMORIENT_LANDSCAPE  = 2;
+// dmDuplex values
+const DMDUP_SIMPLEX    = 1;
+const DMDUP_VERTICAL   = 2; // 長辺綴じ (long-edge binding)
+const DMDUP_HORIZONTAL = 3; // 短辺綴じ (short-edge binding)
+// dmColor values
+const DMCOLOR_MONOCHROME = 1;
+const DMCOLOR_COLOR      = 2;
 
 // DPI_AWARENESS_CONTEXT_SYSTEM_AWARE is defined as ((HANDLE)-2). Pass
 // as int64 so koffi puts the raw bit pattern into the parameter slot,
@@ -184,6 +203,10 @@ export async function openPrinterPropertiesNative(deviceName, parentHwndBuf) {
     if (ret === IDCANCEL) return { ok: true, cancelled: true };
 
     // IDOK — parse DEVMODE for the fields we propagate to the renderer.
+    // β46 J3: also extract duplex / tray (dmDefaultSource) / color so
+    // they reach the Sumatra -print-settings path. Without these the
+    // user's プロパティ settings were silently lost between the dialog
+    // and the actual spool call.
     const result = { ok: true, cancelled: false };
     const dmFields = devmodeOut.readUInt32LE(DEVMODE_DM_FIELDS_OFFSET);
     if (dmFields & DM_COPIES_FLAG) {
@@ -193,6 +216,21 @@ export async function openPrinterPropertiesNative(deviceName, parentHwndBuf) {
     if (dmFields & DM_ORIENTATION_FLAG) {
       const orient = devmodeOut.readInt16LE(DEVMODE_DM_ORIENTATION_OFFSET);
       result.landscape = (orient === DMORIENT_LANDSCAPE);
+    }
+    if (dmFields & DM_DUPLEX_FLAG) {
+      const duplex = devmodeOut.readInt16LE(DEVMODE_DM_DUPLEX_OFFSET);
+      if (duplex === DMDUP_SIMPLEX) result.duplex = "simplex";
+      else if (duplex === DMDUP_VERTICAL) result.duplex = "long-edge";
+      else if (duplex === DMDUP_HORIZONTAL) result.duplex = "short-edge";
+    }
+    if (dmFields & DM_DEFAULTSOURCE_FLAG) {
+      const bin = devmodeOut.readInt16LE(DEVMODE_DM_DEFAULTSOURCE_OFFSET);
+      if (bin > 0) result.bin = bin;
+    }
+    if (dmFields & DM_COLOR_FLAG) {
+      const color = devmodeOut.readInt16LE(DEVMODE_DM_COLOR_OFFSET);
+      if (color === DMCOLOR_MONOCHROME) result.color = "mono";
+      else if (color === DMCOLOR_COLOR) result.color = "color";
     }
     return result;
   } catch (err) {
