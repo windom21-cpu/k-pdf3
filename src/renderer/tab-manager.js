@@ -340,6 +340,54 @@ export async function adoptDetachedTab(payload, deps) {
   renderTabBar();
 }
 
+/** B3-γ dock-back: a sibling window has shipped a tab over. Append it
+ *  to this window's tabs Map (don't drop the boot tab — this window
+ *  is already running with one or more tabs of its own), make it the
+ *  active tab, restore the live state via onAdopt, refresh viewer.
+ *
+ *  Differs from adoptDetachedTab (which replaces the boot tab on a
+ *  freshly-spawned child window) — this one runs on a window that's
+ *  already in steady state. */
+export async function adoptDockedTab(payload, deps) {
+  const { onAdopt, refreshViewerAfterAdopt, setOpenTrue } = deps;
+  if (!payload?.tabId) return;
+  if (tabs.has(payload.tabId)) {
+    console.warn("[dock] tab already exists locally — ignoring duplicate");
+    return;
+  }
+  // Snapshot whatever's currently active so we can switch away cleanly.
+  saveActiveTabSnapshot();
+  // Build a TabState shell whose id matches the main-side handle.
+  const tab = createTabState({ id: payload.tabId });
+  tab.activeSourcePdfPath = payload.sourcePdfPath ?? null;
+  tab.activeSourceName = payload.sourceName ?? "";
+  tab.isOpen = !!payload.sourcePdfPath;
+  tab.workspaceMutated = !!payload.workspaceMutated;
+  tab.scrollPosition = Number(payload.scrollPosition) || 0;
+  tab.zoom = payload.zoom ?? null;
+  tab.selectedBookmarkId = payload.selectedBookmarkId ?? null;
+  tab.bookmarkSource = payload.bookmarkSource ?? "outline";
+  if (Array.isArray(payload.pendingDeletedPages)) {
+    tab.pendingDeletedPages = new Set(payload.pendingDeletedPages);
+  }
+  tabs.set(tab.id, tab);
+  // Activate the docked tab. _viewer.unload first so the previous
+  // active tab's pages don't linger while the new ones load.
+  _viewer.unload();
+  activeTabId = tab.id;
+  onAdopt(tab, payload);
+  if (tab.isOpen) {
+    try {
+      await kpdf3.switchTab(tab.id);
+    } catch (err) {
+      console.warn("[tabs] adoptDockedTab switchTab failed:", err);
+    }
+    setOpenTrue();
+    await refreshViewerAfterAdopt();
+  }
+  renderTabBar();
+}
+
 /** Close-with-confirmation: dirty tabs get a 「破棄しますか」 dialog. */
 export async function closeTabWithConfirm(tabId) {
   const tab = tabs.get(tabId);
@@ -414,6 +462,8 @@ const ctxTab = document.getElementById("ctx-tab");
 let _ctxTabTargetId = null;
 let _onDetachRequest = null;
 let _onDragOut = null;
+let _onTabDragStart = null;
+let _onTabDragEnd = null;
 
 /** Renderer wires this once at boot to receive "user picked
  *  別ウインドウへ移動 on tab T". The renderer captures the live tab
@@ -430,6 +480,42 @@ export function setOnDetachRequest(cb) {
 export function setOnDragOut(cb) {
   _onDragOut = cb;
 }
+
+/** B3-γ: fires on every tab dragstart so the renderer can build a
+ *  detach payload and push it to main as the active drag (so any
+ *  sibling window's tab-bar drop can dock without a roundtrip back
+ *  to the source). */
+export function setOnTabDragStart(cb) {
+  _onTabDragStart = cb;
+}
+
+/** B3-γ: fires on every tab dragend so the renderer can tell main
+ *  to clear the active-drag slot if it wasn't consumed. */
+export function setOnTabDragEnd(cb) {
+  _onTabDragEnd = cb;
+}
+
+// ---- Bar-level cross-window drop accept (B3-γ) -----------------------
+//
+// Per-tab dragover/drop handlers (in attachTabDragHandlers) handle
+// intra-bar reorder; they read the dragged tab id via dataTransfer
+// .getData(TAB_DND_MIME). Across BrowserWindow boundaries, getData
+// returns "" because the dataTransfer's payload doesn't cross the
+// process boundary — only the MIME types list does (so dragover's
+// hasTabPayload still works). The per-tab drop handler short-circuits
+// and lets the event bubble to the bar-level drop here, which signals
+// main via tabBarDrop. Main looks up its activeTabDrag (set at
+// dragstart time on the source side) and dispatches the dock.
+const _barEl = document.getElementById("tab-bar");
+_barEl?.addEventListener("dragover", (e) => {
+  if (!hasTabPayload(e.dataTransfer)) return;
+  e.preventDefault();
+});
+_barEl?.addEventListener("drop", (e) => {
+  if (!hasTabPayload(e.dataTransfer)) return;
+  e.preventDefault();
+  void window.kpdf3?.tabBarDrop?.();
+});
 
 function showTabContextMenu(tabId, x, y) {
   if (!ctxTab) return;
@@ -497,10 +583,17 @@ function attachTabDragHandlers(item, tabId) {
     // (sibling tabs) only check TAB_DND_MIME, so text/plain isn't
     // needed for reorder either.
     item.classList.add("is-dragging");
+    // B3-γ: register active drag with main so a sibling window's
+    // bar-drop can dock without needing source's dragend (which is
+    // unreliable across BrowserWindow boundaries in Electron).
+    if (_onTabDragStart) _onTabDragStart(tabId);
   });
   item.addEventListener("dragend", (e) => {
     item.classList.remove("is-dragging");
     clearTabDropIndicators();
+    // B3-γ: tell main the drag ended so it can clear stale active-drag
+    // state if no dock or tearout consumed it.
+    if (_onTabDragEnd) _onTabDragEnd();
     // B3-β tearout: if no sibling tab accepted the drop (dropEffect
     // === "none"), check whether the release point is meaningfully
     // outside the tab-bar. "Outside" = below the bar (the natural
@@ -538,10 +631,20 @@ function attachTabDragHandlers(item, tabId) {
   item.addEventListener("drop", (e) => {
     if (!hasTabPayload(e.dataTransfer)) return;
     e.preventDefault();
-    e.stopPropagation();
     const draggedId = e.dataTransfer.getData(TAB_DND_MIME);
     clearTabDropIndicators();
-    if (!draggedId || draggedId === tabId) return;
+    if (!draggedId) {
+      // Cross-window drag: dataTransfer payload doesn't survive the
+      // BrowserWindow boundary in Electron. Let the event bubble to
+      // the bar-level drop listener which routes via main's
+      // activeTabDrag (B3-γ).
+      return;
+    }
+    if (draggedId === tabId) {
+      e.stopPropagation();
+      return;
+    }
+    e.stopPropagation();
     const r = item.getBoundingClientRect();
     const before = e.clientX < r.left + r.width / 2;
     reorderTab(draggedId, tabId, before);

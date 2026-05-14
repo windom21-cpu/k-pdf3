@@ -178,7 +178,20 @@ let activeTabId = null;
 const windowState = new Map();
 
 function registerWindow(win) {
-  windowState.set(win.id, { win, activeTabId: null, ownedTabIds: new Set() });
+  windowState.set(win.id, {
+    win,
+    activeTabId: null,
+    ownedTabIds: new Set(),
+    // B3-γ dock-back: window-relative bbox of the tab-bar element so
+    // main can resolve a screen point to "is this over some window's
+    // tab-bar?". null until the renderer reports it.
+    tabBarOffset: null,
+    // B3-γ "last-tab-dragged-out closes child window": child windows
+    // (spawned via detach / open-in-new-window) auto-close when
+    // their last owned tab is moved away. Primary window persists
+    // even when empty. Set by configureWindowChrome.
+    isPrimary: false,
+  });
 }
 
 function unregisterWindow(winId) {
@@ -418,6 +431,8 @@ function refreshGlobalsToFocusedWindow() {
  *  ref on close. */
 function configureWindowChrome(win, { isPrimary }) {
   registerWindow(win);
+  const ws = windowState.get(win.id);
+  if (ws) ws.isPrimary = !!isPrimary;
   // Hide menu bar (Linux / Windows) while keeping the accelerators
   // registered via setApplicationMenu — frame:false plus visible menu
   // would double the title-bar height with the OS menu strip.
@@ -1301,30 +1316,182 @@ ipcMain.handle("kpdf3:open-in-new-window", async (_event, pdfPath) => {
   return { ok: true };
 });
 
-/** B3-α: hand over a tab from the calling window to a freshly spawned
- *  child BrowserWindow. The tab handle in `tabHandles` stays alive —
- *  only its window affiliation changes. The renderer-side dirty state
- *  (overlays, pendingDeletedPages, scroll, zoom, ...) is shipped in
- *  `payload` so the new window can reproduce the live tab without
- *  re-opening the PDF from disk. */
-ipcMain.handle("kpdf3:detach-tab", async (event, payload) => {
+/** B3-γ active drag tracking. Set when a renderer fires the
+ *  source-side dragstart for a tab. Consumed by either:
+ *   - tab-bar-drop IPC from a sibling window's bar → dock there
+ *   - detach-tab IPC from the source's dragend → tearout (when
+ *     dragend fires; in Electron cross-window dragend is unreliable
+ *     so the bar-drop path is the primary signal for dock).
+ *
+ *  Cleared on consumption. Stored payload is the full TabState
+ *  snapshot built renderer-side at dragstart time. */
+let activeTabDrag = null;
+
+ipcMain.handle("kpdf3:tab-drag-start", async (event, payload) => {
+  const ws = windowStateForEvent(event);
+  activeTabDrag = { payload, sourceWinId: ws?.win?.id ?? null };
+  return { ok: true };
+});
+
+ipcMain.handle("kpdf3:tab-drag-end", async () => {
+  // dragend signal from source — clear the active drag if not yet
+  // consumed. Cross-window dragend is unreliable in Electron, so
+  // this is best-effort.
+  activeTabDrag = null;
+  return { ok: true };
+});
+
+/** Target window's tab-bar received a drop. If there's an active
+ *  cross-window tab drag and we're not the source, dock the tab
+ *  into us. Source receives a tab-was-docked-away push so it can
+ *  remove the tab from its local renderer-side Map. */
+ipcMain.handle("kpdf3:tab-bar-drop", async (event) => {
+  if (!activeTabDrag) return { ok: false, reason: "no-active-drag" };
+  const tgtSt = windowStateForEvent(event);
+  if (!tgtSt) return { ok: false, reason: "no-target-window" };
+  const tgtId = tgtSt.win.id;
+  if (tgtId === activeTabDrag.sourceWinId) {
+    // Same-window drop on the bar — let intra-bar reorder logic handle
+    // it (no-op here).
+    return { ok: false, reason: "same-window" };
+  }
+  const payload = activeTabDrag.payload;
   const tabId = payload?.tabId;
   if (!tabId || !tabHandles.has(tabId)) {
-    throw new Error(`detach-tab: unknown tab ${tabId}`);
+    activeTabDrag = null;
+    return { ok: false, reason: "no-such-tab" };
   }
-  // Strip the tab from the source window's ownedTabIds — the child
-  // window will claim it once its renderer fires switch-tab on bootstrap.
-  const srcSt = windowStateForEvent(event);
+  // Move ownership: source → target.
+  const srcSt = windowState.get(activeTabDrag.sourceWinId);
   if (srcSt) {
     srcSt.ownedTabIds.delete(tabId);
     if (srcSt.activeTabId === tabId) srcSt.activeTabId = null;
+  }
+  tgtSt.ownedTabIds.add(tabId);
+  // Target adopts.
+  tgtSt.win.webContents.send("kpdf3:adopt-docked-tab", payload);
+  try { tgtSt.win.focus(); } catch { /* ignore */ }
+  // Source removes from local registry.
+  if (srcSt?.win && !srcSt.win.isDestroyed()) {
+    srcSt.win.webContents.send("kpdf3:tab-was-docked-away", tabId);
+    // Chrome-style "last tab dragged out → window dies": if the
+    // source is a child window (spawned via detach / open-in-new-
+    // window) and its last tab was just transferred, close it. The
+    // primary window stays alive even when empty so the user always
+    // has a home base. setImmediate so the renderer's docked-away
+    // handler gets to run cleanup first.
+    if (!srcSt.isPrimary && srcSt.ownedTabIds.size === 0) {
+      setImmediate(() => {
+        if (!srcSt.win.isDestroyed()) {
+          try { srcSt.win.close(); } catch { /* ignore */ }
+        }
+      });
+    }
+  }
+  activeTabDrag = null;
+  return { ok: true, dockedTo: tgtId };
+});
+
+/** B3-γ: each renderer reports its tab-bar's bounding rect (in
+ *  window-client coords) so main can resolve a drag-end screen point
+ *  to "did the user drop over some sibling window's tab-bar?".
+ *  rect = { left, top, right, bottom } or null to clear. Renderer
+ *  re-reports on boot, on resize, and on sidebar visibility toggle. */
+ipcMain.handle("kpdf3:report-tab-bar-rect", async (event, rect) => {
+  const ws = windowStateForEvent(event);
+  if (!ws) return { ok: false };
+  if (rect && Number.isFinite(rect.left) && Number.isFinite(rect.top)
+      && Number.isFinite(rect.right) && Number.isFinite(rect.bottom)) {
+    ws.tabBarOffset = {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+    };
+  } else {
+    ws.tabBarOffset = null;
+  }
+  return { ok: true };
+});
+
+/** Find the BrowserWindow whose tab-bar (in screen coords) contains
+ *  the given screen point. excludeWinId skips the source window so a
+ *  tab dragged out can't immediately re-dock to itself. Returns null
+ *  when no sibling matches → caller falls back to tearout. */
+function findDockTargetWindow(screenX, screenY, excludeWinId) {
+  for (const [winId, ws] of windowState) {
+    if (winId === excludeWinId) continue;
+    if (!ws.tabBarOffset || ws.win.isDestroyed()) continue;
+    const wb = ws.win.getBounds();
+    const left = wb.x + ws.tabBarOffset.left;
+    const top = wb.y + ws.tabBarOffset.top;
+    const right = wb.x + ws.tabBarOffset.right;
+    const bottom = wb.y + ws.tabBarOffset.bottom;
+    if (screenX >= left && screenX <= right && screenY >= top && screenY <= bottom) {
+      return ws.win;
+    }
+  }
+  return null;
+}
+
+/** B3-α + B3-γ: hand a tab off from the calling window to either
+ *  (γ) an existing sibling window whose tab-bar contains the drop
+ *  point — dock — or (α) a freshly spawned child window — tearout.
+ *
+ *  The tab handle in `tabHandles` stays alive throughout — only its
+ *  window affiliation changes. The renderer-side dirty state
+ *  (overlays, pendingDeletedPages, scroll, zoom, ...) is shipped in
+ *  `payload` so the receiving window can reproduce the live tab
+ *  without re-opening the PDF from disk. */
+ipcMain.handle("kpdf3:detach-tab", async (event, payload) => {
+  const tabId = payload?.tabId;
+  if (!tabId) throw new Error("detach-tab: missing tabId");
+  if (!tabHandles.has(tabId)) {
+    return { ok: true, alreadyMovedAway: true };
+  }
+  // B3-γ race guard: if a parallel tab-bar-drop already moved this
+  // tab away from the source, the dragend's detach-tab fires stale.
+  // Detect by checking the source's current ownership.
+  const srcSt = windowStateForEvent(event);
+  const srcWinId = srcSt?.win?.id ?? null;
+  if (srcSt && !srcSt.ownedTabIds.has(tabId)) {
+    return { ok: true, alreadyMovedAway: true };
+  }
+  // Strip the tab from the source window's ownedTabIds — the
+  // receiving window will claim it on adopt.
+  if (srcSt) {
+    srcSt.ownedTabIds.delete(tabId);
+    if (srcSt.activeTabId === tabId) srcSt.activeTabId = null;
+  }
+  // B3-γ: dock target lookup. Only attempt when a screen point came
+  // through (D&D tearout path includes atScreen; right-click /
+  // toolbar 「別窓化」 paths don't, so they always tearout).
+  if (payload?.atScreen
+      && Number.isFinite(payload.atScreen.screenX)
+      && Number.isFinite(payload.atScreen.screenY)) {
+    const target = findDockTargetWindow(
+      payload.atScreen.screenX,
+      payload.atScreen.screenY,
+      srcWinId,
+    );
+    if (target) {
+      // Take ownership in the target window's state proactively so
+      // the renderer's subsequent switch-tab IPC finds the right
+      // affiliation. activeTabId stays null until renderer confirms.
+      const tgtSt = windowState.get(target.id);
+      if (tgtSt) tgtSt.ownedTabIds.add(tabId);
+      target.webContents.send("kpdf3:adopt-docked-tab", payload);
+      // Bring the target to the front so the user sees the result.
+      try { target.focus(); } catch { /* ignore */ }
+      return { ok: true, dockedTo: target.id };
+    }
   }
   // Don't unset the active-* globals here — the source window's
   // renderer will switch to a sibling tab and call switch-tab, which
   // re-points the globals correctly. Spawning the child kicks off
   // bootstrap which also calls switch-tab once the renderer is up.
   spawnDetachedTabWindow(payload);
-  return { ok: true };
+  return { ok: true, dockedTo: null };
 });
 
 ipcMain.handle("kpdf3:open-crash-log", async () => {

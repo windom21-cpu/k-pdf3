@@ -113,8 +113,11 @@ import {
   renderTabBar,
   transferOutTab,
   adoptDetachedTab,
+  adoptDockedTab,
   setOnDetachRequest,
   setOnDragOut,
+  setOnTabDragStart,
+  setOnTabDragEnd,
 } from "./tab-manager.js";
 
 const { kpdf3 } = window;
@@ -358,13 +361,20 @@ async function detachTabToNewWindow(tabId, opts = {}) {
     // window near the cursor instead of next to the source window.
     atScreen: opts.atScreen ?? null,
   };
+  let result;
   try {
-    await kpdf3.detachTab(payload);
+    result = await kpdf3.detachTab(payload);
   } catch (err) {
     console.error("[detach] failed:", err);
     wsStatus.textContent = `別ウインドウへの移動に失敗: ${err.message ?? err}`;
     return;
   }
+  // B3-γ race guard: if a parallel tab-bar-drop already docked the
+  // tab to a sibling window, main returned alreadyMovedAway and the
+  // tab-was-docked-away push has already removed it from our local
+  // Map — skip transferOutTab (it'd be a no-op anyway, but the status
+  // message would be misleading).
+  if (result?.alreadyMovedAway) return;
   // Local cleanup: tab is now owned by the new window; remove it from
   // this window's tabs Map without disposing the main-side handle
   // (transferOutTab skips the kpdf3.closeTab IPC that closeTab uses).
@@ -373,6 +383,40 @@ async function detachTabToNewWindow(tabId, opts = {}) {
 }
 setOnDetachRequest((tabId) => detachTabToNewWindow(tabId));
 setOnDragOut((tabId, pos) => detachTabToNewWindow(tabId, { atScreen: pos }));
+
+// B3-γ: register active tab drag with main on dragstart so any
+// sibling window's bar-drop can dock without needing the source's
+// dragend (which is unreliable across BrowserWindow boundaries in
+// Electron). The payload mirrors detachTabToNewWindow's so main can
+// reuse it as-is when dock fires.
+setOnTabDragStart((tabId) => {
+  const tab = getAllTabs().get(tabId);
+  if (!tab) return;
+  if (tabId === getActiveTabId()) saveActiveTabSnapshot();
+  const payload = {
+    tabId,
+    sourcePdfPath: tab.activeSourcePdfPath ?? null,
+    sourceName: tab.activeSourceName ?? "",
+    overlays: tab.projectStore.snapshot(),
+    pendingDeletedPages: [...tab.pendingDeletedPages],
+    workspaceMutated: !!tab.workspaceMutated,
+    selectedBookmarkId: tab.selectedBookmarkId ?? null,
+    bookmarkSource: tab.bookmarkSource ?? "outline",
+    scrollPosition: tab.scrollPosition || 0,
+    zoom: tab.zoom ?? null,
+  };
+  void kpdf3.tabDragStart(payload);
+});
+setOnTabDragEnd(() => {
+  void kpdf3.tabDragEnd();
+});
+
+// B3-γ: main pushes this when a sibling window's tab-bar drop docked
+// our tab elsewhere. Locally we just need to drop the tab from this
+// window's tabs Map (workspace stays alive on main, owned by target).
+kpdf3.onTabWasDockedAway?.(async (tabId) => {
+  await transferOutTab(tabId);
+});
 
 // File menu「別ウインドウで開く...」 + toolbar 「別窓化」 require an
 // existing PDF to detach OR a fresh PDF to open in a new window.
@@ -391,36 +435,84 @@ async function actionOpenInNewWindow() {
 // pushes the detach payload over kpdf3:bootstrap-detached-tab. Adopt
 // it as this window's active tab in place of the boot tab. (The hook
 // is harmless on the primary window — the message is never sent there.)
+// Shared callback shape for both bootstrap-detached-tab (B3-α: child
+// window boots into a single tab) and adopt-docked-tab (B3-γ: an
+// existing window receives a tab from another window). The differences
+// are inside tab-manager (replace boot tab vs append + activate); the
+// renderer-side state restore is identical.
+const _adoptCallbacks = {
+  onAdopt: (tab, p) => {
+    projectStore = tab.projectStore;
+    history = tab.history;
+    pendingDeletedPages = tab.pendingDeletedPages;
+    isOpen = tab.isOpen;
+    placementMode = tab.placementMode;
+    activeSourceName = tab.activeSourceName;
+    workspaceMutated = tab.workspaceMutated;
+    // Repopulate projectStore from the shipped overlays. markDirty so
+    // Ctrl+S still flushes them — the source window's user hadn't saved.
+    if (Array.isArray(p.overlays) && p.overlays.length > 0) {
+      projectStore.reset(p.overlays);
+      projectStore.markDirty();
+    }
+    setBookmarkSnapshot({
+      selectedBookmarkId: p.selectedBookmarkId ?? null,
+      bookmarkSource: p.bookmarkSource ?? "outline",
+      workspaceBookmarksCache: [],
+    });
+    currentSidebarTab = "thumbs";
+    viewer.setProjectStore(projectStore);
+    attachStoreSubscribers();
+  },
+  refreshViewerAfterAdopt: () => refreshViewer(),
+  setOpenTrue: () => setOpen(true),
+};
 kpdf3.onBootstrapDetachedTab(async (payload) => {
-  await adoptDetachedTab(payload, {
-    onAdopt: (tab, p) => {
-      // Replace renderer-side aliases with the adopted tab's stores.
-      projectStore = tab.projectStore;
-      history = tab.history;
-      pendingDeletedPages = tab.pendingDeletedPages;
-      isOpen = tab.isOpen;
-      placementMode = tab.placementMode;
-      activeSourceName = tab.activeSourceName;
-      workspaceMutated = tab.workspaceMutated;
-      // Repopulate the projectStore from the shipped overlays. Preserve
-      // dirty flag — the source window's user hadn't saved yet.
-      if (Array.isArray(p.overlays) && p.overlays.length > 0) {
-        projectStore.reset(p.overlays);
-        projectStore.markDirty();
-      }
-      setBookmarkSnapshot({
-        selectedBookmarkId: p.selectedBookmarkId ?? null,
-        bookmarkSource: p.bookmarkSource ?? "outline",
-        workspaceBookmarksCache: [],
-      });
-      currentSidebarTab = "thumbs";
-      viewer.setProjectStore(projectStore);
-      attachStoreSubscribers();
-    },
-    refreshViewerAfterAdopt: () => refreshViewer(),
-    setOpenTrue: () => setOpen(true),
-  });
+  await adoptDetachedTab(payload, _adoptCallbacks);
 });
+kpdf3.onAdoptDockedTab(async (payload) => {
+  await adoptDockedTab(payload, _adoptCallbacks);
+});
+
+// B3-γ: report this window's tab-bar bounds to main so a sibling
+// window's drag-end can resolve "did the user drop over my bar?".
+// Re-report on resize, on sidebar visibility change (which moves the
+// tab-bar's left edge), and after every renderTabBar call (tab count
+// changes the bar's right edge). debounced via rAF.
+let _tabBarRectReportRaf = 0;
+function reportTabBarRect() {
+  if (_tabBarRectReportRaf) return;
+  _tabBarRectReportRaf = requestAnimationFrame(() => {
+    _tabBarRectReportRaf = 0;
+    const list = document.getElementById("tab-list");
+    const bar = list?.parentElement; // .tab-bar element
+    if (!bar) {
+      void kpdf3.reportTabBarRect?.(null);
+      return;
+    }
+    const r = bar.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) {
+      void kpdf3.reportTabBarRect?.(null);
+      return;
+    }
+    void kpdf3.reportTabBarRect?.({
+      left: r.left,
+      top: r.top,
+      right: r.right,
+      bottom: r.bottom,
+    });
+  });
+}
+window.addEventListener("resize", reportTabBarRect);
+// Sidebar toggle moves the tab-bar's left edge; viewport resize moves
+// right/bottom edges. ResizeObserver on the bar catches both because
+// the bar fills its parent's width.
+const _tabBarEl = document.getElementById("tab-list")?.parentElement;
+if (_tabBarEl && typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => reportTabBarRect()).observe(_tabBarEl);
+}
+// Initial report after the first paint settles.
+requestAnimationFrame(reportTabBarRect);
 
 
 function handlePagePointerDown(pageNo, x, y, evt, div) {
