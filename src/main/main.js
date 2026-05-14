@@ -44,6 +44,7 @@ import { setupAutoUpdater } from "./updater.js";
 import {
   openPrinterPropertiesNative,
   applyUserPrinterDevmode,
+  applyCleanFaxDevmode,
   restoreUserPrinterDevmode,
   restoreInflightDevmodeSync,
   applyFaxAsDefaultPrinter,
@@ -1981,12 +1982,20 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     color,
   });
   // β48 J4b: push the user-modified DEVMODE as per-user default for the
-  // Sumatra / Chromium fallback paths. PostScript raw 経路は印刷ジョブが
-  // spooler を経由するため per-user 既定の duplex/tray が反映される
-  // (PS prelude と二段で効くが矛盾しない)。
+  // Sumatra / Chromium fallback paths.
+  // β61: FAX のときは applyCleanFaxDevmode を呼んで dmDriverExtra (driver-
+  // private bytes) を 0 埋めしてから push。FUJIFILM Apeos C2360 等が
+  // driver-private に「最後の宛先」を残す挙動への対策で、毎送信前に
+  // 宛先欄を空でリセットする。通常印刷では従来通り applyUserPrinterDevmode
+  // (driver-private 込みで push) を呼ぶので、お気に入りプリセット等は
+  // 引き続き活きる。
   let devmodeToken = null;
   if (process.platform === "win32") {
-    devmodeToken = await applyUserPrinterDevmode(deviceName);
+    if (isFax) {
+      devmodeToken = await applyCleanFaxDevmode(deviceName);
+    } else {
+      devmodeToken = await applyUserPrinterDevmode(deviceName);
+    }
   }
   _printInFlight = true;
   let usedEngine = null;

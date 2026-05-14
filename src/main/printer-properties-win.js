@@ -421,18 +421,14 @@ export function getCachedUserDevmode(deviceName) {
 }
 
 /**
- * β48 J4b: push the most recently captured user DEVMODE to the printer
- * as per-user default (SetPrinter level 9). Returns a token containing
- * the previous per-user state so the caller can restore on cleanup.
- * Returns null if there's no cached DEVMODE for this device, native
- * binding unavailable, or the call failed — caller falls back to
- * running the print job without DEVMODE override.
+ * 共通実装: 与えられた DEVMODE buffer を SetPrinter level 9 で
+ * per-user 既定にプッシュ、復元 token を返す。
+ *
+ * 内部関数 — applyUserPrinterDevmode / applyCleanFaxDevmode から呼ぶ。
  */
-export async function applyUserPrinterDevmode(deviceName) {
+async function _pushDevmodeViaSetPrinter9(deviceName, devmodeBuf) {
   const native = await tryLoadNative();
   if (!native) return null;
-  const devmodeBuf = _userDevmodeCache.get(deviceName);
-  if (!devmodeBuf) return null;
 
   let hPrinter = 0n;
   try {
@@ -456,7 +452,7 @@ export async function applyUserPrinterDevmode(deviceName) {
     }
 
     // PRINTER_INFO_9 = { LPDEVMODE pDevMode; } — 8 bytes on 64-bit.
-    // Write the address of our cached DEVMODE into that field.
+    // Write the address of our DEVMODE buffer into that field.
     const info9 = Buffer.alloc(8);
     info9.writeBigInt64LE(native.koffi.address(devmodeBuf), 0);
     const ok = native.SetPrinterW(hPrinter, 9, info9, 0);
@@ -467,10 +463,111 @@ export async function applyUserPrinterDevmode(deviceName) {
     return token;
   } catch (err) {
     console.warn(
-      "[printer-props] applyUserPrinterDevmode failed:",
+      "[printer-props] _pushDevmodeViaSetPrinter9 failed:",
       err?.message ?? err,
     );
     return null;
+  } finally {
+    if (hPrinter) {
+      try { native.ClosePrinter(hPrinter); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * β48 J4b: push the most recently captured user DEVMODE to the printer
+ * as per-user default (SetPrinter level 9). Returns a token containing
+ * the previous per-user state so the caller can restore on cleanup.
+ * Returns null if there's no cached DEVMODE for this device, native
+ * binding unavailable, or the call failed — caller falls back to
+ * running the print job without DEVMODE override.
+ */
+export async function applyUserPrinterDevmode(deviceName) {
+  const devmodeBuf = _userDevmodeCache.get(deviceName);
+  if (!devmodeBuf) return null;
+  return _pushDevmodeViaSetPrinter9(deviceName, devmodeBuf);
+}
+
+/**
+ * β61: FAX 送信先リセット用。FAX デバイスのドライバが driver-private
+ * DEVMODE bytes (dmDriverExtra 領域) に「最後に送った宛先」を保持して
+ * いるため、毎 FAX 送信前に dmDriverExtra を 0 埋めしたクリーンな
+ * DEVMODE を per-user 既定にプッシュすることで、driver dialog が宛先
+ * 空欄状態で開くようにする。
+ *
+ * 副作用注意: dmDriverExtra には宛先以外にも cover page 設定や
+ * その他 FAX オプションが格納されている可能性がある。それらも一括
+ * リセットされるので、FAX 経路でしか呼ばないこと (通常印刷で呼ぶと
+ * お気に入りプリセットやトレイ詳細設定が失われる)。
+ *
+ * キャッシュが無ければ DocumentPropertiesW(NULL input, OUT_BUFFER)
+ * で現在の per-user 既定 DEVMODE を取得し、その dmDriverExtra を 0
+ * 埋めしてから push する。
+ *
+ * 戻り値は applyUserPrinterDevmode と同じ token (restoreUserPrinterDevmode
+ * で復元可能)。失敗時 null。
+ */
+export async function applyCleanFaxDevmode(deviceName) {
+  const native = await tryLoadNative();
+  if (!native) return null;
+
+  // 1. ベースとなる DEVMODE を取得 (キャッシュ優先、無ければドライバから直接)
+  let base = _userDevmodeCache.get(deviceName);
+  if (!base) {
+    try {
+      base = await _fetchCurrentDevmode(native, deviceName);
+    } catch (err) {
+      console.warn(
+        "[printer-props] FAX clean: fresh fetch failed:",
+        err?.message ?? err,
+      );
+      return null;
+    }
+  }
+  if (!base) return null;
+
+  // 2. クリーン版を作る (public 部はそのまま、driver-private は 0 埋め)
+  //    dmSize     @ offset 68 = WORD 公開部 DEVMODE サイズ
+  //    dmDriverExtra @ offset 70 = WORD 駆動側拡張サイズ
+  const clean = Buffer.from(base); // copy
+  if (clean.length < 72) return null; // structurally invalid
+  const dmSize = clean.readUInt16LE(68);
+  const dmDriverExtra = clean.readUInt16LE(70);
+  if (
+    dmDriverExtra > 0
+    && dmSize > 0
+    && dmSize + dmDriverExtra <= clean.length
+  ) {
+    clean.fill(0, dmSize, dmSize + dmDriverExtra);
+  }
+  // 3. SetPrinter level 9 で per-user 既定に push
+  return _pushDevmodeViaSetPrinter9(deviceName, clean);
+}
+
+/** DocumentPropertiesW を UI なしで呼んで現在の per-user 既定 DEVMODE
+ *  buffer を取得する。 */
+async function _fetchCurrentDevmode(native, deviceName) {
+  let hPrinter = 0n;
+  try {
+    const out = [0n];
+    if (!native.OpenPrinterW(deviceName, out, null)) {
+      throw new Error("OpenPrinterW failed");
+    }
+    hPrinter = out[0];
+    if (!hPrinter) throw new Error("OpenPrinter NULL handle");
+
+    const sizeNeeded = native.DocumentPropertiesW(
+      0n, hPrinter, deviceName, null, null, 0,
+    );
+    if (sizeNeeded < 0) {
+      throw new Error(`DocumentProperties size query returned ${sizeNeeded}`);
+    }
+    const buf = Buffer.alloc(sizeNeeded);
+    const ret = native.DocumentPropertiesW(
+      0n, hPrinter, deviceName, buf, null, DM_OUT_BUFFER,
+    );
+    if (ret < 0) throw new Error(`DocumentProperties returned ${ret}`);
+    return buf;
   } finally {
     if (hPrinter) {
       try { native.ClosePrinter(hPrinter); } catch { /* ignore */ }
