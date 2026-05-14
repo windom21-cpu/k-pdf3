@@ -90,6 +90,13 @@ const _userDevmodeCache = new Map();
 // the per-user printer DEVMODE would leak into the next app's print).
 let _inflightDevmodeToken = null;
 
+// β54: in-flight token for the "default printer temporary swap" used
+// by the FAX path (silent:false で OS 印刷ダイアログを開かざるを得ない
+// が、Chromium は deviceName を honor しないのでダイアログ既定が
+// OS 既定プリンタに引き戻されてしまう問題を回避する用)。同じく
+// shutdown hook で sync 復元できるよう module 変数で持つ。
+let _inflightDefaultPrinterToken = null;
+
 async function tryLoadNative() {
   if (_nativeAttempted) return _native;
   _nativeAttempted = true;
@@ -145,6 +152,27 @@ async function tryLoadNative() {
         "ClosePrinter",
         "bool",
         ["int64"],
+      ),
+      // β54: 規定プリンタの読み書き。FAX 経路で Chromium OS 印刷
+      // ダイアログを開く直前に FAX を一時的に規定にし、Windows の
+      // 印刷ダイアログがそれを既定として選んだ状態で開くようにする。
+      // GetDefaultPrinterW(pszBuffer, pcchBuffer): pcchBuffer は in/out
+      // で、in は buffer に渡したサイズ(WCHAR数)、out は必要文字数
+      // (または書き込まれた文字数)。koffi の out/inout pointer 型は
+      // バージョン差があるので両方とも void * で受け、4 byte の
+      // Buffer (DWORD) を呼び出し側で確保して manually 読み書き
+      // する。DEVMODEW を Buffer で扱っているのと同じ流儀。
+      GetDefaultPrinterW: winspool.func(
+        "__stdcall",
+        "GetDefaultPrinterW",
+        "bool",
+        ["void *", "void *"],
+      ),
+      SetDefaultPrinterW: winspool.func(
+        "__stdcall",
+        "SetDefaultPrinterW",
+        "bool",
+        ["str16"],
       ),
     };
   } catch (err) {
@@ -411,6 +439,113 @@ function _restoreSyncImpl(token, native) {
       try { native.ClosePrinter(hPrinter); } catch { /* ignore */ }
     }
     _inflightDevmodeToken = null;
+  }
+}
+
+/**
+ * β54: FAX 印刷経路で OS 印刷ダイアログを開く直前に Windows の規定
+ * プリンタを一時的に FAX デバイスに差し替える。Electron の
+ * webContents.print({silent:false, deviceName}) は silent:false 時に
+ * deviceName を honor しないため、OS ダイアログは Windows 規定プリンタ
+ * (= 通常使うプリンタ) を選んだ状態で開いてしまい、ユーザは K-PDF3 の
+ * ダイアログで FAX を選んだ直後にもう一度 OS ダイアログで FAX を選び
+ * 直す煩を強いられる。SetDefaultPrinter で短時間だけ規定を差し替え、
+ * 印刷キックの完了後 (success/fail 問わず) に元に戻す。
+ *
+ * 返値: 復元用 token、または何もできなかった時 null。token を握って
+ * いる側は完了で restoreDefaultPrinter を必ず呼ぶこと。restore は
+ * before-quit でも sync で呼べるよう、同時に module 変数の
+ * _inflightDefaultPrinterToken にも書く。
+ */
+export async function applyFaxAsDefaultPrinter(deviceName) {
+  const native = await tryLoadNative();
+  if (!native) return null;
+  if (typeof deviceName !== "string" || deviceName.length === 0) return null;
+
+  let prevDefault = null;
+  try {
+    // GetDefaultPrinter: 1回目は cchBuffer=0 + buf=null で必要文字数を
+    // 問い合わせ、2回目で実取得。Windows のお約束。pcchBuffer は in/out
+    // の DWORD pointer。Buffer 4 byte を直接渡して LE で読み書きする。
+    const cchBuf = Buffer.alloc(4);
+    cchBuf.writeUInt32LE(0, 0);
+    native.GetDefaultPrinterW(null, cchBuf);
+    const cch = cchBuf.readUInt32LE(0);
+    if (cch > 0) {
+      // UTF-16: WCHAR (2 bytes) × (文字数 + 終端 NUL)
+      const buf = Buffer.alloc(cch * 2);
+      cchBuf.writeUInt32LE(cch, 0);
+      const got = native.GetDefaultPrinterW(buf, cchBuf);
+      if (got) {
+        // 末尾 NUL を除いて UTF-16LE デコード
+        const cchOut = cchBuf.readUInt32LE(0);
+        const byteLen = Math.max(0, (cchOut - 1) * 2);
+        prevDefault = buf.toString("utf16le", 0, byteLen);
+      }
+    }
+  } catch (err) {
+    console.warn(
+      "[printer-props] GetDefaultPrinter failed:",
+      err?.message ?? err,
+    );
+    // 取得失敗時は復元用情報がないので null を保持。SetDefault は
+    // 実行するが復元はベストエフォートになる (next reboot や手動
+    // 操作で OS 既定が直る)。
+  }
+
+  try {
+    const ok = native.SetDefaultPrinterW(deviceName);
+    if (!ok) {
+      // ACCESS_DENIED や printer not found 等。元規定は変えていないので
+      // 復元不要。token も発行しない。
+      return null;
+    }
+  } catch (err) {
+    console.warn(
+      "[printer-props] SetDefaultPrinter failed:",
+      err?.message ?? err,
+    );
+    return null;
+  }
+
+  const token = { prevDefault };
+  _inflightDefaultPrinterToken = token;
+  return token;
+}
+
+/** apply の対で呼ぶ。null token は no-op。restore に失敗しても通常
+ *  運用に支障はない (規定プリンタが FAX のままになるだけで、次回の
+ *  ユーザの印刷では K-PDF3 ダイアログから選び直せる) ので throw しない。 */
+export async function restoreDefaultPrinter(token) {
+  if (!token) return;
+  const native = await tryLoadNative();
+  if (!native) return;
+  _restoreDefaultPrinterSyncImpl(token, native);
+}
+
+/** Synchronous emergency restore (before-quit hook 等)。
+ *  apply 経由で _native は既にロード済の前提。 */
+export function restoreInflightDefaultPrinterSync() {
+  const token = _inflightDefaultPrinterToken;
+  if (!token || !_native) return;
+  _restoreDefaultPrinterSyncImpl(token, _native);
+}
+
+function _restoreDefaultPrinterSyncImpl(token, native) {
+  try {
+    if (typeof token.prevDefault === "string" && token.prevDefault.length > 0) {
+      native.SetDefaultPrinterW(token.prevDefault);
+    }
+    // prevDefault が null (取得に失敗していた) の時は復元できない。
+    // SetDefaultPrinterW(null) は「最初に見つかったプリンタを既定に」
+    // という挙動 (printers 列挙順依存) になり危険なので呼ばない。
+  } catch (err) {
+    console.warn(
+      "[printer-props] restoreDefaultPrinter failed:",
+      err?.message ?? err,
+    );
+  } finally {
+    _inflightDefaultPrinterToken = null;
   }
 }
 

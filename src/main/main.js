@@ -46,6 +46,9 @@ import {
   applyUserPrinterDevmode,
   restoreUserPrinterDevmode,
   restoreInflightDevmodeSync,
+  applyFaxAsDefaultPrinter,
+  restoreDefaultPrinter,
+  restoreInflightDefaultPrinterSync,
 } from "./printer-properties-win.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -594,6 +597,11 @@ app.on("before-quit", () => {
   // would print with those settings unexpectedly. Synchronous call so
   // it completes before the process actually exits.
   try { restoreInflightDevmodeSync(); } catch { /* ignore */ }
+  // β54: 同じ理由で、FAX 印刷経路で一時差し替えた Windows 規定
+  // プリンタも sync 復元する。これを忘れると次回起動時の OS 既定
+  // プリンタが FAX のままになり、別アプリの印刷でも FAX が選ばれて
+  // しまうので safety-critical。
+  try { restoreInflightDefaultPrinterSync(); } catch { /* ignore */ }
   // Close every tab so SQLite WAL flushes for each workspace.
   for (const id of [...tabHandles.keys()]) disposeTab(id);
   disposeActiveDoc();
@@ -1529,13 +1537,34 @@ function silentPrintPdf(pdfPath, opts) {
     };
 
     const onDidFinishLoad = () => {
-      setTimeout(() => {
+      setTimeout(async () => {
         if (settled) return;
+        // β54: FAX 経路で OS 印刷ダイアログを開く直前に Windows 規定
+        // プリンタを FAX に一時切替。silent:false の Chromium 印刷
+        // ダイアログは deviceName を無視し OS 既定プリンタを選んだ
+        // 状態で開く仕様のため、ユーザに 2 回プリンタ選択を強いて
+        // いたのを解消する。print callback の success/fail 両方で
+        // restore するので、ダイアログをユーザがキャンセルしても
+        // 規定プリンタは元に戻る。
+        let faxDefaultToken = null;
+        const isFax = isFaxDevice(opts.deviceName);
+        if (isFax) {
+          try {
+            faxDefaultToken = await applyFaxAsDefaultPrinter(opts.deviceName);
+          } catch (err) {
+            // 規定切替に失敗しても従来の挙動 (OS 既定がプリセット)
+            // で印刷自体は可能。warn だけ吐いて続行。
+            console.warn(
+              "[print] applyFaxAsDefaultPrinter failed:",
+              err?.message ?? err,
+            );
+          }
+        }
         try {
           // FAX: silent:true で送信すると Chromium がドライバ UI を
           // 抑止し送信先入力ダイアログ無しで失敗 → silent:false で OS
           // 印刷ダイアログを通す。FAX 以外は従来通り silent:true。
-          const useSilent = !isFaxDevice(opts.deviceName);
+          const useSilent = !isFax;
           // β46 J3: webContents.print の duplexMode / color に駆動側
           // プロパティを反映。Chromium API は tray (bin) を持たない
           // ので opts.bin は無視される (Sumatra 経路でのみ効く)。
@@ -1557,6 +1586,11 @@ function silentPrintPdf(pdfPath, opts) {
           win.webContents.print(
             printOpts,
             (success, errorType) => {
+              // 規定プリンタの復元は print の結果に関係なく必要。
+              // restore は fire-and-forget で良い (ベストエフォート)。
+              if (faxDefaultToken) {
+                restoreDefaultPrinter(faxDefaultToken).catch(() => {});
+              }
               if (success) {
                 settle(resolve, { success: true });
               } else {
@@ -1572,6 +1606,9 @@ function silentPrintPdf(pdfPath, opts) {
             },
           );
         } catch (err) {
+          if (faxDefaultToken) {
+            restoreDefaultPrinter(faxDefaultToken).catch(() => {});
+          }
           settle(reject, err);
         }
       }, 250);
@@ -1835,6 +1872,10 @@ function cancelInFlightPrint() {
     try { printWindow.destroy(); } catch { /* ignore */ }
     printWindow = null;
   }
+  // β54: webContents.print() の callback は印刷ウインドウを destroy
+  // した時に発火しないことがある → FAX 経路で仕掛けた規定プリンタ
+  // 一時切替の restore が落ちる。ここでも sync 復元しておく。
+  try { restoreInflightDefaultPrinterSync(); } catch { /* ignore */ }
 }
 
 ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
