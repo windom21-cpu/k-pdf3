@@ -521,17 +521,35 @@ function createMainWindow() {
  *  window. Caller is responsible for any post-load IPC (bootstrap
  *  message, OS-open path, etc.). Used as the building block for both
  *  tab tearout (spawnDetachedTabWindow) and "open new PDF in new
- *  window" (kpdf3:open-in-new-window). */
-function spawnEmptyChildWindow() {
+ *  window" (kpdf3:open-in-new-window).
+ *
+ *  Position rules:
+ *  - atScreen=null (default) → offset 40px from focused window
+ *  - atScreen={x,y}          → place the title-bar near (x,y) so the
+ *                              new window appears under the user's
+ *                              cursor (B3-β drag-tearout drop point) */
+function spawnEmptyChildWindow({ atScreen = null } = {}) {
   const focused = BrowserWindow.getFocusedWindow() ?? mainWindow;
-  // Offset the new window slightly from the source so they don't fully
-  // stack — the user can see the new window appeared.
   const srcBounds = focused?.getBounds?.() ?? { x: 100, y: 100, width: 1100, height: 820 };
+  let x, y;
+  if (atScreen
+      && Number.isFinite(atScreen.x)
+      && Number.isFinite(atScreen.y)) {
+    // Anchor the new window's title-bar area near the cursor.
+    // Slight upward offset (-30) so the title bar lands under the
+    // pointer; horizontal centre-ish (-100) so the user's release
+    // point is roughly in the tab-bar zone of the new window.
+    x = Math.round(atScreen.x - 100);
+    y = Math.round(atScreen.y - 30);
+  } else {
+    x = srcBounds.x + 40;
+    y = srcBounds.y + 40;
+  }
   const child = new BrowserWindow({
     width: srcBounds.width,
     height: srcBounds.height,
-    x: srcBounds.x + 40,
-    y: srcBounds.y + 40,
+    x,
+    y,
     title: "K-PDF3",
     icon: join(__dirname, "..", "renderer", "vendor", "app-icon.png"),
     frame: false,
@@ -552,7 +570,7 @@ function spawnEmptyChildWindow() {
  *  sent to the renderer once it has loaded; the renderer treats it as
  *  the boot tab instead of creating a fresh blank one. */
 function spawnDetachedTabWindow(detachPayload) {
-  const child = spawnEmptyChildWindow();
+  const child = spawnEmptyChildWindow({ atScreen: detachPayload?.atScreen });
   child.webContents.once("did-finish-load", () => {
     if (!child.isDestroyed()) {
       child.webContents.send("kpdf3:bootstrap-detached-tab", detachPayload);

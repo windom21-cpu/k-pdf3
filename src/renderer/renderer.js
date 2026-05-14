@@ -114,6 +114,7 @@ import {
   transferOutTab,
   adoptDetachedTab,
   setOnDetachRequest,
+  setOnDragOut,
 } from "./tab-manager.js";
 
 const { kpdf3 } = window;
@@ -333,7 +334,7 @@ initTabManager({
 // kpdf3:bootstrap-detached-tab. Called from three entry points:
 // the right-click menu (setOnDetachRequest), the toolbar 「別窓化」
 // button, and could be wired to a keyboard shortcut later.
-async function detachTabToNewWindow(tabId) {
+async function detachTabToNewWindow(tabId, opts = {}) {
   if (!tabId) return;
   const tab = getAllTabs().get(tabId);
   if (!tab) return;
@@ -352,6 +353,10 @@ async function detachTabToNewWindow(tabId) {
     bookmarkSource: tab.bookmarkSource ?? "outline",
     scrollPosition: tab.scrollPosition || 0,
     zoom: tab.zoom ?? null,
+    // B3-β: when the user drag-tearout dropped outside the bar, ship
+    // the screen-relative release point so main can spawn the new
+    // window near the cursor instead of next to the source window.
+    atScreen: opts.atScreen ?? null,
   };
   try {
     await kpdf3.detachTab(payload);
@@ -366,7 +371,8 @@ async function detachTabToNewWindow(tabId) {
   await transferOutTab(tabId);
   wsStatus.textContent = `「${tab.activeSourceName || "(新規タブ)"}」を別ウインドウへ移動しました`;
 }
-setOnDetachRequest(detachTabToNewWindow);
+setOnDetachRequest((tabId) => detachTabToNewWindow(tabId));
+setOnDragOut((tabId, pos) => detachTabToNewWindow(tabId, { atScreen: pos }));
 
 // File menu「別ウインドウで開く...」 + toolbar 「別窓化」 require an
 // existing PDF to detach OR a fresh PDF to open in a new window.

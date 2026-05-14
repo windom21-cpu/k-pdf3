@@ -413,12 +413,22 @@ export function renderTabBar() {
 const ctxTab = document.getElementById("ctx-tab");
 let _ctxTabTargetId = null;
 let _onDetachRequest = null;
+let _onDragOut = null;
 
 /** Renderer wires this once at boot to receive "user picked
  *  別ウインドウへ移動 on tab T". The renderer captures the live tab
  *  state (overlays etc.) into the detach payload + ships it to main. */
 export function setOnDetachRequest(cb) {
   _onDetachRequest = cb;
+}
+
+/** Renderer wires this once at boot to receive "user dragged tab T
+ *  out of the bar and released outside" (B3-β tearout). pos is
+ *  { screenX, screenY } at the release point. Renderer typically
+ *  forwards to detachTabToNewWindow with the position so the new
+ *  BrowserWindow spawns near where the user dropped. */
+export function setOnDragOut(cb) {
+  _onDragOut = cb;
 }
 
 function showTabContextMenu(tabId, x, y) {
@@ -468,18 +478,48 @@ const TAB_DND_MIME = "application/x-kpdf3-tab-id";
  *  tab-list by dragging. Drop position is computed from cursor X
  *  relative to the target tab's midpoint: left half → insert before,
  *  right half → insert after. Map preserves insertion order, so a
- *  reorder is "rebuild the Map with entries in the new sequence". */
+ *  reorder is "rebuild the Map with entries in the new sequence".
+ *
+ *  B3-β: when the drag ends WITHOUT a drop landing on a sibling tab
+ *  AND the release point is outside the tab-bar's bounds (typically
+ *  "drag downward into the viewer" — Chrome-style), fire onDragOut so
+ *  the renderer can route to detachTabToNewWindow. */
 function attachTabDragHandlers(item, tabId) {
   item.addEventListener("dragstart", (e) => {
     if (!e.dataTransfer) return;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData(TAB_DND_MIME, tabId);
-    e.dataTransfer.setData("text/plain", tabId);
+    // NOTE: do NOT add a text/plain fallback. If we did, dropping the
+    // tab onto the desktop / file manager would make the OS create a
+    // text file containing the tab id (B3-β tester report). It would
+    // also make dropEffect != "none" for OS-accepted drops, blocking
+    // the dragend tearout detection below. Our internal drop targets
+    // (sibling tabs) only check TAB_DND_MIME, so text/plain isn't
+    // needed for reorder either.
     item.classList.add("is-dragging");
   });
-  item.addEventListener("dragend", () => {
+  item.addEventListener("dragend", (e) => {
     item.classList.remove("is-dragging");
     clearTabDropIndicators();
+    // B3-β tearout: if no sibling tab accepted the drop (dropEffect
+    // === "none"), check whether the release point is meaningfully
+    // outside the tab-bar. "Outside" = below the bar (the natural
+    // "drag down to detach" gesture) OR well to the left/right. Above
+    // the bar (title-bar area) is not treated as tearout to avoid
+    // false positives when the user drags upward by accident.
+    if (!_onDragOut) return;
+    const dropEffect = e.dataTransfer?.dropEffect ?? "none";
+    if (dropEffect !== "none") return;
+    const list = document.getElementById("tab-list");
+    const bar = list?.parentElement;
+    if (!bar) return;
+    const r = bar.getBoundingClientRect();
+    const belowBar = e.clientY > r.bottom + 5;
+    const farLeft = e.clientX < r.left - 20;
+    const farRight = e.clientX > r.right + 20;
+    if (belowBar || farLeft || farRight) {
+      _onDragOut(tabId, { screenX: e.screenX, screenY: e.screenY });
+    }
   });
   item.addEventListener("dragover", (e) => {
     if (!hasTabPayload(e.dataTransfer)) return;
