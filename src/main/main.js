@@ -1755,8 +1755,20 @@ let _activePdfReaderProcess = null;
  */
 function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
   return new Promise((resolve, reject) => {
+    // β65: Adobe Reader silent print 用 4 フラグセット (/n /s /o /h /t):
+    //   /n - 新規プロセス起動 (既存 instance と独立)
+    //   /s - splash 抑止
+    //   /o - open file dialog 抑止
+    //   /h - 非表示 (minimize) で起動 → 印刷後ウィンドウが残らない
+    //   /t pdfPath printerName - サイレント印刷 + 終了
+    // β64 では /n /t のみで /s /o /h が抜けていたため、Adobe ウィンドウが
+    // 印刷後も残るユーザ報告があった。Foxit / PDF-XChange も同等の
+    // フラグセットを受け付ける (Adobe 互換 CLI)。
     const args = [
       "/n",
+      "/s",
+      "/o",
+      "/h",
       "/t",
       pdfPath,
       opts.deviceName,
@@ -1778,17 +1790,29 @@ function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
     sp.stderr?.on("data", (d) => { stderr += d.toString(); });
     sp.on("error", (err) => {
       _activePdfReaderProcess = null;
+      // spawn 中 / 起動失敗の本物のエラーは reject (上位は Sumatra
+      // fallback に流れる)。
       reject(err);
     });
     sp.on("close", (code) => {
       _activePdfReaderProcess = null;
-      // Adobe Reader は印刷ジョブを spool に投入したら即 exit (code=0)。
-      // /n を付けていれば既存 Reader プロセスとは独立して動く。
-      // code != 0 は印刷ジョブ自体の失敗を意味するので reject。
-      if (code === 0) resolve({ success: true });
-      else reject(new Error(
-        `${readerInfo.displayName} print failed (exit ${code}): ${stderr.trim() || "no output"}`,
-      ));
+      // β65: Adobe Reader は印刷ジョブを spool に投入した時点で exit
+      // するが、バージョン依存で exit code が非ゼロ (1 等) になる
+      // ことがある (実際は印刷成功している)。β64 では非ゼロを失敗
+      // 扱いにして fall-through していたため、Adobe で正常印刷した
+      // 後に Sumatra が二重印刷するユーザ報告が出た。
+      // → spawn が成功した時点で「Reader に投げた」とみなし、exit
+      // code は warning ログするだけ resolve する。Reader 自体が
+      // 起動できない真の失敗は spawn 時点の error event で reject
+      // されるので、ここでの非ゼロは「印刷自体は OK だけど Adobe
+      // の戻り値が非ゼロ」の事例として扱う。
+      if (code !== 0) {
+        console.warn(
+          `[print] ${readerInfo.displayName} exited code=${code}`
+          + ` (treating as success): ${stderr.trim() || "no output"}`,
+        );
+      }
+      resolve({ success: true, exitCode: code });
     });
   });
 }

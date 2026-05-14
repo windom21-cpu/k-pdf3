@@ -98,24 +98,27 @@ export function findPdfReader() {
     _cached = null;
     return null;
   }
-  // Acrobat (Pro) — 優先順位最高
-  for (const p of adobeAcrobatCandidates()) {
-    if (existsSync(p)) {
-      _cached = {
-        engine: "adobe-acrobat",
-        exePath: p,
-        displayName: "Adobe Acrobat",
-      };
-      return _cached;
-    }
-  }
-  // Acrobat Reader DC
+  // β65: Acrobat Reader DC を Acrobat Pro より優先。Reader DC は CLI
+  // silent print (/n /s /o /h /t) が安定して動作するが、Pro は editor
+  // 用途の重量級アプリで CLI silent 挙動が quirky (ウィンドウ閉じない
+  // 等) なため。Pro は Reader 未インストール時の fallback として残置。
   for (const p of adobeReaderCandidates()) {
     if (existsSync(p)) {
       _cached = {
         engine: "adobe-reader",
         exePath: p,
         displayName: "Adobe Acrobat Reader DC",
+      };
+      return _cached;
+    }
+  }
+  // Adobe Acrobat (Pro) — Reader 未インストール時の fallback
+  for (const p of adobeAcrobatCandidates()) {
+    if (existsSync(p)) {
+      _cached = {
+        engine: "adobe-acrobat",
+        exePath: p,
+        displayName: "Adobe Acrobat",
       };
       return _cached;
     }
