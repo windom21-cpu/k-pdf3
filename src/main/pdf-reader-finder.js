@@ -153,3 +153,61 @@ export function findPdfReader() {
 export function clearPdfReaderCache() {
   _cached = undefined;
 }
+
+/**
+ * β70: 検出済の全 PDF Reader を優先順位で返す (engine 選択 UI 用)。
+ * findPdfReader は最初の 1 件しか返さないが、ユーザが選択肢として
+ * 見るためには全候補を列挙する必要がある。Adobe DC 時代は Pro と
+ * Reader が排他なので両者が同時に検出されることはない。
+ *
+ * @returns {PdfReaderInfo[]}
+ */
+export function findAllPdfReaders() {
+  if (process.platform !== "win32") return [];
+  const out = [];
+  // Reader DC 優先 (β65)
+  for (const p of adobeReaderCandidates()) {
+    if (existsSync(p)) {
+      out.push({
+        engine: "adobe-reader",
+        exePath: p,
+        displayName: "Adobe Acrobat Reader DC",
+      });
+      break;
+    }
+  }
+  // Acrobat (Pro)
+  for (const p of adobeAcrobatCandidates()) {
+    if (existsSync(p)) {
+      out.push({
+        engine: "adobe-acrobat",
+        exePath: p,
+        displayName: "Adobe Acrobat",
+      });
+      break;
+    }
+  }
+  // Foxit
+  for (const p of foxitCandidates()) {
+    if (existsSync(p)) {
+      out.push({
+        engine: "foxit",
+        exePath: p,
+        displayName: "Foxit PDF Reader",
+      });
+      break;
+    }
+  }
+  // PDF-XChange
+  for (const p of pdfXchangeCandidates()) {
+    if (existsSync(p)) {
+      out.push({
+        engine: "pdfxchange",
+        exePath: p,
+        displayName: "PDF-XChange Editor",
+      });
+      break;
+    }
+  }
+  return out;
+}

@@ -53,7 +53,7 @@ import {
   setDevmodeCachePathResolver,
   loadDevmodeCacheFromDisk,
 } from "./printer-properties-win.js";
-import { findPdfReader } from "./pdf-reader-finder.js";
+import { findPdfReader, findAllPdfReaders } from "./pdf-reader-finder.js";
 // β59: PS/PCL raw print 経路は撤去。C2360 で auto-detect エラー
 // (016-726 / 106-726) を引き起こすことが判明し、raw datatype で
 // ドライバを完全バイパスする経路は本機種では使えないと結論。
@@ -1788,6 +1788,58 @@ function getProcessPidsByName(exeName) {
   });
 }
 
+/**
+ * β70: 印刷起因で起動した PDF Reader プロセスのウィンドウを Win32
+ * ShowWindowAsync で HIDE する。Adobe Acrobat Pro は /h フラグを完全
+ * honor せず印刷中にウィンドウを表示する quirk への対策。
+ *
+ * PowerShell + Add-Type で user32.dll ShowWindowAsync(SW_HIDE) を 5 秒間
+ * polling 呼び出し、protectPids (印刷開始前から存在していたプロセス)
+ * は除外して、印刷起因で新規生成された window のみを hide する。
+ *
+ * fire-and-forget で PowerShell process は背景で完結。アプリの IPC
+ * return を阻害しない。
+ *
+ * 第一引数: 対象 exe 名のリスト (拡張子なし、例: ["Acrobat", "AcroCEF"])
+ * 第二引数: protect 対象 PID 配列 (印刷前から動いていた既存 process)
+ */
+function hideNewPdfReaderWindowsInBackground(targetExeNames, protectPids) {
+  if (process.platform !== "win32") return;
+  if (!Array.isArray(targetExeNames) || targetExeNames.length === 0) return;
+  const protectArr = (protectPids || []).filter(Number.isFinite).join(",");
+  const namesArr = targetExeNames.map((n) => `'${n}'`).join(",");
+  // PowerShell インライン script. Get-Process は 200ms 毎に走り、5 秒間
+  // continuous monitoring。print spool 投入完了までの間に Acrobat が
+  // 表示してくるウィンドウを片端から hide。
+  const psScript = `
+    $protect = @(${protectArr || "0"})
+    $names = @(${namesArr})
+    $src = 'public class W { [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindowAsync(System.IntPtr h, int n); }'
+    try { $type = Add-Type -TypeDefinition $src -PassThru -ErrorAction Stop } catch { return }
+    $end = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $end) {
+      try {
+        Get-Process -ErrorAction SilentlyContinue | Where-Object {
+          ($names -contains $_.ProcessName) -and ($_.Id -notin $protect)
+        } | ForEach-Object {
+          if ($_.MainWindowHandle -ne 0) { [void]$type::ShowWindowAsync($_.MainWindowHandle, 0) }
+        }
+      } catch { }
+      Start-Sleep -Milliseconds 200
+    }
+  `;
+  try {
+    const sp = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-WindowStyle", "Hidden", "-Command", psScript],
+      { windowsHide: true, detached: false, stdio: "ignore" },
+    );
+    sp.on("error", () => { /* ignore — best-effort window hiding */ });
+  } catch {
+    // PowerShell 未インストール / 起動失敗 — best-effort なので silent fail
+  }
+}
+
 /** β67: PDF Reader engine ごとに生成しうるヘルパープロセスの exe 名
  *  リスト。Adobe Acrobat Pro / Reader DC は主プロセスの他に Chromium
  *  ベースの UI (AcroCEF.exe) や IPC ブローカ (AcroBroker.exe) を派生
@@ -1889,6 +1941,19 @@ async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
     let stderr = "";
     let settled = false;
     sp.stderr?.on("data", (d) => { stderr += d.toString(); });
+
+    // β70: ウィンドウ flash 抑止 — spawn 直後にバックグラウンド PowerShell
+    // が 5 秒間 polling して、印刷起因で生成された PDF Reader 系の
+    // ウィンドウを ShowWindowAsync(SW_HIDE) で hide する。protect PID
+    // (印刷前から動いていた既存プロセス) は対象外。
+    // 主に Acrobat Pro の /h 未対応問題への対策だが、他 engine でも
+    // 動かしておく (副作用は worst case 何もしない)。
+    const targetExeBaseNames = [
+      exeName.replace(/\.exe$/i, ""),
+      ...(PDF_READER_HELPER_EXES[exeName] ?? []).map((n) => n.replace(/\.exe$/i, "")),
+    ];
+    const protectAllPids = Object.values(beforePidsByExe).flat();
+    hideNewPdfReaderWindowsInBackground(targetExeBaseNames, protectAllPids);
 
     // β69: タイムアウト戦略を engine 別に分岐。
     //
@@ -2137,6 +2202,37 @@ ipcMain.handle("kpdf3:list-printers", async () => {
 });
 
 /**
+ * β70: 印刷エンジン候補を列挙して renderer へ返す。検出された PDF
+ * Reader (Adobe Acrobat Reader DC / Acrobat Pro / Foxit / PDF-XChange)
+ * + 内蔵 Sumatra + Chromium silent。ユーザが印刷ダイアログで選択可能に。
+ *
+ * 並び順 = priority 順 (Reader DC > Pro > Foxit > PDF-XChange > Sumatra >
+ * Chromium)。recommended = priority 順で最初の項目に true。
+ *
+ * @returns {Array<{id: string, displayName: string, recommended: boolean}>}
+ */
+ipcMain.handle("kpdf3:list-print-engines", async () => {
+  const out = [];
+  // PDF Reader 系 (検出済のみ)
+  const readers = findAllPdfReaders();
+  for (const r of readers) {
+    out.push({
+      id: r.engine,
+      displayName: r.displayName,
+    });
+  }
+  // Sumatra (内蔵、常に利用可能)
+  if (sumatraPath()) {
+    out.push({ id: "sumatra", displayName: "SumatraPDF (内蔵)" });
+  }
+  // Chromium silent (Electron 標準、常に利用可能)
+  out.push({ id: "chromium", displayName: "Chromium silent print" });
+
+  // 先頭を recommended として返す
+  return out.map((e, i) => ({ ...e, recommended: i === 0 }));
+});
+
+/**
  * Silent print of a flatten / byte-copy PDF to a chosen printer. The
  * renderer collects deviceName / copies from a custom dialog and calls
  * this; main writes the temp PDF, loads it in the singleton hidden
@@ -2194,6 +2290,9 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     duplex = null,   // "simplex" | "long-edge" | "short-edge"
     bin = null,      // dmDefaultSource integer
     color = null,    // "mono" | "color"
+    // β70: ユーザが印刷ダイアログで選択した印刷エンジンの id 上書き。
+    // null/undefined なら main の自動検出 (PDF Reader > Sumatra > Chromium)。
+    engineOverride = null,
   } = payload ?? {};
   if (!deviceName) throw new Error("print-pdf-silent: deviceName missing");
 
@@ -2249,7 +2348,30 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   //        (各 Reader が FAX 系プリンタを認識すると driver dialog を出す)
   //     2. Chromium silent:false + β54 FAX 規定プリンタ切替
   //   非 Win: Chromium silent
-  const pdfReader = findPdfReader();
+  // β70: engineOverride があれば、その engine の Reader を選ぶ。
+  // pdfReader 系 (adobe-*/foxit/pdfxchange) なら findAllPdfReaders から
+  // 該当を探す。sumatra/chromium は専用フォールバック分岐で扱う。
+  let pdfReader = null;
+  let forceSumatra = false;
+  let forceChromium = false;
+  if (engineOverride === "sumatra") {
+    forceSumatra = true;
+  } else if (engineOverride === "chromium") {
+    forceChromium = true;
+  } else if (engineOverride) {
+    // 特定 PDF Reader 指定 → 該当を探す
+    const all = findAllPdfReaders();
+    pdfReader = all.find((r) => r.engine === engineOverride) ?? null;
+    if (!pdfReader) {
+      // 指定された engine が見つからない → auto detection に fallback
+      console.warn(
+        `[print] engineOverride="${engineOverride}" not detected, falling back to auto`,
+      );
+      pdfReader = findPdfReader();
+    }
+  } else {
+    pdfReader = findPdfReader();
+  }
   const canSumatra =
     process.platform === "win32"
     && !isFax
@@ -2289,8 +2411,10 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   _printInFlight = true;
   let usedEngine = null;
   try {
+    // β70: engineOverride で明示指定された経路があればそれを最優先。
     // 第一選択 = PDF Reader CLI (Adobe/Foxit/PDF-XChange、検出時のみ)
-    if (pdfReader) {
+    // forceSumatra / forceChromium ならこの段は飛ばす
+    if (pdfReader && !forceSumatra && !forceChromium) {
       try {
         await printPdfViaPdfReader(pdfReader, tempPath, { deviceName });
         usedEngine = pdfReader.engine;
@@ -2307,17 +2431,18 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
       }
     }
     // 第二選択 = Sumatra (β53 J8 経路、Win + 非 FAX + Sumatra 同梱あり)
-    if (!usedEngine && canSumatra) {
+    // forceChromium 時は飛ばす
+    if (!usedEngine && canSumatra && !forceChromium) {
       await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
       usedEngine = "sumatra";
     }
     // 最終 = Chromium silent / silent:false (FAX 専用 = β54 規定切替、
-    //                                       または非 Win 環境)
+    //                                       または非 Win 環境、または force)
     if (!usedEngine) {
       await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
       usedEngine = "chromium";
     }
-    logCrash("print-route-end", { engine: usedEngine, deviceName });
+    logCrash("print-route-end", { engine: usedEngine, deviceName, engineOverride });
   } finally {
     _printInFlight = false;
     if (devmodeToken) await restoreUserPrinterDevmode(devmodeToken);

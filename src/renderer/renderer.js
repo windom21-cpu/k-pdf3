@@ -3326,6 +3326,44 @@ async function actionClose() {
 // ---- Print preview dialog (Adobe simplified) -------------------------
 const printDialog = $("print-dialog");
 const printPrinterSelect = $("print-printer");
+const printEngineSelect = $("print-engine");
+
+// β70: 印刷エンジン候補を IPC で取得し select を populate する。
+// localStorage で前回選択値を覚える。ダイアログ初回表示時に 1 回だけ
+// 走らせ、以降は cache を再利用 (起動毎に再フェッチでも構わない軽量
+// 処理だが、毎ダイアログ表示で IPC を打つ必要は無い)。
+let _printEngineCache = null;
+async function ensurePrintEnginesPopulated() {
+  if (_printEngineCache) return;
+  try {
+    const engines = await kpdf3.listPrintEngines();
+    _printEngineCache = Array.isArray(engines) ? engines : [];
+  } catch (err) {
+    console.warn("[print] listPrintEngines failed:", err);
+    _printEngineCache = [];
+  }
+  printEngineSelect.innerHTML = "";
+  for (const e of _printEngineCache) {
+    const opt = document.createElement("option");
+    opt.value = e.id;
+    opt.textContent = e.displayName + (e.recommended ? " (推奨)" : "");
+    printEngineSelect.appendChild(opt);
+  }
+  // 永続化された選択を復元、なければ recommended
+  let saved = null;
+  try { saved = localStorage.getItem("kpdf3.printEngine"); }
+  catch { /* private mode etc — ignore */ }
+  const validSaved = saved && _printEngineCache.some((e) => e.id === saved);
+  if (validSaved) {
+    printEngineSelect.value = saved;
+  } else if (_printEngineCache.length > 0) {
+    printEngineSelect.value = _printEngineCache[0].id;
+  }
+}
+printEngineSelect?.addEventListener("change", () => {
+  try { localStorage.setItem("kpdf3.printEngine", printEngineSelect.value); }
+  catch { /* ignore */ }
+});
 const printPropertiesBtn = $("print-properties");
 const printCopiesInput = $("print-copies");
 const printRangeAll = $("print-range-all");
@@ -3397,6 +3435,9 @@ function showPrintDialog(printers, pages, currentPageNo, preselected = null) {
   printState.driverDuplex = null;
   printState.driverBin = null;
   printState.driverColor = null;
+
+  // β70: 印刷エンジン select を populate (初回 IPC で取得)。
+  ensurePrintEnginesPopulated();
 
   // Populate printer select
   printPrinterSelect.innerHTML = "";
@@ -4219,6 +4260,9 @@ async function actionPrint() {
       duplex: printState.driverDuplex,
       bin: printState.driverBin,
       color: printState.driverColor,
+      // β70: ユーザ選択 or 永続化された印刷エンジン (空文字なら main の
+      // 自動検出に任せる)
+      engineOverride: printEngineSelect?.value || null,
     });
     if (printCancelled) return;
     hideBusy();
