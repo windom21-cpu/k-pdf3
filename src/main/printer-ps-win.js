@@ -1,11 +1,20 @@
-// β57: PostScript raw print path (案 N 改 / 案 N')。
+// β57-β58: PDL raw print path (案 N')。mupdf の DocumentWriter で PDF を
+// PostScript / PCL のページ記述言語に変換し、Win32 raw print API で
+// プリンタに生データを送る経路。プリンタ側 PDL インタプリタが native
+// DPI でレンダリングするので、ラスタ送信 (案 M) で達成できなかった
+// Adobe Reader 同等の質感が出るはず。
 //
-// 経緯: 案 M (Win32 GDI 直接ラスタ) はβ56 で実装したが、mupdf がプリンタ
-// DPI で焼いたビットマップを GDI 経由で送る構造上、Adobe Reader の
-// ベクトル印字 (XPS / PS print path) に質感で追い付かないことが β56
-// ユーザ検証で確定。XPS は mupdf-js の WASM ビルドに writer 未収録だが、
-// PostScript writer (fz_new_ps_writer_with_output) は使えることが
-// 判明したのでこちらに切替。
+// 経緯:
+//   β56 案 M (Win32 GDI 直接ラスタ) は Sumatra と同等品質止まりで撤回
+//   β57 PostScript 経路を初投入: C2360 で エラーコード 106-726 (PDL
+//     データ不正系) が出てプリンタ側で異常終了。spooler は受領、
+//     プリンタの PS インタプリタが受け付けなかった
+//   β58 で 2 つの仮説検証:
+//     P. PS の setpagedevice prelude を撤去して純 mupdf PS を送る
+//        → C2360 が PS 自体は受けるかの切り分け
+//     Q. PCL writer (mupdf の fz_new_pcl_writer_with_output) を追加
+//        → C2360 が PS 非対応で PCL 対応なら救われる可能性
+//   両方を main.js のカスケードで PS → PCL → Sumatra の順に試す
 //
 // 経路:
 //   mupdf.DocumentWriter(buf, "ps", "")
@@ -95,24 +104,21 @@ async function tryLoadNative() {
 }
 
 /**
- * PDF bytes を PostScript bytes に変換する。mupdf の DocumentWriter
- * (format="ps") を使う。テキストは可能な限りベクトル保持されるので、
- * プリンタの PostScript インタプリタが native DPI で描画する。
- *
- * 注: mupdf-js の WASM ビルドには XPS writer が無いため、PS writer を
- *     使う。SVG / PCL も使えるが PS が複合機の標準サポート言語。
+ * PDF bytes を指定 PDL (page description language) の bytes に変換する。
+ * mupdf の DocumentWriter を使う。テキストは可能な限りベクトル保持される
+ * ので、プリンタの PDL インタプリタが native DPI で描画する。
  *
  * @param {Buffer|Uint8Array} pdfBytes
- * @returns {Uint8Array}  PostScript 文書 bytes
+ * @param {"ps"|"pcl"} format  mupdf writer 形式
+ * @returns {Uint8Array}  PDL 文書 bytes
  */
-function pdfBytesToPostScript(pdfBytes) {
+function pdfBytesToPdl(pdfBytes, format) {
   const doc = openPdfDocument(pdfBytes);
   try {
     const out = new mupdf.Buffer();
-    // DocumentWriter のオプションは format ごとに異なる。"ps" の場合
-    // 空文字でデフォルト動作。今後 "language=2" 等で PostScript level を
-    // 指定するなどの拡張余地あり。
-    const writer = new mupdf.DocumentWriter(out, "ps", "");
+    // mupdf DocumentWriter のオプションは format ごとに異なる。"ps" /
+    // "pcl" とも空文字でデフォルト動作。
+    const writer = new mupdf.DocumentWriter(out, format, "");
     try {
       const pageCount = doc.countPages();
       for (let i = 0; i < pageCount; i++) {
@@ -120,9 +126,9 @@ function pdfBytesToPostScript(pdfBytes) {
         try {
           const bounds = page.getBounds();
           const device = writer.beginPage(bounds);
-          // Matrix.identity = [1,0,0,1,0,0]: PDF native スケールのまま
-          // 出力。プリンタ側で印字時にスケーリング (用紙サイズ合わせ
-          // 等) は spooler / driver 経由で適用される。
+          // Matrix.identity: PDF native スケールのまま出力。プリンタ側
+          // で印字時のスケーリング (用紙サイズ合わせ等) は driver /
+          // spooler が補正する想定。
           page.run(device, mupdf.Matrix.identity);
           writer.endPage();
         } finally {
@@ -138,49 +144,12 @@ function pdfBytesToPostScript(pdfBytes) {
   }
 }
 
-/**
- * β46-β48 で取得した DEVMODE 由来の設定 (copies/duplex/tray/color) を
- * PostScript の `setpagedevice` 命令文に変換し、PS 出力の頭に prepend
- * できる形で返す。
- *
- * mupdf の PS writer は出力冒頭に `%!PS-Adobe-3.0` などの DSC ヘッダを
- * 入れるため、その「直後」に prelude を挟むのが正攻法だが、多くの PS
- * インタプリタは「先頭に追加 setpagedevice → DSC ヘッダ」の順でも
- * 受け付ける (DSC は構文より「コメント情報」扱い)。今回はシンプル化
- * のため文字通り先頭に prepend する。
- *
- * 各設定の PS マッピング (PostScript Level 2 standard):
- *   /Duplex true /Tumble false  : 長辺綴じ両面
- *   /Duplex true /Tumble true   : 短辺綴じ両面
- *   /Duplex false               : 片面
- *   /ProcessColorModel /DeviceGray : 白黒
- *   /ProcessColorModel /DeviceRGB  : カラー
- *   /MediaPosition <int>        : トレイ (driver-specific 数値)
- *   /NumCopies <int>            : 部数
- *
- * @returns {string}  setpagedevice prelude (改行付き)、なければ空文字
- */
-function buildPostScriptPrelude(opts) {
-  const dictParts = [];
-  if (opts.duplex === "long-edge") dictParts.push("/Duplex true /Tumble false");
-  else if (opts.duplex === "short-edge") dictParts.push("/Duplex true /Tumble true");
-  else if (opts.duplex === "simplex") dictParts.push("/Duplex false");
-  if (opts.color === "mono") dictParts.push("/ProcessColorModel /DeviceGray");
-  else if (opts.color === "color") dictParts.push("/ProcessColorModel /DeviceRGB");
-  if (Number.isInteger(opts.bin) && opts.bin > 0) {
-    dictParts.push(`/MediaPosition ${opts.bin}`);
-  }
-  if (Number.isInteger(opts.copies) && opts.copies > 1) {
-    dictParts.push(`/NumCopies ${opts.copies}`);
-  }
-  if (opts.landscape) {
-    // PostScript には /Orientation キーがあるが、driver の解釈差が大きい。
-    // 多くの場合 PDF 側で既に landscape 配置になっているので setpagedevice
-    // では指定せず PDF の rotation 情報に任せる。
-  }
-  if (dictParts.length === 0) return "";
-  return `<<\n  ${dictParts.join("\n  ")}\n>> setpagedevice\n`;
-}
+// β58: β57 で実装した setpagedevice prelude は C2360 で 106-726 の
+// 一因の疑いがあるため撤去。純 mupdf 出力のみ送信して切り分け中。
+// β46-β48 の DEVMODE 設定 (duplex/tray/color/copies) は per-user 既定
+// (β48 J4b の SetPrinter level 9 経路) で spooler 側に伝わるため、
+// 一部設定は raw print でも反映される (driver による)。完全反映が
+// 必要なら β59+ で setpagedevice を再導入し DSC 順序を整える。
 
 /**
  * Win32 raw print: 生 PostScript bytes をプリンタへ送信。spooler は
@@ -254,51 +223,46 @@ async function sendRawToPrinter(native, deviceName, jobName, bytes) {
 }
 
 /**
- * PDF bytes を PostScript 経由でプリンタへ送信する。
+ * PDF bytes を PostScript 経由でプリンタへ送信する (β58: 純 mupdf 出力、
+ * setpagedevice prelude は撤去)。
  *
  * @param {Buffer|Uint8Array} pdfBytes
  * @param {object} opts
  * @param {string} opts.deviceName
  * @param {string} [opts.jobName="K-PDF3"]
- * @param {number} [opts.copies=1]
- * @param {boolean} [opts.landscape=false]
- * @param {"simplex"|"long-edge"|"short-edge"|null} [opts.duplex=null]
- * @param {number|null} [opts.bin=null]           dmDefaultSource (tray)
- * @param {"color"|"mono"|null} [opts.color=null]
  * @returns {Promise<{success: true, byteCount: number}>}
  */
 export async function printPdfViaPostScript(pdfBytes, opts) {
   const native = await tryLoadNative();
   if (!native) throw new Error("printPdfViaPostScript: koffi/native unavailable");
-  const {
-    deviceName,
-    jobName = "K-PDF3",
-    copies = 1,
-    landscape = false,
-    duplex = null,
-    bin = null,
-    color = null,
-  } = opts ?? {};
+  const { deviceName, jobName = "K-PDF3 (PS)" } = opts ?? {};
   if (!deviceName) throw new Error("printPdfViaPostScript: deviceName missing");
 
-  // 1. PDF → PS 変換 (mupdf)
-  const psCore = pdfBytesToPostScript(pdfBytes);
+  const psBytes = pdfBytesToPdl(pdfBytes, "ps");
+  await sendRawToPrinter(native, deviceName, jobName, psBytes);
+  return { success: true, byteCount: psBytes.length };
+}
 
-  // 2. β46-β48 設定を setpagedevice prelude に変換し prepend
-  const preludeStr = buildPostScriptPrelude({ copies, landscape, duplex, bin, color });
-  const preludeBytes = preludeStr.length > 0
-    ? Buffer.from(preludeStr, "ascii")
-    : Buffer.alloc(0);
+/**
+ * PDF bytes を PCL 経由でプリンタへ送信する (β58 で追加)。多くの複合機が
+ * PCL を標準対応しているので、PostScript が解釈失敗するプリンタの fallback
+ * として位置付け。mupdf の fz_new_pcl_writer_with_output を使用。
+ *
+ * @param {Buffer|Uint8Array} pdfBytes
+ * @param {object} opts
+ * @param {string} opts.deviceName
+ * @param {string} [opts.jobName="K-PDF3"]
+ * @returns {Promise<{success: true, byteCount: number}>}
+ */
+export async function printPdfViaPcl(pdfBytes, opts) {
+  const native = await tryLoadNative();
+  if (!native) throw new Error("printPdfViaPcl: koffi/native unavailable");
+  const { deviceName, jobName = "K-PDF3 (PCL)" } = opts ?? {};
+  if (!deviceName) throw new Error("printPdfViaPcl: deviceName missing");
 
-  // 3. 結合 (prelude + mupdf PS 出力)
-  const finalBytes = preludeBytes.length > 0
-    ? Buffer.concat([preludeBytes, Buffer.from(psCore)])
-    : psCore;
-
-  // 4. Win32 raw print でプリンタへ送信
-  await sendRawToPrinter(native, deviceName, jobName, finalBytes);
-
-  return { success: true, byteCount: finalBytes.length };
+  const pclBytes = pdfBytesToPdl(pdfBytes, "pcl");
+  await sendRawToPrinter(native, deviceName, jobName, pclBytes);
+  return { success: true, byteCount: pclBytes.length };
 }
 
 /** デバッグ用: koffi がロードできるかだけ確認する。 */
