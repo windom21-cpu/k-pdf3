@@ -574,6 +574,9 @@ app.whenReady().then(() => {
     },
   ]);
   Menu.setApplicationMenu(accelMenu);
+  // β55: 内蔵 Sumatra に PrintAsImage = true の portable settings を
+  // ensure (Win 限定。失敗時は warn のみで起動継続)。
+  ensureSumatraPortableSettings();
   createMainWindow();
   // Wire auto-update (§17.15). No-op in dev mode (!app.isPackaged) and
   // when launched with --no-update. The initial check fires ~3s after
@@ -1647,6 +1650,67 @@ function sumatraPath() {
     if (existsSync(p)) return p;
   }
   return null;
+}
+
+/**
+ * β55: 内蔵 Sumatra に portable settings ファイル `SumatraPDF-settings.txt`
+ * を exe 隣に ensure する。狙いは `PrinterDefaults.PrintAsImage = true`
+ * を効かせること —
+ *   GDI vector path (デフォルト) で日本語明朝が荒れる FUJIFILM Apeos
+ *   C2360 等のドライバ向けに、Sumatra に mupdf でプリンタ DPI のビット
+ *   マップを焼かせてから GDI StretchBlt で送る経路へ切替える。
+ * 副次効果として Sumatra は portable mode に入り、%APPDATA%\SumatraPDF
+ * のスタンドアロン Sumatra 設定とは独立した動作環境になる (ユーザの
+ * 自前 Sumatra 設定を K-PDF3 が読まない / 書かない)。
+ *
+ * β46 J3 で `-print-settings` 経由で送る per-job 設定 (copies / duplex /
+ * tray / color) は PrinterDefaults より優先される Sumatra のルール
+ * なので、既存の DEVMODE 抽出経路には影響しない。詳細は HANDOVER の
+ * β54→β55 移行メモを参照。
+ *
+ * ファイルが既に K-PDF3 管理印を持っていれば no-op、なければ書き込む。
+ * アップデート毎に resources が置き換わる可能性に備え起動毎に check。
+ */
+const SUMATRA_SETTINGS_MAGIC = "# K-PDF3 managed Sumatra portable settings.";
+function ensureSumatraPortableSettings() {
+  if (process.platform !== "win32") return;
+  const exe = sumatraPath();
+  if (!exe) return;
+  const settingsPath = join(dirname(exe), "SumatraPDF-settings.txt");
+  let needWrite = true;
+  try {
+    if (existsSync(settingsPath)) {
+      const content = readFileSync(settingsPath, "utf8");
+      if (content.includes(SUMATRA_SETTINGS_MAGIC)) {
+        needWrite = false;
+      }
+    }
+  } catch {
+    // 読めない場合は上書きを試みる (権限なしなら writeFileSync が失敗
+    // して warn → Sumatra は %APPDATA% 側 or 既定値で動く)
+  }
+  if (!needWrite) return;
+  const body = [
+    SUMATRA_SETTINGS_MAGIC,
+    "# PrintAsImage = true で Sumatra に mupdf 経由のラスタライズを",
+    "# 強制し、日本語明朝が GDI vector 経路で raster fallback を踏んで",
+    "# 荒れる FUJIFILM Apeos C2360 等のドライバ向けに Adobe 同等の",
+    "# 出力品質を得る。物理設定 (copies/duplex/tray/color) は per-job",
+    "# `-print-settings` が優先されるので既存の DEVMODE 抽出経路には",
+    "# 影響しない。",
+    "PrinterDefaults [",
+    "  PrintAsImage = true",
+    "]",
+    "",
+  ].join("\n");
+  try {
+    writeFileSync(settingsPath, body);
+  } catch (err) {
+    console.warn(
+      "[sumatra] failed to write portable settings:",
+      err?.message ?? err,
+    );
+  }
 }
 
 /**
