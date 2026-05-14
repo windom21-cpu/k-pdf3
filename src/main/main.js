@@ -53,11 +53,7 @@ import {
   setDevmodeCachePathResolver,
   loadDevmodeCacheFromDisk,
 } from "./printer-properties-win.js";
-import {
-  embedJapaneseFonts,
-  isVectorEligibleOverlay,
-  drawTextOverlayVector,
-} from "./overlay-pdf-draw.js";
+import { findPdfReader } from "./pdf-reader-finder.js";
 // β59: PS/PCL raw print 経路は撤去。C2360 で auto-detect エラー
 // (016-726 / 106-726) を引き起こすことが判明し、raw datatype で
 // ドライバを完全バイパスする経路は本機種では使えないと結論。
@@ -1339,43 +1335,14 @@ ipcMain.handle("kpdf3:pick-export-pdf", async () => {
  * @param {Uint8Array | null} sourceBytes raw source-PDF bytes
  * @returns {Promise<Buffer>}
  */
-/** β63 ζ Phase 1: ページに vector overlay 配列を描く。raster overlay
- *  PNG が既に重ねられた直後、ページの最上位レイヤとして text overlay を
- *  pdf-lib drawText で描画する。フォント不在 / 不適合な overlay は
- *  isVectorEligibleOverlay で skip され (本来は renderer 側で pre-filter
- *  済のため到達しない、二重防御)、raster 経路に乗らないと欠落するため
- *  warning ログ。 */
-function _drawVectorOverlaysOnPage(page, p, fonts) {
-  const list = Array.isArray(p.vectorOverlays) ? p.vectorOverlays : [];
-  if (list.length === 0) return;
-  for (const ov of list) {
-    if (!isVectorEligibleOverlay(ov, fonts)) {
-      // 想定外 (renderer pre-filter が外したはず)。安全のため warn。
-      console.warn(
-        "[assembleHybridPdf] vector overlay skipped (font missing?):",
-        ov?.type, ov?.id ?? "",
-      );
-      continue;
-    }
-    try {
-      drawTextOverlayVector(page, ov, { pageHt: p.heightPt, fonts });
-    } catch (err) {
-      console.warn(
-        "[assembleHybridPdf] drawTextOverlayVector failed:",
-        err?.message ?? err,
-      );
-    }
-  }
-}
-
+// β64: β63 (ζ Phase 1) は revert。C2360 ドライバが embedded CID TrueType
+// の存在をトリガに全面 raster fallback する挙動を実機検証で確認した
+// ため、PDF へのフォント埋め込み経路ごと撤去。代わりに β64 では
+// Adobe Reader / Foxit Reader 等 OS インストール済の PDF Reader を CLI
+// で呼び出す経路を第一選択にし、Sumatra は fallback として温存する
+// 三段構造に切替 (C アプローチ採用)。
 async function assembleHybridPdf(pages, sourceBytes) {
   const newPdf = await PDFDocument.create();
-  // β63 ζ Phase 1: 日本語フォントを embed して vector overlay 描画に
-  // 使えるようにする。失敗時 (Win 以外 / TTF 未発見 / fsType=2) は
-  // null になり、各 overlay は raster 経路にフォールバック (はずだが、
-  // renderer 側で pre-filter 済みなので vector overlay には font が
-  // 揃っていることが前提)。
-  const overlayFonts = await embedJapaneseFonts(newPdf);
   const sourcePdf = sourceBytes
     ? await PDFDocument.load(sourceBytes, { ignoreEncryption: true })
     : null;
@@ -1442,11 +1409,6 @@ async function assembleHybridPdf(pages, sourceBytes) {
             });
           }
         }
-        // β63 ζ Phase 1: vector overlay (テキスト rot=0 のみ対応) を
-        // 上に重ねる。font 不揃いの overlay は isVectorEligibleOverlay
-        // で除外され、raster 経路に流れて canvas PNG として既に
-        // copied に描かれている (renderer 側 pre-filter)。
-        _drawVectorOverlaysOnPage(copied, p, overlayFonts);
       } else {
         await _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, p.imageBytes);
       }
@@ -1482,8 +1444,6 @@ async function assembleHybridPdf(pages, sourceBytes) {
             });
           }
         }
-        // β63: vector overlay 描画 (overlay strategy 同様)
-        _drawVectorOverlaysOnPage(copied, p, overlayFonts);
       } else {
         // Reuse the rotated-source helper with the external doc as source
         // and `externalSourcePageIndex` standing in for `sourceIdx`.
@@ -1766,6 +1726,73 @@ function sumatraPath() {
  *  on exit or by `kpdf3:cancel-print`. */
 let _activeSumatraProcess = null;
 
+/** β64: Adobe / Foxit / PDF-XChange CLI で印刷したジョブの child
+ *  process tracking。kpdf3:cancel-print と β50 J6 印刷中クローズ確認の
+ *  両方で参照される。 */
+let _activePdfReaderProcess = null;
+
+/**
+ * β64: OS インストール済 PDF Reader (Adobe Acrobat / Reader / Foxit /
+ * PDF-XChange) を CLI 経由で起動して印刷する。
+ *
+ * 共通 CLI 規約:
+ *   <exe> /n /t "pdfPath" "deviceName"
+ *
+ * 各 Reader の挙動:
+ * - Adobe Acrobat Reader DC / Acrobat Pro:
+ *   /n = 新規プロセスとして起動 (既存 instance を流用しない)
+ *   /t = サイレント印刷後 exit。printer 名 + 紙サイズ + ドライバ名は
+ *        オプション (printer のみで十分)
+ *   バックグラウンドで起動するが、初回起動時にタスクバーに短時間
+ *   アイコンが出る場合あり
+ * - Foxit / PDF-XChange も Adobe 互換の /n /t を実装している
+ *
+ * 設定 (duplex/tray/color/copies) は β48 J4b の SetPrinter level 9 で
+ * per-user 既定 DEVMODE に押し込んでおけば各 Reader が読み込む。CLI
+ * 引数で直接渡す方式は Reader によって差があるので未使用。
+ *
+ * 戻り値: { success: true } または process が non-zero で reject。
+ */
+function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "/n",
+      "/t",
+      pdfPath,
+      opts.deviceName,
+    ];
+    let sp;
+    try {
+      sp = spawn(readerInfo.exePath, args, {
+        windowsHide: true,
+        detached: false,
+      });
+    } catch (err) {
+      reject(new Error(
+        `Spawn ${readerInfo.displayName} failed: ${err?.message ?? err}`,
+      ));
+      return;
+    }
+    _activePdfReaderProcess = sp;
+    let stderr = "";
+    sp.stderr?.on("data", (d) => { stderr += d.toString(); });
+    sp.on("error", (err) => {
+      _activePdfReaderProcess = null;
+      reject(err);
+    });
+    sp.on("close", (code) => {
+      _activePdfReaderProcess = null;
+      // Adobe Reader は印刷ジョブを spool に投入したら即 exit (code=0)。
+      // /n を付けていれば既存 Reader プロセスとは独立して動く。
+      // code != 0 は印刷ジョブ自体の失敗を意味するので reject。
+      if (code === 0) resolve({ success: true });
+      else reject(new Error(
+        `${readerInfo.displayName} print failed (exit ${code}): ${stderr.trim() || "no output"}`,
+      ));
+    });
+  });
+}
+
 /**
  * Heuristic: does the device name look like a FAX device?
  * Most FAX drivers pop a「送信先番号」prompt during the print spool
@@ -1961,6 +1988,13 @@ function cancelInFlightPrint() {
     try { _activeSumatraProcess.kill(); } catch { /* ignore */ }
     _activeSumatraProcess = null;
   }
+  // β64: Adobe / Foxit / PDF-XChange CLI 経由の印刷 child process も kill。
+  // PDF Reader は spool 投入後すぐ exit するので通常はここで掴むことは
+  // 少ないが、起動が遅い大型 Reader (Acrobat Pro 等) の対応として。
+  if (_activePdfReaderProcess) {
+    try { _activePdfReaderProcess.kill(); } catch { /* ignore */ }
+    _activePdfReaderProcess = null;
+  }
   // Chromium path (FAX / byte-copy): destroying printWindow tears down
   // the offscreen renderer that owns webContents.print's OS dialog.
   // For a FAX that's still in the driver-side fax-number dialog this
@@ -2022,21 +2056,29 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   // does not stall.
   const isFax = isFaxDevice(deviceName);
   const sumatraExe = sumatraPath();
-  // β59: 印刷経路を β55 水準に戻す。β56 (案 M = GDI 直接ラスタ) / β57
-  // (案 N = PostScript raw) / β58 (案 N' = PS+PCL カスケード) と続いた
-  // 明朝品質改善の試みは、いずれも以下の構造的限界にぶつかった:
-  //   - GDI 直接ラスタは Sumatra と同等品質 (raster vs vector の根本差)
-  //   - PS/PCL raw は spooler を経由するがドライバを完全バイパスする
-  //     ため、C2360 のように「raw datatype を auto-detect で識別する」
-  //     プリンタでエラー 016-726 / 106-726 を踏む
-  // 明朝細字問題は **プリンタドライバの「線幅補正」「印字濃度」設定**
-  // をユーザがプロパティ画面 (β14/β48 経路) で調整 → β48 J4b の
-  // SetPrinter level 9 で per-user 既定に保存 → 以後の印刷で自動適用、
-  // という γ アプローチで現場運用することにした。コード変更は不要。
+  // β64: 印刷経路を「PDF Reader CLI 優先 / Sumatra fallback / Chromium
+  // 最終手段」の三段に再設計 (C アプローチ採用)。
   //
-  // 経路選択: 単純な 2 段に戻す。
-  //   Win + 非 FAX + Sumatra 同梱 → Sumatra (β53 J8 経路)
-  //   それ以外 → Chromium silent / silent:false (FAX は β54 規定切替)
+  // 経緯:
+  // - β56-β63 の自前 vector 印刷試行 (案 M GDI / 案 N PostScript /
+  //   案 N' PCL / ζ font embed) はすべて C2360 ドライバの PDF コンテンツ
+  //   検査 → 全面 raster fallback 挙動に阻まれた
+  // - 真の解は Adobe Reader 等の独自 PDF print engine に委譲すること
+  //   (Adobe XPS Print Path 等の固有経路を持つため C2360 でも vector)
+  // - ただし PDF Reader 未インストール環境では Sumatra に fallback、
+  //   さらに失敗時は Chromium silent:false (FAX 用) という安全網
+  //
+  // 経路選択:
+  //   Win + 非 FAX:
+  //     1. Adobe/Foxit/PDF-XChange → CLI で印刷 (Adobe 同等品質)
+  //     2. Sumatra (β53 J8 経路、明朝荒れ含むが確実)
+  //     3. Chromium silent (最終手段、C2360 ハングリスクあり)
+  //   Win + FAX:
+  //     1. Adobe/Foxit/PDF-XChange → CLI で印刷
+  //        (各 Reader が FAX 系プリンタを認識すると driver dialog を出す)
+  //     2. Chromium silent:false + β54 FAX 規定プリンタ切替
+  //   非 Win: Chromium silent
+  const pdfReader = findPdfReader();
   const canSumatra =
     process.platform === "win32"
     && !isFax
@@ -2047,6 +2089,9 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     pageCount: Array.isArray(pages) ? pages.length : 0,
     isFax,
     sumatraExe: sumatraExe ?? "(missing)",
+    pdfReader: pdfReader
+      ? { engine: pdfReader.engine, exe: pdfReader.exePath }
+      : null,
     canSumatra,
     copies,
     landscape,
@@ -2073,8 +2118,25 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   _printInFlight = true;
   let usedEngine = null;
   try {
-    // 第一選択 = Sumatra (β53 J8 経路、Win + 非 FAX + Sumatra 同梱あり)
-    if (canSumatra) {
+    // 第一選択 = PDF Reader CLI (Adobe/Foxit/PDF-XChange、検出時のみ)
+    if (pdfReader) {
+      try {
+        await printPdfViaPdfReader(pdfReader, tempPath, { deviceName });
+        usedEngine = pdfReader.engine;
+      } catch (err) {
+        logCrash("print-pdfreader-failed", {
+          deviceName,
+          engine: pdfReader.engine,
+          errorType: err?.message ?? String(err),
+        });
+        console.warn(
+          `[print] ${pdfReader.displayName} failed, falling back:`,
+          err?.message ?? err,
+        );
+      }
+    }
+    // 第二選択 = Sumatra (β53 J8 経路、Win + 非 FAX + Sumatra 同梱あり)
+    if (!usedEngine && canSumatra) {
       await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
       usedEngine = "sumatra";
     }

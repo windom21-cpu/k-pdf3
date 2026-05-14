@@ -256,23 +256,6 @@ export const EXPORT_ZOOM = 900 / 72;
  * @param {(progress: { done: number, total: number }) => void} [args.onProgress]
  * @returns {Promise<Array<{ pageNo:number, png:Uint8Array, widthPt:number, heightPt:number }>>}
  */
-/**
- * β63: vector 描画候補かの軽量判定 (renderer 側)。main 側
- * isVectorEligibleOverlay とロジック同期必須。renderer は font 有無を
- * 知らないので、種別 + rotation だけで pre-filter する。main 側で
- * font embed 失敗時の最終判定が行われる。
- *
- * ζ Phase 1 (β63) は text overlay rot=0 のみ。Phase 2+ で stamp / callout
- * /marker などを追加 (このリストを拡張)。
- */
-function looksRendererVectorEligible(ov) {
-  if (!ov || ov.type !== "text") return false;
-  const props = ov.properties ?? {};
-  const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
-  if (rot !== 0) return false;
-  return true;
-}
-
 export async function composePagesForExport({
   pages,
   projectStore,
@@ -298,16 +281,7 @@ export async function composePagesForExport({
       userRotation: row.userRotation ?? 0,
     });
 
-    const allOverlays = projectStore.getPageOverlays(row.pageNo);
-    const overlayCount = allOverlays.length;
-    // β63: ζ Phase 1。vector 化可能な overlay を抽出して main 側で
-    // pdf-lib drawText に渡す。残りは β62 raster 経路で canvas に描く。
-    // フォント有無は main 側で再判定するので、ここでは「種別 + rot=0」
-    // のみで判定する (main の isVectorEligibleOverlay と同期させること)。
-    const vectorOverlays = allOverlays.filter(looksRendererVectorEligible);
-    const rasterOverlays = allOverlays.filter(
-      (ov) => !looksRendererVectorEligible(ov),
-    );
+    const overlayCount = projectStore.getPageOverlays(row.pageNo).length;
     const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
     const sourceRot = (((row.rotation ?? 0) % 360) + 360) % 360;
     const effectiveRotation = ((sourceRot + userRot) % 360 + 360) % 360;
@@ -376,29 +350,24 @@ export async function composePagesForExport({
         ? await canvasToPng(canvas)
         : await canvasToJpeg(canvas, 0.95);
     } else if (strategy === "overlay") {
-      // β62: bbox-cropped overlay。canvas は raster 系 overlay の実領域
-      // だけ、bboxPt は配置位置を main に渡すための metadata。
-      // β63: vector 系 overlay は canvas に描かず、main 側で pdf-lib
-      // drawText に渡す。rasterOverlays が空ならここで canvas 化を完全
-      // 省略 (imageBytes 未定義のまま main へ)。
-      if (rasterOverlays.length > 0) {
-        const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
-          row, rasterOverlays, EXPORT_ZOOM,
-        );
-        imageBytes = await canvasToPng(canvas);
-        overlayBBox = bb;
-      }
+      // β62: bbox-cropped overlay。canvas は overlays の実領域だけ、
+      // bboxPt は配置位置を main に渡すための metadata。
+      const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
+        row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM,
+      );
+      // Overlay layer must be PNG to keep transparency — drawing on top of
+      // the copied vector source page would otherwise paint white over it.
+      imageBytes = await canvasToPng(canvas);
+      overlayBBox = bb;
     } else if (strategy === "external" && overlayCount > 0) {
       // External-source pages can also carry overlays drawn by the user
       // (e.g. a stamp pinned onto an inserted page). Author the overlay
       // layer the same way as the "overlay" strategy so main can compose.
-      if (rasterOverlays.length > 0) {
-        const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
-          row, rasterOverlays, EXPORT_ZOOM,
-        );
-        imageBytes = await canvasToPng(canvas);
-        overlayBBox = bb;
-      }
+      const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
+        row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM,
+      );
+      imageBytes = await canvasToPng(canvas);
+      overlayBBox = bb;
     }
     // strategy === "source": no image bytes; main copies source page as-is.
     // strategy === "external" with no overlays: no image bytes either.
@@ -424,16 +393,6 @@ export async function composePagesForExport({
       // にフォールバック。userRot=0 でかつ overlay/external 戦略時のみ
       // セットされる。
       overlayBBox,
-      // β63: vector 経路で main 側 pdf-lib drawText に渡す overlay 配列。
-      // 空配列 or undefined なら main 側は vector 描画 step を skip し、
-      // 旧 β62 raster 経路のみで処理する。"overlay" / "external" 戦略時
-      // のみ意味を持つ ("full" / "source" では使われない)。
-      // 各 overlay は projectStore の生 object (type, x, y, w, h,
-      // properties) をそのまま含む — main 側 overlay-pdf-draw.js が
-      // 同形式を期待する。
-      vectorOverlays: (strategy === "overlay" || strategy === "external")
-        ? vectorOverlays
-        : [],
     });
     if (onProgress) onProgress({ done: i + 1, total });
   }
@@ -520,10 +479,18 @@ export async function composeOverlayOnlyPage(row, overlays, zoom = EXPORT_ZOOM) 
   }
 
   // overlay union bbox を canonical (= post-rotation) で求める。
-  // callout は矢印が x/y/w/h の外に出るため、マージンを 8pt 足して
-  // 切れないようにする (drawOverlay 内では x/y/w/h を基点に描いている
-  // が、矢印・stroke halo は ~6pt 程度はみ出る可能性)。
+  // 各 overlay 種別ごとに「描画範囲が x/y/w/h より広い」要素を考慮:
+  // - **吹き出し (callout)**: 矢印が box 外に伸びる。arrowDx/arrowDy
+  //   は box top-left からの相対値 (drawOverlay line 767-768 参照)、
+  //   default は (-30, ov.h + 25)。矢印先端 (tipX/tipY) と
+  //   arrowhead 三角 (~12pt) を bbox に含める必要あり。β62 で
+  //   PAD=8pt しか足していなかったため、デフォルト矢印 (-30pt 左に
+  //   30pt 下に伸びる) が canvas 範囲外で消える regression があった
+  //   ─ β64-2 で修正。
+  // - その他 overlay (text/stamp/marker/redaction): stroke halo
+  //   程度の余白で十分なので基本 PAD=8pt のまま。
   const PAD = 8;
+  const ARROWHEAD_PAD = 14; // 矢印三角先端の三角片 (h≈12pt) + 余白
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const ov of overlays) {
     const x = Number.isFinite(ov.x) ? ov.x : 0;
@@ -534,6 +501,20 @@ export async function composeOverlayOnlyPage(row, overlays, zoom = EXPORT_ZOOM) 
     if (y < minY) minY = y;
     if (x + w > maxX) maxX = x + w;
     if (y + h > maxY) maxY = y + h;
+    // 吹き出しの矢印先端を bbox に算入
+    if (ov.type === "rect" && ov.properties?.kind === "callout") {
+      const ax = x + (Number.isFinite(ov.properties.arrowDx)
+        ? ov.properties.arrowDx
+        : -30);
+      const ay = y + (Number.isFinite(ov.properties.arrowDy)
+        ? ov.properties.arrowDy
+        : h + 25);
+      // 三角片の影響範囲も bbox に含めるため ARROWHEAD_PAD を四方に
+      if (ax - ARROWHEAD_PAD < minX) minX = ax - ARROWHEAD_PAD;
+      if (ay - ARROWHEAD_PAD < minY) minY = ay - ARROWHEAD_PAD;
+      if (ax + ARROWHEAD_PAD > maxX) maxX = ax + ARROWHEAD_PAD;
+      if (ay + ARROWHEAD_PAD > maxY) maxY = ay + ARROWHEAD_PAD;
+    }
   }
   // クランプ + マージン
   const bx = Math.max(0, minX - PAD);
