@@ -50,7 +50,11 @@ import {
   restoreDefaultPrinter,
   restoreInflightDefaultPrinterSync,
 } from "./printer-properties-win.js";
-import { printPdfViaPostScript, printPdfViaPcl } from "./printer-ps-win.js";
+// β59: PS/PCL raw print 経路は撤去。C2360 で auto-detect エラー
+// (016-726 / 106-726) を引き起こすことが判明し、raw datatype で
+// ドライバを完全バイパスする経路は本機種では使えないと結論。
+// Sumatra 経由 (β53 J8) に戻し、明朝細字問題はドライバ側「線幅補正」
+// 等の設定で救済する運用 (γ アプローチ)。
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1935,29 +1939,21 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   // does not stall.
   const isFax = isFaxDevice(deviceName);
   const sumatraExe = sumatraPath();
-  // β58: 経路選択を 4 段カスケードに拡張。β57 で PostScript 単独経路は
-  // C2360 でエラー 106-726 (PDL データ不正系) を踏んで失敗したため、
-  // PS → PCL → Sumatra → Chromium の順で試す。
+  // β59: 印刷経路を β55 水準に戻す。β56 (案 M = GDI 直接ラスタ) / β57
+  // (案 N = PostScript raw) / β58 (案 N' = PS+PCL カスケード) と続いた
+  // 明朝品質改善の試みは、いずれも以下の構造的限界にぶつかった:
+  //   - GDI 直接ラスタは Sumatra と同等品質 (raster vs vector の根本差)
+  //   - PS/PCL raw は spooler を経由するがドライバを完全バイパスする
+  //     ため、C2360 のように「raw datatype を auto-detect で識別する」
+  //     プリンタでエラー 016-726 / 106-726 を踏む
+  // 明朝細字問題は **プリンタドライバの「線幅補正」「印字濃度」設定**
+  // をユーザがプロパティ画面 (β14/β48 経路) で調整 → β48 J4b の
+  // SetPrinter level 9 で per-user 既定に保存 → 以後の印刷で自動適用、
+  // という γ アプローチで現場運用することにした。コード変更は不要。
   //
-  // - PS (β57 経路) は setpagedevice prelude を撤去して純 mupdf 出力に
-  //   絞った (DSC 違反の影響を切り分けるため)
-  // - PCL は β58 新規。mupdf の fz_new_pcl_writer_with_output 経由。
-  //   多くの複合機が PCL 標準対応のため PS 非対応プリンタで救援
-  // - Sumatra は β53 J8 の従来経路 (明朝荒れは残るが確実)
-  // - Chromium は FAX 専用または非 Win 環境向け
-  //
-  // 既知の制限: 現状 PS/PCL 経路は β46-β48 の DEVMODE 設定 (duplex /
-  // tray / color / copies) を spooler 経由でしか伝えていない。完全
-  // 反映には PDL 内に setpagedevice / PCL escape 列を埋める必要があり、
-  // β59+ で対応予定。
-  //
-  // 経路選択はカスケード式: 各段で例外が出たら次段に進む。spooler は
-  // 受領したが「プリンタ側で異常終了」というケース (β57 の 106-726
-  // 等) は spooler は成功応答するため上位からは「成功」に見える ──
-  // 同じ印刷を再試行しても同じところで止まる。そのため次段への自動
-  // フォールバックは「mupdf writer エラー」「Win32 API エラー」のみ。
-  // プリンタ側拒否はユーザ報告 → 次 β で経路順を変える運用。
-  const useRawFirst = process.platform === "win32" && !isFax;
+  // 経路選択: 単純な 2 段に戻す。
+  //   Win + 非 FAX + Sumatra 同梱 → Sumatra (β53 J8 経路)
+  //   それ以外 → Chromium silent / silent:false (FAX は β54 規定切替)
   const canSumatra =
     process.platform === "win32"
     && !isFax
@@ -1968,7 +1964,6 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     pageCount: Array.isArray(pages) ? pages.length : 0,
     isFax,
     sumatraExe: sumatraExe ?? "(missing)",
-    useRawFirst,
     canSumatra,
     copies,
     landscape,
@@ -1987,47 +1982,13 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   _printInFlight = true;
   let usedEngine = null;
   try {
-    // 第一選択 = PostScript raw print (β57/β58、prelude 撤去版)
-    if (useRawFirst) {
-      try {
-        const jobName = `K-PDF3 PS (${Array.isArray(pages) ? pages.length : 1}p)`;
-        await printPdfViaPostScript(pdfBytes, { deviceName, jobName });
-        usedEngine = "postscript";
-      } catch (err) {
-        logCrash("print-ps-failed", {
-          deviceName,
-          errorType: err?.message ?? String(err),
-        });
-        console.warn(
-          "[print] PostScript path failed, trying PCL:",
-          err?.message ?? err,
-        );
-      }
-    }
-    // 第二選択 = PCL raw print (β58)
-    if (!usedEngine && useRawFirst) {
-      try {
-        const jobName = `K-PDF3 PCL (${Array.isArray(pages) ? pages.length : 1}p)`;
-        await printPdfViaPcl(pdfBytes, { deviceName, jobName });
-        usedEngine = "pcl";
-      } catch (err) {
-        logCrash("print-pcl-failed", {
-          deviceName,
-          errorType: err?.message ?? String(err),
-        });
-        console.warn(
-          "[print] PCL path failed, falling back to Sumatra:",
-          err?.message ?? err,
-        );
-      }
-    }
-    // 第三選択 = Sumatra (β53 J8 経路)
-    if (!usedEngine && canSumatra) {
+    // 第一選択 = Sumatra (β53 J8 経路、Win + 非 FAX + Sumatra 同梱あり)
+    if (canSumatra) {
       await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
       usedEngine = "sumatra";
     }
-    // 最終 = Chromium silent / silent:false 経路 (FAX 専用、または上記
-    // 経路が全部使えない非 Win 環境など)
+    // 最終 = Chromium silent / silent:false (FAX 専用 = β54 規定切替、
+    //                                       または非 Win 環境)
     if (!usedEngine) {
       await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
       usedEngine = "chromium";
