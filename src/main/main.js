@@ -1788,36 +1788,73 @@ function getProcessPidsByName(exeName) {
   });
 }
 
-/** β66: 印刷起因で生まれた PDF Reader プロセスのみを kill する。
- *  before 時点で存在していた PID は保護 (ユーザが別途開いている Adobe
- *  ウィンドウを誤って閉じない)。失敗時は no-op (kill 失敗してもユーザの
- *  業務は継続可能なので最善 effort)。 */
-async function killNewPdfReaderProcesses(readerInfo, beforePids) {
-  const { basename } = await import("node:path");
-  const exeName = basename(readerInfo.exePath);
-  const afterPids = await getProcessPidsByName(exeName);
-  const newPids = afterPids.filter((pid) => !beforePids.includes(pid));
-  if (newPids.length === 0) return;
-  for (const pid of newPids) {
+/** β67: PDF Reader engine ごとに生成しうるヘルパープロセスの exe 名
+ *  リスト。Adobe Acrobat Pro / Reader DC は主プロセスの他に Chromium
+ *  ベースの UI (AcroCEF.exe) や IPC ブローカ (AcroBroker.exe) を派生
+ *  させ、主プロセス exit 後もタスクバーアイコンが残る挙動を取る。
+ *  これらを kill ターゲットに加えて完全に閉じる。
+ *  AdobeARM.exe (自動更新) / AdobeCollabSync.exe (クラウド同期) は
+ *  ユーザ業務のバックグラウンドに必要なので kill しない。 */
+const PDF_READER_HELPER_EXES = {
+  "Acrobat.exe":      ["AcroCEF.exe", "AcroBroker.exe", "AcroFlattener.exe"],
+  "AcroRd32.exe":     ["AcroCEF.exe", "AcroBroker.exe"],
+  "FoxitReader.exe":  [],
+  "FoxitPDFReader.exe": [],
+  "PDFXEdit.exe":     [],
+  "PDFXCview.exe":    [],
+};
+
+/** β66/β67: 印刷起因で生まれた PDF Reader プロセス + ヘルパープロセス
+ *  群を kill する。before 時点で存在していた PID は exe 名ごとに保護
+ *  (ユーザが別途開いている Adobe ウィンドウを誤って閉じない)。
+ *  失敗時は no-op (kill 失敗してもユーザの業務は継続可能なので
+ *  最善 effort)。
+ *  @param {{exePath:string, engine:string, displayName:string}} readerInfo
+ *  @param {Record<string, number[]>} beforePidsByExe  exe 名ごとの PID 一覧
+ */
+async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
+  const killedCounts = {};
+  for (const [exeName, beforePids] of Object.entries(beforePidsByExe)) {
     try {
-      spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
-        windowsHide: true,
-        detached: false,
-      });
+      const afterPids = await getProcessPidsByName(exeName);
+      const newPids = afterPids.filter((pid) => !beforePids.includes(pid));
+      killedCounts[exeName] = newPids.length;
+      for (const pid of newPids) {
+        try {
+          spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+            windowsHide: true,
+            detached: false,
+          });
+        } catch {
+          // ignore — best-effort cleanup
+        }
+      }
     } catch {
-      // ignore — best-effort cleanup
+      killedCounts[exeName] = -1; // 取得失敗
     }
   }
+  try {
+    logCrash("pdfreader-cleanup", {
+      engine: readerInfo.engine,
+      killed: killedCounts,
+    });
+  } catch { /* ignore */ }
 }
 
 async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
-  // β66: spawn 前に既存 PDF Reader プロセス PID を snapshot。close 後に
-  // 差分検出して印刷起因の新規プロセスのみ taskkill する。Adobe
-  // Acrobat Pro は CLI /h フラグを完全に honor せず、子プロセスを残し
-  // てウィンドウが表示されたままになる quirk への対策。
-  const { basename } = await import("node:path");
+  // β66/β67: spawn 前に該当 Reader と関連ヘルパープロセスの PID を
+  // exe 名ごとに snapshot。close 後に差分検出して印刷起因の新規
+  // プロセスのみ taskkill する。Adobe Acrobat Pro は CLI /h を完全
+  // honor せず、子プロセス (AcroCEF.exe 等) がタスクバーアイコンを
+  // 維持する quirk への対策。
   const exeName = basename(readerInfo.exePath);
-  const beforePids = await getProcessPidsByName(exeName);
+  const helpers = PDF_READER_HELPER_EXES[exeName] ?? [];
+  const allExes = [exeName, ...helpers];
+  /** @type {Record<string, number[]>} */
+  const beforePidsByExe = {};
+  for (const name of allExes) {
+    beforePidsByExe[name] = await getProcessPidsByName(name);
+  }
 
   return new Promise((resolve, reject) => {
     // β65: Adobe Reader silent print 用 4 フラグセット (/n /s /o /h /t):
@@ -1877,13 +1914,13 @@ async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
           + ` (treating as success): ${stderr.trim() || "no output"}`,
         );
       }
-      // β66: 印刷起因の新規 PDF Reader プロセスを kill する。Acrobat Pro
-      // 等は CLI /h フラグを完全 honor しないため、子プロセスがウィンドウ
-      // を残す quirk への対策。before-snapshot の PID は保護されるので、
-      // ユーザが別途開いている Acrobat ウィンドウは影響を受けない。
-      // 2 秒待ってから実行: spool への投入が完全に終わるまでのバッファ。
+      // β66/β67: 印刷起因の新規 Reader プロセス + ヘルパー (AcroCEF.exe
+      // 等) を kill。before-snapshot の PID は保護なのでユーザが別途
+      // 開いている Adobe ウィンドウは影響を受けない。2 秒待機: spool
+      // への投入完了バッファ。fire-and-forget で IPC return は阻害
+      // しない。
       setTimeout(() => {
-        killNewPdfReaderProcesses(readerInfo, beforePids).catch(() => {});
+        killNewPdfReaderProcesses(readerInfo, beforePidsByExe).catch(() => {});
       }, 2000);
       resolve({ success: true, exitCode: code });
     });
