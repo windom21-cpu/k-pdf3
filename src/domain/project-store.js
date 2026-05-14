@@ -279,6 +279,17 @@ export class ProjectStore {
     this._dirty = false;
   }
 
+  /** Mark store dirty without emitting a change event. Used by the
+   *  B3-α tab-tearout adopt flow: the new window's projectStore is
+   *  populated via reset() (which sets dirty=false because reset is
+   *  semantically "freshly loaded"), but the overlays were unsaved in
+   *  the source window so Ctrl+S in the new window must still flush
+   *  them. Calling markDirty() right after reset preserves the dirty
+   *  intent across the window boundary. */
+  markDirty() {
+    this._dirty = true;
+  }
+
   // ---- subscriptions --------------------------------------------------
 
   /**

@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("kpdf3", {
   closeWorkspace:     ()        => ipcRenderer.invoke("kpdf3:close-workspace"),
   switchTab:          (tabId)   => ipcRenderer.invoke("kpdf3:switch-tab", tabId),
   closeTab:           (tabId)   => ipcRenderer.invoke("kpdf3:close-tab", tabId),
+  detachTab:          (payload) => ipcRenderer.invoke("kpdf3:detach-tab", payload),
+  onBootstrapDetachedTab: (cb)  => ipcRenderer.on("kpdf3:bootstrap-detached-tab", (_, d) => cb(d)),
   saveOverlays:       (ovs)     => ipcRenderer.invoke("kpdf3:save-overlays", ovs),
   pickExportPdf:      ()        => ipcRenderer.invoke("kpdf3:pick-export-pdf"),
   pickExportFolder:   ()        => ipcRenderer.invoke("kpdf3:pick-export-folder"),

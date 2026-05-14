@@ -42,9 +42,9 @@ function genTabId() {
   return `tab-${Date.now().toString(36)}-${(++_tabIdCounter).toString(36)}`;
 }
 
-export function createTabState() {
+export function createTabState({ id } = {}) {
   return {
-    id: genTabId(),
+    id: id ?? genTabId(),
     projectStore: new ProjectStore(),
     history: new HistoryStack(),
     isOpen: false,
@@ -261,6 +261,85 @@ export async function closeTab(tabId) {
   renderTabBar();
 }
 
+/** Drop a tab from the local Map without disposing its main-side
+ *  workspace handle (B3-α detach). The caller has already shipped the
+ *  tab over to a sibling window via kpdf3.detachTab; main keeps the
+ *  workspace alive there. UX: same neighbour-pick / blank-fallback as
+ *  closeTab, but no kpdf3.closeTab IPC. */
+export async function transferOutTab(tabId) {
+  if (!tabs.has(tabId)) return;
+  if (tabId === activeTabId) {
+    const order = [...tabs.keys()];
+    const idx = order.indexOf(tabId);
+    const nextId = order[idx - 1] ?? order[idx + 1] ?? null;
+    tabs.delete(tabId);
+    if (nextId) {
+      activeTabId = null;
+      await applyTab(nextId);
+    } else {
+      const blank = createTabState();
+      tabs.set(blank.id, blank);
+      activeTabId = blank.id;
+      _applyStateFromTab(blank);
+      _viewer.unload();
+      _setOpenFalse();
+    }
+  } else {
+    tabs.delete(tabId);
+  }
+  renderTabBar();
+}
+
+/** Replace the boot tab with a tab handed off from another window (B3-α
+ *  detach payload). Called once during boot when main signals
+ *  bootstrap-detached-tab. The bootstrap payload carries enough state
+ *  (overlays, pendingDeletedPages, scroll, zoom, bookmarks) to restore
+ *  the tab without re-opening the source PDF — main's tabHandles
+ *  already has the workspace open under the same tabId. */
+export async function adoptDetachedTab(payload, deps) {
+  const {
+    onAdopt, // (payload) => void  — populates renderer-side state from payload
+    refreshViewerAfterAdopt,
+    setOpenTrue,
+  } = deps;
+  // Drop whatever boot tab was created by initTabManager.
+  const oldBoot = getActiveTab();
+  if (oldBoot) tabs.delete(oldBoot.id);
+  // Build a TabState shell whose id matches the main-side handle —
+  // main's tabHandles is keyed by this id, so subsequent IPC
+  // (render-page, get-pages, ...) need it to resolve to the right
+  // workspace.
+  const tab = createTabState({ id: payload.tabId });
+  tab.activeSourcePdfPath = payload.sourcePdfPath ?? null;
+  tab.activeSourceName = payload.sourceName ?? "";
+  tab.isOpen = !!payload.sourcePdfPath;
+  tab.workspaceMutated = !!payload.workspaceMutated;
+  tab.scrollPosition = Number(payload.scrollPosition) || 0;
+  tab.zoom = payload.zoom ?? null;
+  tab.selectedBookmarkId = payload.selectedBookmarkId ?? null;
+  tab.bookmarkSource = payload.bookmarkSource ?? "outline";
+  if (Array.isArray(payload.pendingDeletedPages)) {
+    tab.pendingDeletedPages = new Set(payload.pendingDeletedPages);
+  }
+  tabs.set(tab.id, tab);
+  activeTabId = tab.id;
+  // Renderer-specific restore: projectStore overlays, viewer rewire,
+  // bookmark snapshot. Sets the renderer's let aliases too.
+  onAdopt(tab, payload);
+  if (tab.isOpen) {
+    try {
+      await kpdf3.switchTab(tab.id);
+    } catch (err) {
+      console.warn("[tabs] adoptDetachedTab switchTab failed:", err);
+    }
+    // Same order as openPdfPath: setOpen first (enables UI / sidebar
+    // visibility), then refreshViewer (loads pages into the viewer).
+    setOpenTrue();
+    await refreshViewerAfterAdopt();
+  }
+  renderTabBar();
+}
+
 /** Close-with-confirmation: dirty tabs get a 「破棄しますか」 dialog. */
 export async function closeTabWithConfirm(tabId) {
   const tab = tabs.get(tabId);
@@ -319,10 +398,69 @@ export function renderTabBar() {
     item.addEventListener("click", () => {
       void applyTab(id);
     });
+    item.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showTabContextMenu(id, e.clientX, e.clientY);
+    });
     attachTabDragHandlers(item, id);
     list.appendChild(item);
   }
 }
+
+// ---- Tab right-click menu (B3-α detach-via-menu) ----------------------
+
+const ctxTab = document.getElementById("ctx-tab");
+let _ctxTabTargetId = null;
+let _onDetachRequest = null;
+
+/** Renderer wires this once at boot to receive "user picked
+ *  別ウインドウへ移動 on tab T". The renderer captures the live tab
+ *  state (overlays etc.) into the detach payload + ships it to main. */
+export function setOnDetachRequest(cb) {
+  _onDetachRequest = cb;
+}
+
+function showTabContextMenu(tabId, x, y) {
+  if (!ctxTab) return;
+  _ctxTabTargetId = tabId;
+  ctxTab.style.left = `${x}px`;
+  ctxTab.style.top = `${y}px`;
+  ctxTab.hidden = false;
+}
+function hideTabContextMenu() {
+  if (!ctxTab) return;
+  ctxTab.hidden = true;
+  _ctxTabTargetId = null;
+}
+function dispatchTabCtx(target) {
+  const id = _ctxTabTargetId;
+  hideTabContextMenu();
+  if (!(target instanceof HTMLElement) || !id) return;
+  const action = target.dataset.ctx;
+  if (action === "detach") {
+    if (_onDetachRequest) void _onDetachRequest(id);
+  } else if (action === "close") {
+    void closeTabWithConfirm(id);
+  }
+}
+ctxTab?.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  let el = e.target;
+  while (el && el !== ctxTab && !(el.dataset && el.dataset.ctx)) {
+    el = el.parentElement;
+  }
+  if (el && el !== ctxTab) dispatchTabCtx(el);
+});
+ctxTab?.addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("pointerdown", (ev) => {
+  if (!ctxTab || ctxTab.hidden) return;
+  if (ev.target instanceof Node && ctxTab.contains(ev.target)) return;
+  hideTabContextMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideTabContextMenu();
+});
 
 const TAB_DND_MIME = "application/x-kpdf3-tab-id";
 

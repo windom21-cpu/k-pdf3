@@ -155,6 +155,70 @@ const tabHandles = new Map();
 /** @type {string | null} */
 let activeTabId = null;
 
+// ---- Multi-window registry (B3-α) -------------------------------------
+//
+// Each BrowserWindow owns 0..N tabs. `tabHandles` is a flat Map keyed
+// by tabId (workspace + doc + pages live there); `windowState` adds
+// the per-window concept of "which tabs does this window own" + "which
+// tab is active in this window".
+//
+// The legacy `activeWorkspace` / `activeDoc` / `activePages` /
+// `activeTabId` globals are kept in sync with the focused window's
+// active tab via window.on("focus") + switch-tab IPC. Existing IPC
+// handlers continue to read those globals; only the hot path
+// (render-page) and new B3 handlers resolve via `activeForEvent`.
+//
+// Race window: an unfocused window doing background renders while
+// another window is focused will read the focused window's globals.
+// render-page is hardened via activeForEvent; thumb refreshes triggered
+// from background are still subject to this. Acceptable for B3-α MVP;
+// proper fix is per-event resolution for ALL handlers (B3-γ candidate).
+/** @typedef {{ win: BrowserWindow, activeTabId: string | null, ownedTabIds: Set<string> }} WindowState */
+/** @type {Map<number, WindowState>} */
+const windowState = new Map();
+
+function registerWindow(win) {
+  windowState.set(win.id, { win, activeTabId: null, ownedTabIds: new Set() });
+}
+
+function unregisterWindow(winId) {
+  const ws = windowState.get(winId);
+  if (!ws) return;
+  // Dispose tabs owned by this window — their workspaces close, doc
+  // handles destroyed.
+  for (const tabId of ws.ownedTabIds) disposeTab(tabId);
+  windowState.delete(winId);
+}
+
+function windowStateForEvent(event) {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return null;
+  return windowState.get(win.id) ?? null;
+}
+
+/** Resolve the active tab handle for an IPC event. Returns the
+ *  workspace / doc / pages / sourcePdfPath of the calling window's
+ *  active tab. Used by hot-path IPCs (render-page, etc.) so a render
+ *  request from window A always reads window A's tab — even if the
+ *  global active-* refs currently point at window B's. */
+function activeForEvent(event) {
+  const ws = windowStateForEvent(event);
+  if (!ws?.activeTabId) {
+    return { workspace: null, doc: null, pages: [], sourcePdfPath: null, tabId: null };
+  }
+  const h = tabHandles.get(ws.activeTabId);
+  if (!h) {
+    return { workspace: null, doc: null, pages: [], sourcePdfPath: null, tabId: null };
+  }
+  return {
+    workspace: h.workspace,
+    doc: h.doc,
+    pages: h.pages,
+    sourcePdfPath: h.sourcePdfPath,
+    tabId: ws.activeTabId,
+  };
+}
+
 /** @type {Workspace | null} */
 let activeWorkspace = null;
 /** @type {string | null} the absolute path of the source PDF that opened
@@ -300,6 +364,123 @@ function saveWindowState(win) {
   }
 }
 
+// Process-level shortcut handlers (globalShortcut is process-wide so
+// these are window-agnostic — they always target the currently
+// focused BrowserWindow).
+const reloadFocused = () => {
+  const target = BrowserWindow.getFocusedWindow();
+  if (target) target.webContents.send("kpdf3:reload-request");
+};
+const devtoolsFocused = () => {
+  const target = BrowserWindow.getFocusedWindow();
+  if (!target) return;
+  const wc = target.webContents;
+  if (wc.isDevToolsOpened()) wc.closeDevTools();
+  else wc.openDevTools({ mode: "detach" });
+};
+const registerShortcuts = () => {
+  try {
+    globalShortcut.register("F5", reloadFocused);
+    globalShortcut.register("CommandOrControl+R", reloadFocused);
+    globalShortcut.register("CommandOrControl+Shift+R", reloadFocused);
+    globalShortcut.register("F12", devtoolsFocused);
+    globalShortcut.register("CommandOrControl+Shift+I", devtoolsFocused);
+  } catch (e) {
+    console.warn("[shortcuts] register failed:", e);
+  }
+};
+const unregisterShortcuts = () => {
+  globalShortcut.unregisterAll();
+};
+app.on("will-quit", unregisterShortcuts);
+
+/** Refresh the legacy active-* globals to point at the focused window's
+ *  active tab. Existing IPC handlers read these globals; this keeps
+ *  their workspace selection in sync as the user moves between windows.
+ *  No-op if the focused window has no active tab (e.g. blank window). */
+function refreshGlobalsToFocusedWindow() {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (!focused) return;
+  const ws = windowState.get(focused.id);
+  if (!ws?.activeTabId) return;
+  if (ws.activeTabId !== activeTabId) {
+    activateTab(ws.activeTabId);
+  }
+}
+
+/** Common chrome wiring for both the main window and detach child
+ *  windows: register in windowState, hide menu bar, broadcast maximize
+ *  state, install focus → globals + shortcut sync, install close
+ *  print-in-flight guard, dispose owned tabs on closed.
+ *
+ *  isPrimary marks the window as the legacy `mainWindow`; only the
+ *  primary persists window bounds and clears the legacy `mainWindow`
+ *  ref on close. */
+function configureWindowChrome(win, { isPrimary }) {
+  registerWindow(win);
+  // Hide menu bar (Linux / Windows) while keeping the accelerators
+  // registered via setApplicationMenu — frame:false plus visible menu
+  // would double the title-bar height with the OS menu strip.
+  win.setMenuBarVisibility(false);
+  win.autoHideMenuBar = true;
+  // Notify the renderer when maximize state changes so the
+  // maximize/restore button glyph stays in sync.
+  const broadcastMax = () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send("kpdf3:window-state", { maximized: win.isMaximized() });
+    }
+  };
+  win.on("maximize", broadcastMax);
+  win.on("unmaximize", broadcastMax);
+  // frame:false + Menu.setApplicationMenu(null) means no default
+  // accelerators. Use globalShortcut while a window is focused —
+  // before-input-event was unreliable on Wayland in testing.
+  win.on("focus", () => {
+    refreshGlobalsToFocusedWindow();
+    registerShortcuts();
+  });
+  win.on("blur", unregisterShortcuts);
+  // β50 J6: when a print job is still in flight, block the close and
+  // ask the user whether to wait for it or cancel the spool. Adobe-
+  // style: clicking 「キャンセルして終了」kills Sumatra / tears down
+  // the FAX OS dialog before quitting. Default = wait so an accidental
+  // X click doesn't murder a long-running print.
+  win.on("close", (event) => {
+    if (isPrintInFlight()) {
+      const choice = dialog.showMessageBoxSync(win, {
+        type: "warning",
+        buttons: ["完了まで待つ", "印刷をキャンセルして終了"],
+        defaultId: 0,
+        cancelId: 0,
+        title: "印刷ジョブ進行中",
+        message: "印刷ジョブが進行中です。",
+        detail:
+          "今アプリを閉じると印刷が途中で止まる可能性があります。" +
+          "完了まで待つか、印刷をキャンセルして終了するか選んでください。",
+      });
+      if (choice === 0) {
+        event.preventDefault();
+        return;
+      }
+      cancelInFlightPrint();
+    }
+    if (isPrimary) saveWindowState(win);
+  });
+  win.on("closed", () => {
+    // Dispose tabs this window owned (closes their workspaces).
+    unregisterWindow(win.id);
+    if (isPrimary) {
+      disposeActiveDoc();
+      if (activeWorkspace) {
+        try { activeWorkspace.close(); } catch { /* ignore */ }
+        activeWorkspace = null;
+      }
+      activeSourcePdfPath = null;
+      mainWindow = null;
+    }
+  });
+}
+
 function createMainWindow() {
   const saved = loadWindowState();
   mainWindow = new BrowserWindow({
@@ -329,108 +510,45 @@ function createMainWindow() {
       mainWindow.webContents.send("kpdf3:open-pdf-by-os", p);
     }
   });
-  // Hide the menu bar (Linux / Windows) while keeping the accelerators
-  // registered via setApplicationMenu — frame:false plus visible menu
-  // would double the title-bar height with the OS menu strip.
-  mainWindow.setMenuBarVisibility(false);
-  mainWindow.autoHideMenuBar = true;
-  // Notify the renderer when maximize state changes so the
-  // maximize/restore button glyph stays in sync.
-  const broadcastMax = () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(
-        "kpdf3:window-state",
-        { maximized: mainWindow.isMaximized() },
-      );
-    }
-  };
-  mainWindow.on("maximize", broadcastMax);
-  mainWindow.on("unmaximize", broadcastMax);
-  // frame:false + Menu.setApplicationMenu(null) means no default
-  // accelerators. Use globalShortcut while the window is focused —
-  // before-input-event was unreliable on Wayland in testing. Each
-  // shortcut is unregistered on blur so it doesn't fire while another
-  // app is in the foreground.
-  // Ask the renderer to reload itself — the renderer runs a dirty-check
-  // confirm dialog and disarms the beforeunload listener before calling
-  // location.reload(). A direct webContents.reload() would be silently
-  // blocked by the beforeunload guard.
-  const reloadFn = () => {
-    if (mainWindow) mainWindow.webContents.send("kpdf3:reload-request");
-  };
-  const devtoolsFn = () => {
-    if (!mainWindow) return;
-    const wc = mainWindow.webContents;
-    if (wc.isDevToolsOpened()) wc.closeDevTools();
-    else wc.openDevTools({ mode: "detach" });
-  };
-  const registerShortcuts = () => {
-    try {
-      globalShortcut.register("F5", reloadFn);
-      globalShortcut.register("CommandOrControl+R", reloadFn);
-      globalShortcut.register("CommandOrControl+Shift+R", reloadFn);
-      globalShortcut.register("F12", devtoolsFn);
-      globalShortcut.register("CommandOrControl+Shift+I", devtoolsFn);
-    } catch (e) {
-      console.warn("[shortcuts] register failed:", e);
-    }
-  };
-  const unregisterShortcuts = () => {
-    globalShortcut.unregisterAll();
-  };
-  // Register straight away (window is shown) and re-arm on focus / drop on blur.
+  configureWindowChrome(mainWindow, { isPrimary: true });
+  // The main window is created after app.whenReady, so it's the
+  // focused one — wire shortcuts immediately rather than waiting for
+  // the focus event.
   registerShortcuts();
-  mainWindow.on("focus", registerShortcuts);
-  mainWindow.on("blur", unregisterShortcuts);
-  app.on("will-quit", unregisterShortcuts);
-  // Persist size + position on close. `close` fires before `closed` and
-  // still has live bounds; `closed` would return zeros. Saving inside
-  // close (not on resize/move) avoids hammering the disk while the user
-  // is dragging the edge.
-  //
-  // β50 J6: when a print job is still in flight, block the close and
-  // ask the user whether to wait for it or cancel the spool. Adobe-
-  // style: clicking 「キャンセルして終了」kills Sumatra / tears down
-  // the FAX OS dialog before quitting. Default = wait so an accidental
-  // X click doesn't murder a long-running print.
-  mainWindow.on("close", (event) => {
-    if (isPrintInFlight()) {
-      const choice = dialog.showMessageBoxSync(mainWindow, {
-        type: "warning",
-        buttons: ["完了まで待つ", "印刷をキャンセルして終了"],
-        defaultId: 0,
-        cancelId: 0,
-        title: "印刷ジョブ進行中",
-        message: "印刷ジョブが進行中です。",
-        detail:
-          "今アプリを閉じると印刷が途中で止まる可能性があります。" +
-          "完了まで待つか、印刷をキャンセルして終了するか選んでください。",
-      });
-      if (choice === 0) {
-        // "wait" — keep the window alive. User clicks X again later
-        // (after status bar shows print completed).
-        event.preventDefault();
-        return;
-      }
-      // Cancel + quit path: kill the active spool then fall through to
-      // the normal close save / disposal flow below.
-      cancelInFlightPrint();
-    }
-    saveWindowState(mainWindow);
+}
+
+/** Spawn a sibling BrowserWindow that boots into a single tab handed
+ *  off from another window (B3-α tab tearout). The detach payload is
+ *  sent to the renderer once it has loaded; the renderer treats it as
+ *  the boot tab instead of creating a fresh blank one. */
+function spawnDetachedTabWindow(detachPayload) {
+  const focused = BrowserWindow.getFocusedWindow() ?? mainWindow;
+  // Offset the new window slightly from the source so they don't fully
+  // stack — the user can see the new window appeared.
+  const srcBounds = focused?.getBounds?.() ?? { x: 100, y: 100, width: 1100, height: 820 };
+  const child = new BrowserWindow({
+    width: srcBounds.width,
+    height: srcBounds.height,
+    x: srcBounds.x + 40,
+    y: srcBounds.y + 40,
+    title: "K-PDF3",
+    icon: join(__dirname, "..", "renderer", "vendor", "app-icon.png"),
+    frame: false,
+    webPreferences: {
+      preload: join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
   });
-  mainWindow.on("closed", () => {
-    disposeActiveDoc();
-    if (activeWorkspace) {
-      try {
-        activeWorkspace.close();
-      } catch {
-        /* ignore */
-      }
-      activeWorkspace = null;
+  child.loadFile(join(__dirname, "..", "renderer", "index.html"));
+  child.webContents.once("did-finish-load", () => {
+    if (!child.isDestroyed()) {
+      child.webContents.send("kpdf3:bootstrap-detached-tab", detachPayload);
     }
-    activeSourcePdfPath = null;
-    mainWindow = null;
   });
+  configureWindowChrome(child, { isPrimary: false });
+  return child;
 }
 
 // ---- OS-driven PDF file open (Windows / Linux / macOS) -------------------
@@ -1008,7 +1126,7 @@ ipcMain.handle("kpdf3:import-pdf", async (_, pdfPath) => {
  *             and migrate it into userData; or create a fresh workspace.
  *   4. Open the mupdf doc, cache page rows, return overlays to renderer.
  */
-ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath, tabId = null) => {
+ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null) => {
   // ADR-0015: each tab gets its own workspace handle. If a tabId is
   // passed, we register the new handle under that id (replacing any
   // existing one for the same id). Otherwise generate a fresh tabId.
@@ -1077,6 +1195,13 @@ ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath, tabId = null) => {
     sourceName,
   });
   activateTab(targetTabId);
+  // Mark this tab as owned by the calling window so window-close
+  // disposes it (B3-α multi-window).
+  const winSt = windowStateForEvent(event);
+  if (winSt) {
+    winSt.ownedTabIds.add(targetTabId);
+    winSt.activeTabId = targetTabId;
+  }
 
   // First-run migration of workspace-local stamp presets to the
   // global stamps.db. Idempotent — only fires when the global store
@@ -1099,21 +1224,55 @@ ipcMain.handle("kpdf3:open-pdf-file", async (_, pdfPath, tabId = null) => {
   };
 });
 
-ipcMain.handle("kpdf3:switch-tab", async (_, tabId) => {
+ipcMain.handle("kpdf3:switch-tab", async (event, tabId) => {
   // tabId === null/undefined → clear active (renderer just navigated
   // to an empty tab that has no main-side handle yet).
+  const winSt = windowStateForEvent(event);
   if (tabId == null) {
+    if (winSt) winSt.activeTabId = null;
     activateTab(null);
     return { ok: true, activeTabId: null };
   }
   if (!tabHandles.has(tabId)) throw new Error(`Unknown tab: ${tabId}`);
+  if (winSt) winSt.activeTabId = tabId;
   activateTab(tabId);
   return { ok: true, activeTabId };
 });
 
-ipcMain.handle("kpdf3:close-tab", async (_, tabId) => {
+ipcMain.handle("kpdf3:close-tab", async (event, tabId) => {
+  const winSt = windowStateForEvent(event);
+  if (winSt) {
+    winSt.ownedTabIds.delete(tabId);
+    if (winSt.activeTabId === tabId) winSt.activeTabId = null;
+  }
   disposeTab(tabId);
   return { ok: true, remaining: tabHandles.size, activeTabId };
+});
+
+/** B3-α: hand over a tab from the calling window to a freshly spawned
+ *  child BrowserWindow. The tab handle in `tabHandles` stays alive —
+ *  only its window affiliation changes. The renderer-side dirty state
+ *  (overlays, pendingDeletedPages, scroll, zoom, ...) is shipped in
+ *  `payload` so the new window can reproduce the live tab without
+ *  re-opening the PDF from disk. */
+ipcMain.handle("kpdf3:detach-tab", async (event, payload) => {
+  const tabId = payload?.tabId;
+  if (!tabId || !tabHandles.has(tabId)) {
+    throw new Error(`detach-tab: unknown tab ${tabId}`);
+  }
+  // Strip the tab from the source window's ownedTabIds — the child
+  // window will claim it once its renderer fires switch-tab on bootstrap.
+  const srcSt = windowStateForEvent(event);
+  if (srcSt) {
+    srcSt.ownedTabIds.delete(tabId);
+    if (srcSt.activeTabId === tabId) srcSt.activeTabId = null;
+  }
+  // Don't unset the active-* globals here — the source window's
+  // renderer will switch to a sibling tab and call switch-tab, which
+  // re-points the globals correctly. Spawning the child kicks off
+  // bootstrap which also calls switch-tab once the renderer is up.
+  spawnDetachedTabWindow(payload);
+  return { ok: true };
 });
 
 ipcMain.handle("kpdf3:open-crash-log", async () => {
@@ -1131,14 +1290,17 @@ ipcMain.handle("kpdf3:list-recent-pdfs", async () => {
   return listRecentPdfs(10);
 });
 
-ipcMain.handle("kpdf3:get-outline", async () => {
-  if (!activeWorkspace) return [];
-  return activeWorkspace.getOutline();
+ipcMain.handle("kpdf3:get-outline", async (event) => {
+  // B3-α: per-event resolution (race-safe across windows)
+  const ws = activeForEvent(event).workspace ?? activeWorkspace;
+  if (!ws) return [];
+  return ws.getOutline();
 });
 
-ipcMain.handle("kpdf3:list-bookmarks", async () => {
-  if (!activeWorkspace) return [];
-  return activeWorkspace.listBookmarks();
+ipcMain.handle("kpdf3:list-bookmarks", async (event) => {
+  const ws = activeForEvent(event).workspace ?? activeWorkspace;
+  if (!ws) return [];
+  return ws.listBookmarks();
 });
 
 ipcMain.handle("kpdf3:add-bookmark", async (_, { id, title, pageNo, parentId }) => {
@@ -1237,9 +1399,12 @@ ipcMain.handle("kpdf3:add-asset-from-file", async (_, { path: filePath, label })
   return addStampAssetFromFileGlobal(filePath, fallbackLabel);
 });
 
-ipcMain.handle("kpdf3:save-overlays", async (_, overlays) => {
-  if (!activeWorkspace) throw new Error("No active workspace");
-  activeWorkspace.saveOverlays(overlays);
+ipcMain.handle("kpdf3:save-overlays", async (event, overlays) => {
+  // B3-α: writes go to the calling window's active tab, never the global
+  // (which may have shifted to another window's active tab).
+  const ws = activeForEvent(event).workspace ?? activeWorkspace;
+  if (!ws) throw new Error("No active workspace");
+  ws.saveOverlays(overlays);
   return { savedAt: new Date().toISOString(), count: overlays.length };
 });
 
@@ -2469,7 +2634,7 @@ function defaultExportName() {
   return "export.pdf";
 }
 
-ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {
+ipcMain.handle("kpdf3:render-page", async (event, pageNo, opts) => {
   if (pageNo < 0) {
     // Synthetic (user-inserted) pages are rendered on the renderer side
     // (canvas-backed). Main has no canvas API and refuses these.
@@ -2477,33 +2642,46 @@ ipcMain.handle("kpdf3:render-page", async (_, pageNo, opts) => {
       `Page ${pageNo} is synthetic — render on the renderer side`,
     );
   }
-  if (!activeDoc) throw new Error("No PDF loaded");
-  // Look up by source-PDF pageNo (sparse-safe after page deletions).
-  const row = activePages.find((p) => p.pageNo === pageNo);
+  // B3-α: resolve via the calling window's active tab so a render
+  // request from window A always reads window A's workspace, even if
+  // the legacy active-* globals currently point at window B's. Falls
+  // back to globals for legacy single-window flows.
+  const { doc, pages } = activeForEvent(event);
+  const useDoc = doc ?? activeDoc;
+  const usePages = doc ? pages : activePages;
+  if (!useDoc) throw new Error("No PDF loaded");
+  const row = usePages.find((p) => p.pageNo === pageNo);
   if (!row) throw new Error(`Page ${pageNo} not found in workspace`);
-  return renderPageCanonical(activeDoc, row, {
+  return renderPageCanonical(useDoc, row, {
     zoom: opts?.zoom ?? 1.0,
     alpha: opts?.alpha ?? true,
   });
 });
 
-ipcMain.handle("kpdf3:get-source-meta", async () => {
-  if (!activeWorkspace) return null;
-  const meta = activeWorkspace.getSourceMeta();
+ipcMain.handle("kpdf3:get-source-meta", async (event) => {
+  // B3-α: refreshViewer reads this; per-event so a request from
+  // window A always returns A's metadata even if the global active-*
+  // refs currently point at window B's tab.
+  const { workspace, sourcePdfPath } = activeForEvent(event);
+  const ws = workspace ?? activeWorkspace;
+  const path = sourcePdfPath ?? activeSourcePdfPath;
+  if (!ws) return null;
+  const meta = ws.getSourceMeta();
   // The workspace's stored fileName reflects the PDF first imported into
   // it. With ADR-0007 fingerprint dedupe, byte-copy Save As reuses the
   // original workspace, so the stored name lags behind the file the user
   // is actually viewing. Override with the active path's basename so the
   // title bar / status updates match the user's mental model.
-  if (meta && activeSourcePdfPath) {
-    meta.fileName = basename(activeSourcePdfPath);
+  if (meta && path) {
+    meta.fileName = basename(path);
   }
   return meta;
 });
 
-ipcMain.handle("kpdf3:get-pages", async () => {
-  if (!activeWorkspace) return [];
-  return activeWorkspace.getPages();
+ipcMain.handle("kpdf3:get-pages", async (event) => {
+  const ws = activeForEvent(event).workspace ?? activeWorkspace;
+  if (!ws) return [];
+  return ws.getPages();
 });
 
 ipcMain.handle("kpdf3:set-page-deleted", async (_, pageNo, deleted) => {

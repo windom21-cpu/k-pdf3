@@ -111,6 +111,9 @@ import {
   newTabAndOpen,
   closeTabWithConfirm,
   renderTabBar,
+  transferOutTab,
+  adoptDetachedTab,
+  setOnDetachRequest,
 } from "./tab-manager.js";
 
 const { kpdf3 } = window;
@@ -322,6 +325,78 @@ initTabManager({
     || workspaceMutated,
   openPdfPath: (p) => openPdfPath(p),
   actionOpen: () => actionOpen(),
+});
+
+// B3-α tab tearout: build the detach payload from the live tab state
+// and ship it to main, then drop the tab from this window's local
+// registry. Main spawns a sibling window that adopts the tab via
+// kpdf3:bootstrap-detached-tab.
+setOnDetachRequest(async (tabId) => {
+  const tab = getAllTabs().get(tabId);
+  if (!tab) return;
+  // If detaching the active tab, snapshot live state (overlays in
+  // projectStore + workspaceMutated + pendingDeletedPages live in the
+  // renderer let aliases) before reading from the tab record.
+  if (tabId === getActiveTabId()) saveActiveTabSnapshot();
+  const payload = {
+    tabId,
+    sourcePdfPath: tab.activeSourcePdfPath ?? null,
+    sourceName: tab.activeSourceName ?? "",
+    overlays: tab.projectStore.snapshot(),
+    pendingDeletedPages: [...tab.pendingDeletedPages],
+    workspaceMutated: !!tab.workspaceMutated,
+    selectedBookmarkId: tab.selectedBookmarkId ?? null,
+    bookmarkSource: tab.bookmarkSource ?? "outline",
+    scrollPosition: tab.scrollPosition || 0,
+    zoom: tab.zoom ?? null,
+  };
+  try {
+    await kpdf3.detachTab(payload);
+  } catch (err) {
+    console.error("[detach] failed:", err);
+    wsStatus.textContent = `別ウインドウへの移動に失敗: ${err.message ?? err}`;
+    return;
+  }
+  // Local cleanup: tab is now owned by the new window; remove it from
+  // this window's tabs Map without disposing the main-side handle
+  // (transferOutTab skips the kpdf3.closeTab IPC that closeTab uses).
+  await transferOutTab(tabId);
+  wsStatus.textContent = `「${tab.activeSourceName || "(新規タブ)"}」を別ウインドウへ移動しました`;
+});
+
+// On boot in a child window spawned via spawnDetachedTabWindow, main
+// pushes the detach payload over kpdf3:bootstrap-detached-tab. Adopt
+// it as this window's active tab in place of the boot tab. (The hook
+// is harmless on the primary window — the message is never sent there.)
+kpdf3.onBootstrapDetachedTab(async (payload) => {
+  await adoptDetachedTab(payload, {
+    onAdopt: (tab, p) => {
+      // Replace renderer-side aliases with the adopted tab's stores.
+      projectStore = tab.projectStore;
+      history = tab.history;
+      pendingDeletedPages = tab.pendingDeletedPages;
+      isOpen = tab.isOpen;
+      placementMode = tab.placementMode;
+      activeSourceName = tab.activeSourceName;
+      workspaceMutated = tab.workspaceMutated;
+      // Repopulate the projectStore from the shipped overlays. Preserve
+      // dirty flag — the source window's user hadn't saved yet.
+      if (Array.isArray(p.overlays) && p.overlays.length > 0) {
+        projectStore.reset(p.overlays);
+        projectStore.markDirty();
+      }
+      setBookmarkSnapshot({
+        selectedBookmarkId: p.selectedBookmarkId ?? null,
+        bookmarkSource: p.bookmarkSource ?? "outline",
+        workspaceBookmarksCache: [],
+      });
+      currentSidebarTab = "thumbs";
+      viewer.setProjectStore(projectStore);
+      attachStoreSubscribers();
+    },
+    refreshViewerAfterAdopt: () => refreshViewer(),
+    setOpenTrue: () => setOpen(true),
+  });
 });
 
 
