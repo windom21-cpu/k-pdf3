@@ -49,9 +49,8 @@ import {
   applyFaxAsDefaultPrinter,
   restoreDefaultPrinter,
   restoreInflightDefaultPrinterSync,
-  getCachedUserDevmode,
 } from "./printer-properties-win.js";
-import { printPdfViaWinGdi } from "./printer-print-win.js";
+import { printPdfViaPostScript } from "./printer-ps-win.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1936,35 +1935,37 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   // does not stall.
   const isFax = isFaxDevice(deviceName);
   const sumatraExe = sumatraPath();
-  // β56: 案 M。Win + 非 FAX なら自前 GDI 直接印刷 (printer-print-win.js)
-  // を第一選択にする。Sumatra (β53 J8) は GDI 経路に koffi / native が
-  // 未ロードな環境や Win32 API エラーで失敗した時の fallback として
-  // 残す。FAX 経路は β42-β43 / β54 の通り Chromium silent:false に維持。
+  // β57: 経路選択を 3 段に再設計。最高品質を狙う PostScript raw 印刷
+  // (printer-ps-win.js) を第一選択にし、PS インタプリタを持たない
+  // プリンタや mupdf PS writer エラー時は Sumatra (β53 J8 経路) に
+  // フォールバック。FAX 経路は β42-β43 / β54 の Chromium silent:false
+  // を維持。
   //
-  // GDI 経路の優位性:
-  // - Sumatra の GDI vector path で日本語明朝が raster fallback を踏ん
-  //   で荒れる問題 (β55 検証) を構造から回避 — mupdf でプリンタ DPI の
-  //   ビットマップを焼いて StretchDIBits で送るので Adobe Reader 同等
-  //   の質感
-  // - DEVMODE buffer (driver-private bytes 込み) を CreateDC に直接渡せ
-  //   るので、β46-β48 のお気に入りプリセット / トレイ反映経路がより
-  //   直接的になる (SetPrinter level 9 経由の per-user 既定書換 dance
-  //   が論理的に不要 — β48 J4b は Sumatra fallback でのみ意味を持つ)
-  const useGdiFirst = process.platform === "win32" && !isFax;
+  // 案 M (Win32 GDI 直接ラスタ) はβ56 で実装したが、ユーザ実機検証で
+  // 「Sumatra と同等の荒さ」と判明 (β55=β56 質感)。ラスタ vs ベクトル
+  // の構造的限界が確定したため、印刷経路を撤回しベクトル出力 (PS) に
+  // 切替える。printer-print-win.js は β58 で削除予定。
+  //
+  // PostScript 経路の優位性:
+  // - mupdf が PDF を PostScript 文として書き出し、プリンタの PS インタ
+  //   プリタが native DPI でレンダリング → 明朝も Adobe 同等
+  // - β46-β48 の DEVMODE 設定 (duplex/tray/color/copies) は PostScript
+  //   の `setpagedevice` 経由でプリンタへ伝える (printer-ps-win.js
+  //   内で DEVMODE → PS prelude を生成)
+  // - C2360 のような複合機は PostScript エミュレータ標準装備、Adobe が
+  //   PS 経路を使っている前提で本実装はマッチするはず
+  const usePsFirst = process.platform === "win32" && !isFax;
   const canSumatra =
     process.platform === "win32"
     && !isFax
     && sumatraExe !== null;
-  // β52 J7b: 経路選択を crash.log に記録。β56 で engine 解決を 2 段階
-  // (試行→確定) にしたため、開始時の予定と終了時の確定を別エントリで
-  // 残す。"print-route" = 開始時の予定、"print-route-end" = 実エンジン。
   logCrash("print-route", {
     deviceName,
     source,
     pageCount: Array.isArray(pages) ? pages.length : 0,
     isFax,
     sumatraExe: sumatraExe ?? "(missing)",
-    useGdiFirst,
+    usePsFirst,
     canSumatra,
     copies,
     landscape,
@@ -1972,11 +1973,10 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     bin,
     color,
   });
-  // β48 J4b: push the user-modified DEVMODE (with driver-private
-  // extension intact) as per-user default. β56 GDI 経路は CreateDC に
-  // DEVMODE buffer を直接渡すので per-user 既定への push は論理的には
-  // 不要だが、Sumatra fallback / Chromium fallback の両方が per-user
-  // 既定を読む経路なので安全網として保持。
+  // β48 J4b: push the user-modified DEVMODE as per-user default for the
+  // Sumatra / Chromium fallback paths. PostScript raw 経路は印刷ジョブが
+  // spooler を経由するため per-user 既定の duplex/tray が反映される
+  // (PS prelude と二段で効くが矛盾しない)。
   let devmodeToken = null;
   if (process.platform === "win32") {
     devmodeToken = await applyUserPrinterDevmode(deviceName);
@@ -1984,29 +1984,32 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   _printInFlight = true;
   let usedEngine = null;
   try {
-    // β56: 第一選択 = GDI 直接 (Win + 非 FAX)
-    if (useGdiFirst) {
+    // 第一選択 = PostScript raw print (β57)
+    if (usePsFirst) {
       try {
-        const devmodeBuffer = getCachedUserDevmode(deviceName);
         const jobName = `K-PDF3 (${Array.isArray(pages) ? pages.length : 1} pages)`;
-        await printPdfViaWinGdi(pdfBytes, {
+        await printPdfViaPostScript(pdfBytes, {
           deviceName,
-          devmodeBuffer,
           jobName,
+          copies,
+          landscape,
+          duplex,
+          bin,
+          color,
         });
-        usedEngine = "gdi";
+        usedEngine = "postscript";
       } catch (err) {
-        logCrash("print-gdi-failed", {
+        logCrash("print-ps-failed", {
           deviceName,
           errorType: err?.message ?? String(err),
         });
         console.warn(
-          "[print] GDI path failed, falling back:",
+          "[print] PostScript path failed, falling back:",
           err?.message ?? err,
         );
       }
     }
-    // 第二選択 = Sumatra (β53 J8 経路、GDI が失敗 or 非対応な時)
+    // 第二選択 = Sumatra (β53 J8 経路)
     if (!usedEngine && canSumatra) {
       await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
       usedEngine = "sumatra";
