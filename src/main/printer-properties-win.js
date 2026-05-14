@@ -330,6 +330,20 @@ export async function openPrinterPropertiesNative(deviceName, parentHwndBuf) {
 }
 
 /**
+ * β56: 案 M (printer-print-win.js) 用に、最後に IDOK で取得した
+ * DEVMODE buffer (driver-private bytes 込み) を読み出す。GDI 経路は
+ * CreateDC(deviceName, devmodeBuffer) で直接渡すので SetPrinter level 9
+ * 経由よりも一段直接的に DEVMODE を活かせる。
+ *
+ * 戻り値: 該当 device の DEVMODE buffer。未キャッシュなら null。
+ * (Buffer は内部のコピーをそのまま返すため、呼出側は読み取り専用と
+ *  して扱う。書き換えると cache が破壊される)
+ */
+export function getCachedUserDevmode(deviceName) {
+  return _userDevmodeCache.get(deviceName) ?? null;
+}
+
+/**
  * β48 J4b: push the most recently captured user DEVMODE to the printer
  * as per-user default (SetPrinter level 9). Returns a token containing
  * the previous per-user state so the caller can restore on cleanup.
