@@ -319,6 +319,10 @@ export async function composePagesForExport({
 
     /** @type {Uint8Array | undefined} */
     let imageBytes;
+    /** β62: overlay PNG の bbox (canonical coords, point 単位)。null は
+     *  「full-page で描画」を意味する (overlay 戦略以外 or 設計上の fallback)。 */
+    /** @type {{x:number,y:number,w:number,h:number}|null} */
+    let overlayBBox = null;
     if (strategy === "full") {
       let result;
       if (isSynthetic) {
@@ -346,16 +350,20 @@ export async function composePagesForExport({
         ? await canvasToPng(canvas)
         : await canvasToJpeg(canvas, 0.95);
     } else if (strategy === "overlay") {
-      const canvas = await composeOverlayOnlyPage(row, projectStore, EXPORT_ZOOM);
+      // β62: bbox-cropped overlay。canvas は overlays の実領域だけ、
+      // bboxPt は配置位置を main に渡すための metadata。
+      const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(row, projectStore, EXPORT_ZOOM);
       // Overlay layer must be PNG to keep transparency — drawing on top of
       // the copied vector source page would otherwise paint white over it.
       imageBytes = await canvasToPng(canvas);
+      overlayBBox = bb;
     } else if (strategy === "external" && overlayCount > 0) {
       // External-source pages can also carry overlays drawn by the user
       // (e.g. a stamp pinned onto an inserted page). Author the overlay
       // layer the same way as the "overlay" strategy so main can compose.
-      const canvas = await composeOverlayOnlyPage(row, projectStore, EXPORT_ZOOM);
+      const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(row, projectStore, EXPORT_ZOOM);
       imageBytes = await canvasToPng(canvas);
+      overlayBBox = bb;
     }
     // strategy === "source": no image bytes; main copies source page as-is.
     // strategy === "external" with no overlays: no image bytes either.
@@ -376,6 +384,11 @@ export async function composePagesForExport({
       // to flow through drawPage. 0 = no extra rotation.
       userRotation: userRot,
       imageBytes,
+      // β62: overlay PNG の配置 bbox。canonical coords (top-left origin、PDF
+      // point 単位)。null の場合は main 側で「full-page (β61 までの挙動)」
+      // にフォールバック。userRot=0 でかつ overlay/external 戦略時のみ
+      // セットされる。
+      overlayBBox,
     });
     if (onProgress) onProgress({ done: i + 1, total });
   }
@@ -427,22 +440,84 @@ export async function composeSinglePageCanvas(pageRow, renderPage, projectStore,
  * @param {number} zoom
  * @returns {HTMLCanvasElement}
  */
+/**
+ * β62: 戻り値を `{ canvas, bboxPt }` に拡張。bbox は canonical
+ * coordinate (post-rotation top-left origin, PDF point 単位) で:
+ *   - 全 overlays の union 矩形にマージン (8pt) を足したもの
+ *   - ページ境界でクランプ
+ *   - overlays 無し時は null
+ * canvas は bbox サイズで作成し、ctx を translate して overlays が
+ * 正しい相対位置に描かれるようにする。
+ *
+ * 狙い: 合成 PDF 内のオーバーレイ XObject を「ページ全面」ではなく
+ * 「overlays の実領域」に縮小すること。複合機ドライバが「画像がページ
+ * 内にあると全面 raster fallback する」挙動を回避し、bbox の外は
+ * vector のまま残せる (C2360 で「細い線を太く」がスタンプ非含有ページ
+ * のみ効いていた件 β61 ユーザ報告への対策)。userRot=0 のみで効くが、
+ * 回転ページは元から少数派なので β62 ではここまで。 */
 export async function composeOverlayOnlyPage(row, projectStore, zoom = EXPORT_ZOOM) {
   const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
   const swap = userRot === 90 || userRot === 270;
-  const w = swap ? row.cropH : row.cropW;
-  const h = swap ? row.cropW : row.cropH;
+  const pageW = swap ? row.cropH : row.cropW;
+  const pageH = swap ? row.cropW : row.cropH;
+
+  const overlays = projectStore.getPageOverlays(row.pageNo);
+  if (overlays.length === 0) {
+    // 互換性のため空 1×1 canvas + bbox=null を返す (caller は bbox null
+    // で drawImage 自体を skip する設計)。
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    return { canvas, bboxPt: null };
+  }
+
+  // overlay union bbox を canonical (= post-rotation) で求める。
+  // callout は矢印が x/y/w/h の外に出るため、マージンを 8pt 足して
+  // 切れないようにする (drawOverlay 内では x/y/w/h を基点に描いている
+  // が、矢印・stroke halo は ~6pt 程度はみ出る可能性)。
+  const PAD = 8;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const ov of overlays) {
+    const x = Number.isFinite(ov.x) ? ov.x : 0;
+    const y = Number.isFinite(ov.y) ? ov.y : 0;
+    const w = Number.isFinite(ov.w) ? ov.w : 0;
+    const h = Number.isFinite(ov.h) ? ov.h : 0;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x + w > maxX) maxX = x + w;
+    if (y + h > maxY) maxY = y + h;
+  }
+  // クランプ + マージン
+  const bx = Math.max(0, minX - PAD);
+  const by = Math.max(0, minY - PAD);
+  const bxMax = Math.min(pageW, maxX + PAD);
+  const byMax = Math.min(pageH, maxY + PAD);
+  const bw = Math.max(0, bxMax - bx);
+  const bh = Math.max(0, byMax - by);
+  if (bw <= 0 || bh <= 0) {
+    // overlay が全部ページ外 (data 不整合)。互換 fallback で空 canvas。
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    return { canvas, bboxPt: null };
+  }
+
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(w * zoom);
-  canvas.height = Math.round(h * zoom);
+  canvas.width = Math.max(1, Math.round(bw * zoom));
+  canvas.height = Math.max(1, Math.round(bh * zoom));
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("composeOverlayOnlyPage: 2d context unavailable");
-  // ctx is transparent by default — exactly what we want.
-  const overlays = projectStore.getPageOverlays(row.pageNo);
+  // bbox 左上が canvas(0,0) に来るよう translate。各 drawOverlay は
+  // canonical 座標を zoom 倍するロジックなので、translate を入れる
+  // だけで透過のサブセット描画が成立する。
+  ctx.translate(-bx * zoom, -by * zoom);
   for (const ov of overlays) {
     await drawOverlay(ctx, ov, zoom);
   }
-  return canvas;
+  return {
+    canvas,
+    bboxPt: { x: bx, y: by, w: bw, h: bh },
+  };
 }
 
 export async function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOOM) {

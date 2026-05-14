@@ -1375,17 +1375,32 @@ async function assembleHybridPdf(pages, sourceBytes) {
         newPdf.addPage(copied);
         if (p.imageBytes && p.imageBytes.length > 0) {
           const overlayImg = await newPdf.embedPng(p.imageBytes);
-          // Draw the overlay across the (canonical) page bounds. pdf-lib's
-          // coordinate origin is bottom-left; the overlay PNG was authored
-          // with y-down semantics for the same canvas dimensions, and
-          // pdf-lib's drawImage flips it back to right-side-up — matches
-          // the on-screen overlay orientation.
-          copied.drawImage(overlayImg, {
-            x: 0,
-            y: 0,
-            width: p.widthPt,
-            height: p.heightPt,
-          });
+          // β62: overlayBBox があれば bbox サイズの XObject を bbox 位置に
+          // 配置する。これにより複合機ドライバが「画像がページ内 →
+          // ページ全面を raster fallback」する挙動を避け、bbox の外側は
+          // vector の本文が保持される (C2360 で「細い線を太く」が
+          // スタンプ含有ページでも効くようになる)。
+          // overlayBBox が null の場合は β61 までと同じ full-page 配置に
+          // フォールバック (互換性のため)。
+          // canonical 座標は top-left 原点、PDF は bottom-left 原点なので
+          // bbox.y を Y 軸反転で変換する: y_pdf = pageH - bbox.y - bbox.h
+          const bb = p.overlayBBox;
+          if (bb && Number.isFinite(bb.x) && Number.isFinite(bb.y)
+              && Number.isFinite(bb.w) && Number.isFinite(bb.h)
+              && bb.w > 0 && bb.h > 0) {
+            copied.drawImage(overlayImg, {
+              x: bb.x,
+              y: p.heightPt - bb.y - bb.h,
+              width: bb.w,
+              height: bb.h,
+            });
+          } else {
+            // 互換 fallback (overlayBBox 未送信 or 不正値)
+            copied.drawImage(overlayImg, {
+              x: 0, y: 0,
+              width: p.widthPt, height: p.heightPt,
+            });
+          }
         }
       } else {
         await _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, p.imageBytes);
@@ -1404,12 +1419,23 @@ async function assembleHybridPdf(pages, sourceBytes) {
         newPdf.addPage(copied);
         if (p.imageBytes && p.imageBytes.length > 0) {
           const overlayImg = await newPdf.embedPng(p.imageBytes);
-          copied.drawImage(overlayImg, {
-            x: 0,
-            y: 0,
-            width: p.widthPt,
-            height: p.heightPt,
-          });
+          // β62: bbox-cropped overlay (same as "overlay" strategy path)
+          const bb = p.overlayBBox;
+          if (bb && Number.isFinite(bb.x) && Number.isFinite(bb.y)
+              && Number.isFinite(bb.w) && Number.isFinite(bb.h)
+              && bb.w > 0 && bb.h > 0) {
+            copied.drawImage(overlayImg, {
+              x: bb.x,
+              y: p.heightPt - bb.y - bb.h,
+              width: bb.w,
+              height: bb.h,
+            });
+          } else {
+            copied.drawImage(overlayImg, {
+              x: 0, y: 0,
+              width: p.widthPt, height: p.heightPt,
+            });
+          }
         }
       } else {
         // Reuse the rotated-source helper with the external doc as source
