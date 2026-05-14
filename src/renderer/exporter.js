@@ -256,6 +256,23 @@ export const EXPORT_ZOOM = 900 / 72;
  * @param {(progress: { done: number, total: number }) => void} [args.onProgress]
  * @returns {Promise<Array<{ pageNo:number, png:Uint8Array, widthPt:number, heightPt:number }>>}
  */
+/**
+ * β63: vector 描画候補かの軽量判定 (renderer 側)。main 側
+ * isVectorEligibleOverlay とロジック同期必須。renderer は font 有無を
+ * 知らないので、種別 + rotation だけで pre-filter する。main 側で
+ * font embed 失敗時の最終判定が行われる。
+ *
+ * ζ Phase 1 (β63) は text overlay rot=0 のみ。Phase 2+ で stamp / callout
+ * /marker などを追加 (このリストを拡張)。
+ */
+function looksRendererVectorEligible(ov) {
+  if (!ov || ov.type !== "text") return false;
+  const props = ov.properties ?? {};
+  const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+  if (rot !== 0) return false;
+  return true;
+}
+
 export async function composePagesForExport({
   pages,
   projectStore,
@@ -281,7 +298,16 @@ export async function composePagesForExport({
       userRotation: row.userRotation ?? 0,
     });
 
-    const overlayCount = projectStore.getPageOverlays(row.pageNo).length;
+    const allOverlays = projectStore.getPageOverlays(row.pageNo);
+    const overlayCount = allOverlays.length;
+    // β63: ζ Phase 1。vector 化可能な overlay を抽出して main 側で
+    // pdf-lib drawText に渡す。残りは β62 raster 経路で canvas に描く。
+    // フォント有無は main 側で再判定するので、ここでは「種別 + rot=0」
+    // のみで判定する (main の isVectorEligibleOverlay と同期させること)。
+    const vectorOverlays = allOverlays.filter(looksRendererVectorEligible);
+    const rasterOverlays = allOverlays.filter(
+      (ov) => !looksRendererVectorEligible(ov),
+    );
     const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
     const sourceRot = (((row.rotation ?? 0) % 360) + 360) % 360;
     const effectiveRotation = ((sourceRot + userRot) % 360 + 360) % 360;
@@ -350,20 +376,29 @@ export async function composePagesForExport({
         ? await canvasToPng(canvas)
         : await canvasToJpeg(canvas, 0.95);
     } else if (strategy === "overlay") {
-      // β62: bbox-cropped overlay。canvas は overlays の実領域だけ、
-      // bboxPt は配置位置を main に渡すための metadata。
-      const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(row, projectStore, EXPORT_ZOOM);
-      // Overlay layer must be PNG to keep transparency — drawing on top of
-      // the copied vector source page would otherwise paint white over it.
-      imageBytes = await canvasToPng(canvas);
-      overlayBBox = bb;
+      // β62: bbox-cropped overlay。canvas は raster 系 overlay の実領域
+      // だけ、bboxPt は配置位置を main に渡すための metadata。
+      // β63: vector 系 overlay は canvas に描かず、main 側で pdf-lib
+      // drawText に渡す。rasterOverlays が空ならここで canvas 化を完全
+      // 省略 (imageBytes 未定義のまま main へ)。
+      if (rasterOverlays.length > 0) {
+        const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
+          row, rasterOverlays, EXPORT_ZOOM,
+        );
+        imageBytes = await canvasToPng(canvas);
+        overlayBBox = bb;
+      }
     } else if (strategy === "external" && overlayCount > 0) {
       // External-source pages can also carry overlays drawn by the user
       // (e.g. a stamp pinned onto an inserted page). Author the overlay
       // layer the same way as the "overlay" strategy so main can compose.
-      const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(row, projectStore, EXPORT_ZOOM);
-      imageBytes = await canvasToPng(canvas);
-      overlayBBox = bb;
+      if (rasterOverlays.length > 0) {
+        const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
+          row, rasterOverlays, EXPORT_ZOOM,
+        );
+        imageBytes = await canvasToPng(canvas);
+        overlayBBox = bb;
+      }
     }
     // strategy === "source": no image bytes; main copies source page as-is.
     // strategy === "external" with no overlays: no image bytes either.
@@ -389,6 +424,16 @@ export async function composePagesForExport({
       // にフォールバック。userRot=0 でかつ overlay/external 戦略時のみ
       // セットされる。
       overlayBBox,
+      // β63: vector 経路で main 側 pdf-lib drawText に渡す overlay 配列。
+      // 空配列 or undefined なら main 側は vector 描画 step を skip し、
+      // 旧 β62 raster 経路のみで処理する。"overlay" / "external" 戦略時
+      // のみ意味を持つ ("full" / "source" では使われない)。
+      // 各 overlay は projectStore の生 object (type, x, y, w, h,
+      // properties) をそのまま含む — main 側 overlay-pdf-draw.js が
+      // 同形式を期待する。
+      vectorOverlays: (strategy === "overlay" || strategy === "external")
+        ? vectorOverlays
+        : [],
     });
     if (onProgress) onProgress({ done: i + 1, total });
   }
@@ -454,15 +499,18 @@ export async function composeSinglePageCanvas(pageRow, renderPage, projectStore,
  * 内にあると全面 raster fallback する」挙動を回避し、bbox の外は
  * vector のまま残せる (C2360 で「細い線を太く」がスタンプ非含有ページ
  * のみ効いていた件 β61 ユーザ報告への対策)。userRot=0 のみで効くが、
- * 回転ページは元から少数派なので β62 ではここまで。 */
-export async function composeOverlayOnlyPage(row, projectStore, zoom = EXPORT_ZOOM) {
+ * 回転ページは元から少数派なので β62 ではここまで。
+ *
+ * β63: 第 2 引数を projectStore から「overlays 配列」に変更。caller が
+ * 描画対象だけを渡せるようにして、vector 化対象 overlay を canvas から
+ * 除外できるようにする (vector は別途 main 側で pdf-lib drawText 経由)。 */
+export async function composeOverlayOnlyPage(row, overlays, zoom = EXPORT_ZOOM) {
   const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
   const swap = userRot === 90 || userRot === 270;
   const pageW = swap ? row.cropH : row.cropW;
   const pageH = swap ? row.cropW : row.cropH;
 
-  const overlays = projectStore.getPageOverlays(row.pageNo);
-  if (overlays.length === 0) {
+  if (!Array.isArray(overlays) || overlays.length === 0) {
     // 互換性のため空 1×1 canvas + bbox=null を返す (caller は bbox null
     // で drawImage 自体を skip する設計)。
     const canvas = document.createElement("canvas");

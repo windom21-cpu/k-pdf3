@@ -53,6 +53,11 @@ import {
   setDevmodeCachePathResolver,
   loadDevmodeCacheFromDisk,
 } from "./printer-properties-win.js";
+import {
+  embedJapaneseFonts,
+  isVectorEligibleOverlay,
+  drawTextOverlayVector,
+} from "./overlay-pdf-draw.js";
 // β59: PS/PCL raw print 経路は撤去。C2360 で auto-detect エラー
 // (016-726 / 106-726) を引き起こすことが判明し、raw datatype で
 // ドライバを完全バイパスする経路は本機種では使えないと結論。
@@ -1334,8 +1339,43 @@ ipcMain.handle("kpdf3:pick-export-pdf", async () => {
  * @param {Uint8Array | null} sourceBytes raw source-PDF bytes
  * @returns {Promise<Buffer>}
  */
+/** β63 ζ Phase 1: ページに vector overlay 配列を描く。raster overlay
+ *  PNG が既に重ねられた直後、ページの最上位レイヤとして text overlay を
+ *  pdf-lib drawText で描画する。フォント不在 / 不適合な overlay は
+ *  isVectorEligibleOverlay で skip され (本来は renderer 側で pre-filter
+ *  済のため到達しない、二重防御)、raster 経路に乗らないと欠落するため
+ *  warning ログ。 */
+function _drawVectorOverlaysOnPage(page, p, fonts) {
+  const list = Array.isArray(p.vectorOverlays) ? p.vectorOverlays : [];
+  if (list.length === 0) return;
+  for (const ov of list) {
+    if (!isVectorEligibleOverlay(ov, fonts)) {
+      // 想定外 (renderer pre-filter が外したはず)。安全のため warn。
+      console.warn(
+        "[assembleHybridPdf] vector overlay skipped (font missing?):",
+        ov?.type, ov?.id ?? "",
+      );
+      continue;
+    }
+    try {
+      drawTextOverlayVector(page, ov, { pageHt: p.heightPt, fonts });
+    } catch (err) {
+      console.warn(
+        "[assembleHybridPdf] drawTextOverlayVector failed:",
+        err?.message ?? err,
+      );
+    }
+  }
+}
+
 async function assembleHybridPdf(pages, sourceBytes) {
   const newPdf = await PDFDocument.create();
+  // β63 ζ Phase 1: 日本語フォントを embed して vector overlay 描画に
+  // 使えるようにする。失敗時 (Win 以外 / TTF 未発見 / fsType=2) は
+  // null になり、各 overlay は raster 経路にフォールバック (はずだが、
+  // renderer 側で pre-filter 済みなので vector overlay には font が
+  // 揃っていることが前提)。
+  const overlayFonts = await embedJapaneseFonts(newPdf);
   const sourcePdf = sourceBytes
     ? await PDFDocument.load(sourceBytes, { ignoreEncryption: true })
     : null;
@@ -1402,6 +1442,11 @@ async function assembleHybridPdf(pages, sourceBytes) {
             });
           }
         }
+        // β63 ζ Phase 1: vector overlay (テキスト rot=0 のみ対応) を
+        // 上に重ねる。font 不揃いの overlay は isVectorEligibleOverlay
+        // で除外され、raster 経路に流れて canvas PNG として既に
+        // copied に描かれている (renderer 側 pre-filter)。
+        _drawVectorOverlaysOnPage(copied, p, overlayFonts);
       } else {
         await _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, p.imageBytes);
       }
@@ -1437,6 +1482,8 @@ async function assembleHybridPdf(pages, sourceBytes) {
             });
           }
         }
+        // β63: vector overlay 描画 (overlay strategy 同様)
+        _drawVectorOverlaysOnPage(copied, p, overlayFonts);
       } else {
         // Reuse the rotated-source helper with the external doc as source
         // and `externalSourcePageIndex` standing in for `sourceIdx`.

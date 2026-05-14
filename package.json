@@ -1,6 +1,6 @@
 {
   "name": "k-pdf3",
-  "version": "2.0.0-beta.62",
+  "version": "2.0.0-beta.63",
   "description": "法律実務向け PDF Workspace（K-PDF2 の全面再設計版）",
   "private": true,
   "main": "src/main/main.js",
@@ -46,6 +46,7 @@
     "electronmon": "^2.0.4"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "1.1.1",
     "better-sqlite3": "^12.0.0",
     "electron-updater": "6.8.5",
     "koffi": "2.16.2",
