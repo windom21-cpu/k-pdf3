@@ -3961,6 +3961,14 @@ function setSplitMode(on) {
   mainArea.classList.toggle("split-mode", isSplitMode);
   splitView.hidden = !isSplitMode;
   btnSplit.classList.toggle("toggled", isSplitMode);
+  // 分割画面を閉じたら、そこで選択していたページの集合も破棄する。
+  // 残しておくと、次に印刷ボタンを押した時に actionPrint の split>0
+  // 経路が走って範囲欄に偽の preselect が入る (β53 ユーザ報告)。
+  if (!isSplitMode && splitThumbSelection.pageNos.size > 0) {
+    splitThumbSelection.pageNos.clear();
+    splitThumbSelection.anchor = null;
+    refreshThumbSelectionVisuals();
+  }
 }
 
 async function actionSplitSave() {
