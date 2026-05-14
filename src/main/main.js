@@ -1857,24 +1857,23 @@ async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
   }
 
   return new Promise((resolve, reject) => {
-    // β65: Adobe Reader silent print 用 4 フラグセット (/n /s /o /h /t):
-    //   /n - 新規プロセス起動 (既存 instance と独立)
-    //   /s - splash 抑止
-    //   /o - open file dialog 抑止
-    //   /h - 非表示 (minimize) で起動 → 印刷後ウィンドウが残らない
-    //   /t pdfPath printerName - サイレント印刷 + 終了
-    // β64 では /n /t のみで /s /o /h が抜けていたため、Adobe ウィンドウが
-    // 印刷後も残るユーザ報告があった。Foxit / PDF-XChange も同等の
-    // フラグセットを受け付ける (Adobe 互換 CLI)。
-    const args = [
-      "/n",
-      "/s",
-      "/o",
-      "/h",
-      "/t",
-      pdfPath,
-      opts.deviceName,
-    ];
+    // β68: /h フラグを engine 別に条件付き化。
+    //
+    // 経緯: β65 で /h を追加 → Reader DC は意図通り minimize + exit。
+    // しかし Adobe Acrobat Pro DC は editor 設計のため /h を渡すと
+    // document タブを背景保持して **exit しない** (β67 user 実機ログで
+    // close event が発火しない事象を確認、IPC が永久 hang)。
+    //
+    // 解: Acrobat Pro (engine = "adobe-acrobat") では /h を外す。Pro は
+    // /h なしなら印刷後 exit (β64 ログで 32 秒後 exit 確認済)。代償は
+    // 印刷中に短時間 Pro ウィンドウが visible になることだが、IPC が
+    // 確実に return することの方が業務上重要。Reader DC は /h で
+    // minimize 動作するので維持。Foxit / PDF-XChange は /h で動作未
+    // 確認なので保守的に Reader 同等扱いとする。
+    const useHiddenFlag = readerInfo.engine !== "adobe-acrobat";
+    const args = useHiddenFlag
+      ? ["/n", "/s", "/o", "/h", "/t", pdfPath, opts.deviceName]
+      : ["/n", "/s", "/o",       "/t", pdfPath, opts.deviceName];
     let sp;
     try {
       sp = spawn(readerInfo.exePath, args, {
@@ -1889,14 +1888,47 @@ async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
     }
     _activePdfReaderProcess = sp;
     let stderr = "";
+    let settled = false;
     sp.stderr?.on("data", (d) => { stderr += d.toString(); });
+
+    // β68: 安全網タイムアウト。Adobe / Foxit / PDF-XChange が何らかの
+    // 理由で exit しなくなる事象 (β67 で Acrobat Pro + /h で実機確認)
+    // に備え、120 秒で強制 kill + resolve する。IPC が永久 hang して
+    // 業務全停止することを防ぐ。
+    const SPAWN_TIMEOUT_MS = 120000;
+    const timeoutTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.warn(
+        `[print] ${readerInfo.displayName} timed out after ${SPAWN_TIMEOUT_MS}ms, force kill`,
+      );
+      try { sp.kill(); } catch { /* ignore */ }
+      // タイムアウトでも子プロセスは残り得るので cleanup を即起動
+      killNewPdfReaderProcesses(readerInfo, beforePidsByExe).catch(() => {});
+      try {
+        logCrash("pdfreader-timeout", {
+          engine: readerInfo.engine,
+          timeoutMs: SPAWN_TIMEOUT_MS,
+        });
+      } catch { /* ignore */ }
+      // 印刷自体は spool に投入されている可能性が高いので success 扱い
+      _activePdfReaderProcess = null;
+      resolve({ success: true, timedOut: true });
+    }, SPAWN_TIMEOUT_MS);
+
     sp.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
       _activePdfReaderProcess = null;
       // spawn 中 / 起動失敗の本物のエラーは reject (上位は Sumatra
       // fallback に流れる)。
       reject(err);
     });
     sp.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
       _activePdfReaderProcess = null;
       // β65: Adobe Reader は印刷ジョブを spool に投入した時点で exit
       // するが、バージョン依存で exit code が非ゼロ (1 等) になる
