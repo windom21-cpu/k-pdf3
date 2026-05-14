@@ -1753,7 +1753,72 @@ let _activePdfReaderProcess = null;
  *
  * 戻り値: { success: true } または process が non-zero で reject。
  */
-function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
+/** β66: tasklist で指定 exe 名のプロセス PID 一覧を取得する。
+ *  PDF Reader の残留プロセス検出 + kill に使用。Win 限定。 */
+function getProcessPidsByName(exeName) {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") {
+      resolve([]);
+      return;
+    }
+    try {
+      const sp = spawn(
+        "tasklist",
+        ["/FI", `IMAGENAME eq ${exeName}`, "/FO", "CSV", "/NH"],
+        { windowsHide: true },
+      );
+      let out = "";
+      sp.stdout?.on("data", (d) => { out += d.toString(); });
+      sp.on("error", () => resolve([]));
+      sp.on("close", () => {
+        const pids = [];
+        for (const line of out.split(/\r?\n/)) {
+          // CSV: "Image","PID","Session","Session#","MemUsage"
+          const m = line.match(/^"[^"]*","(\d+)",/);
+          if (m) {
+            const pid = parseInt(m[1], 10);
+            if (Number.isFinite(pid)) pids.push(pid);
+          }
+        }
+        resolve(pids);
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+/** β66: 印刷起因で生まれた PDF Reader プロセスのみを kill する。
+ *  before 時点で存在していた PID は保護 (ユーザが別途開いている Adobe
+ *  ウィンドウを誤って閉じない)。失敗時は no-op (kill 失敗してもユーザの
+ *  業務は継続可能なので最善 effort)。 */
+async function killNewPdfReaderProcesses(readerInfo, beforePids) {
+  const { basename } = await import("node:path");
+  const exeName = basename(readerInfo.exePath);
+  const afterPids = await getProcessPidsByName(exeName);
+  const newPids = afterPids.filter((pid) => !beforePids.includes(pid));
+  if (newPids.length === 0) return;
+  for (const pid of newPids) {
+    try {
+      spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+        windowsHide: true,
+        detached: false,
+      });
+    } catch {
+      // ignore — best-effort cleanup
+    }
+  }
+}
+
+async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
+  // β66: spawn 前に既存 PDF Reader プロセス PID を snapshot。close 後に
+  // 差分検出して印刷起因の新規プロセスのみ taskkill する。Adobe
+  // Acrobat Pro は CLI /h フラグを完全に honor せず、子プロセスを残し
+  // てウィンドウが表示されたままになる quirk への対策。
+  const { basename } = await import("node:path");
+  const exeName = basename(readerInfo.exePath);
+  const beforePids = await getProcessPidsByName(exeName);
+
   return new Promise((resolve, reject) => {
     // β65: Adobe Reader silent print 用 4 フラグセット (/n /s /o /h /t):
     //   /n - 新規プロセス起動 (既存 instance と独立)
@@ -1812,6 +1877,14 @@ function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
           + ` (treating as success): ${stderr.trim() || "no output"}`,
         );
       }
+      // β66: 印刷起因の新規 PDF Reader プロセスを kill する。Acrobat Pro
+      // 等は CLI /h フラグを完全 honor しないため、子プロセスがウィンドウ
+      // を残す quirk への対策。before-snapshot の PID は保護されるので、
+      // ユーザが別途開いている Acrobat ウィンドウは影響を受けない。
+      // 2 秒待ってから実行: spool への投入が完全に終わるまでのバッファ。
+      setTimeout(() => {
+        killNewPdfReaderProcesses(readerInfo, beforePids).catch(() => {});
+      }, 2000);
       resolve({ success: true, exitCode: code });
     });
   });
