@@ -330,8 +330,11 @@ initTabManager({
 // B3-α tab tearout: build the detach payload from the live tab state
 // and ship it to main, then drop the tab from this window's local
 // registry. Main spawns a sibling window that adopts the tab via
-// kpdf3:bootstrap-detached-tab.
-setOnDetachRequest(async (tabId) => {
+// kpdf3:bootstrap-detached-tab. Called from three entry points:
+// the right-click menu (setOnDetachRequest), the toolbar 「別窓化」
+// button, and could be wired to a keyboard shortcut later.
+async function detachTabToNewWindow(tabId) {
+  if (!tabId) return;
   const tab = getAllTabs().get(tabId);
   if (!tab) return;
   // If detaching the active tab, snapshot live state (overlays in
@@ -362,7 +365,21 @@ setOnDetachRequest(async (tabId) => {
   // (transferOutTab skips the kpdf3.closeTab IPC that closeTab uses).
   await transferOutTab(tabId);
   wsStatus.textContent = `「${tab.activeSourceName || "(新規タブ)"}」を別ウインドウへ移動しました`;
-});
+}
+setOnDetachRequest(detachTabToNewWindow);
+
+// File menu「別ウインドウで開く...」 + toolbar 「別窓化」 require an
+// existing PDF to detach OR a fresh PDF to open in a new window.
+async function actionOpenInNewWindow() {
+  const path = await showFileBrowser({ mode: "open" });
+  if (!path) return;
+  try {
+    await kpdf3.openInNewWindow(path);
+  } catch (err) {
+    console.error("[new-window] open failed:", err);
+    wsStatus.textContent = `別ウインドウで開けませんでした: ${err.message ?? err}`;
+  }
+}
 
 // On boot in a child window spawned via spawnDetachedTabWindow, main
 // pushes the detach payload over kpdf3:bootstrap-detached-tab. Adopt
@@ -571,6 +588,10 @@ async function actionOpenPagePopup() {
   }
 }
 $("btn-page-popup")?.addEventListener("click", actionOpenPagePopup);
+$("btn-detach-tab")?.addEventListener("click", () => {
+  const id = getActiveTabId();
+  if (id) void detachTabToNewWindow(id);
+});
 
 // ---- Overlay context menu (right-click) ------------------------------
 const ctxOverlay = $("ctx-overlay");
@@ -1045,6 +1066,8 @@ function setOpen(open) {
   if (btnPageNums) btnPageNums.disabled = !open;
   const btnPagePopup = $("btn-page-popup");
   if (btnPagePopup) btnPagePopup.disabled = !open;
+  const btnDetachTab = $("btn-detach-tab");
+  if (btnDetachTab) btnDetachTab.disabled = !open;
   // (stampTemplateSel / stampColorSel removed — palette buttons are
   // managed by rebuildStampPalette + the mode-options bar visibility.)
   if (!open) {
@@ -3695,6 +3718,7 @@ const menuBar = new MenuBar({
   },
   actions: {
     open: actionOpen,
+    "open-in-new-window": actionOpenInNewWindow,
     recent: actionShowRecent,
     close: actionClose,
     save: actionSave,

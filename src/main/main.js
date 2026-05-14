@@ -517,11 +517,12 @@ function createMainWindow() {
   registerShortcuts();
 }
 
-/** Spawn a sibling BrowserWindow that boots into a single tab handed
- *  off from another window (B3-α tab tearout). The detach payload is
- *  sent to the renderer once it has loaded; the renderer treats it as
- *  the boot tab instead of creating a fresh blank one. */
-function spawnDetachedTabWindow(detachPayload) {
+/** Spawn a sibling BrowserWindow with the same chrome as the main
+ *  window. Caller is responsible for any post-load IPC (bootstrap
+ *  message, OS-open path, etc.). Used as the building block for both
+ *  tab tearout (spawnDetachedTabWindow) and "open new PDF in new
+ *  window" (kpdf3:open-in-new-window). */
+function spawnEmptyChildWindow() {
   const focused = BrowserWindow.getFocusedWindow() ?? mainWindow;
   // Offset the new window slightly from the source so they don't fully
   // stack — the user can see the new window appeared.
@@ -542,12 +543,21 @@ function spawnDetachedTabWindow(detachPayload) {
     },
   });
   child.loadFile(join(__dirname, "..", "renderer", "index.html"));
+  configureWindowChrome(child, { isPrimary: false });
+  return child;
+}
+
+/** Spawn a sibling BrowserWindow that boots into a single tab handed
+ *  off from another window (B3-α tab tearout). The detach payload is
+ *  sent to the renderer once it has loaded; the renderer treats it as
+ *  the boot tab instead of creating a fresh blank one. */
+function spawnDetachedTabWindow(detachPayload) {
+  const child = spawnEmptyChildWindow();
   child.webContents.once("did-finish-load", () => {
     if (!child.isDestroyed()) {
       child.webContents.send("kpdf3:bootstrap-detached-tab", detachPayload);
     }
   });
-  configureWindowChrome(child, { isPrimary: false });
   return child;
 }
 
@@ -1247,6 +1257,30 @@ ipcMain.handle("kpdf3:close-tab", async (event, tabId) => {
   }
   disposeTab(tabId);
   return { ok: true, remaining: tabHandles.size, activeTabId };
+});
+
+/** B3-α: open a PDF in a freshly spawned child BrowserWindow, leaving
+ *  the calling window untouched. The new window boots with an empty
+ *  boot tab; once its renderer is ready, main pushes the PDF path via
+ *  the existing kpdf3:open-pdf-by-os channel so the renderer's
+ *  openPdfSmart routes it into the boot tab (isOpen=false → openPdfPath).
+ *
+ *  Used by: ファイル → 別ウインドウで開く... menu item. (For "move
+ *  EXISTING tab to a new window" use kpdf3:detach-tab instead.) */
+ipcMain.handle("kpdf3:open-in-new-window", async (_event, pdfPath) => {
+  if (!pdfPath || typeof pdfPath !== "string") {
+    throw new Error("open-in-new-window: pdfPath missing");
+  }
+  const child = spawnEmptyChildWindow();
+  // pendingOpens-style: queue the path until the child renderer signals
+  // ready, then deliver via the OS-open channel which is already wired
+  // to openPdfSmart on the renderer side.
+  child.webContents.once("did-finish-load", () => {
+    if (!child.isDestroyed()) {
+      child.webContents.send("kpdf3:open-pdf-by-os", pdfPath);
+    }
+  });
+  return { ok: true };
 });
 
 /** B3-α: hand over a tab from the calling window to a freshly spawned
