@@ -1857,23 +1857,22 @@ async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
   }
 
   return new Promise((resolve, reject) => {
-    // β68: /h フラグを engine 別に条件付き化。
+    // β69: 戦略改訂。
     //
-    // 経緯: β65 で /h を追加 → Reader DC は意図通り minimize + exit。
-    // しかし Adobe Acrobat Pro DC は editor 設計のため /h を渡すと
-    // document タブを背景保持して **exit しない** (β67 user 実機ログで
-    // close event が発火しない事象を確認、IPC が永久 hang)。
+    // β68 までは「/h フラグの有無で Pro exit 挙動が変わる」と推測して
+    // いたが、ユーザ追加情報で β64 ログの「32 秒後 exit code 1」は
+    // 手動で Adobe を閉じた結果と判明。**Acrobat Pro DC は /n /t /h で
+    // 起動しても自然 exit しない仕様** が正解 (editor 設計のため
+    // document タブを保持し続ける)。
     //
-    // 解: Acrobat Pro (engine = "adobe-acrobat") では /h を外す。Pro は
-    // /h なしなら印刷後 exit (β64 ログで 32 秒後 exit 確認済)。代償は
-    // 印刷中に短時間 Pro ウィンドウが visible になることだが、IPC が
-    // 確実に return することの方が業務上重要。Reader DC は /h で
-    // minimize 動作するので維持。Foxit / PDF-XChange は /h で動作未
-    // 確認なので保守的に Reader 同等扱いとする。
-    const useHiddenFlag = readerInfo.engine !== "adobe-acrobat";
-    const args = useHiddenFlag
-      ? ["/n", "/s", "/o", "/h", "/t", pdfPath, opts.deviceName]
-      : ["/n", "/s", "/o",       "/t", pdfPath, opts.deviceName];
+    // 解: Pro は engine 判定で 30 秒タイマによる強制 kill を主要 exit
+    // メカニズムにする。Pro は print spool への投入が数秒で完了する
+    // ので、30 秒も待てば spool 投入は十分終わっており、強制 kill で
+    // 影響なし。
+    //
+    // /h フラグは Pro でも残す: 印刷中 30 秒間ウィンドウが minimize で
+    // 出る方が、visible で表示されるより UX 良いため。
+    const args = ["/n", "/s", "/o", "/h", "/t", pdfPath, opts.deviceName];
     let sp;
     try {
       sp = spawn(readerInfo.exePath, args, {
@@ -1891,11 +1890,17 @@ async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
     let settled = false;
     sp.stderr?.on("data", (d) => { stderr += d.toString(); });
 
-    // β68: 安全網タイムアウト。Adobe / Foxit / PDF-XChange が何らかの
-    // 理由で exit しなくなる事象 (β67 で Acrobat Pro + /h で実機確認)
-    // に備え、120 秒で強制 kill + resolve する。IPC が永久 hang して
-    // 業務全停止することを防ぐ。
-    const SPAWN_TIMEOUT_MS = 120000;
+    // β69: タイムアウト戦略を engine 別に分岐。
+    //
+    // Acrobat Pro: 自然 exit しない仕様なので、30 秒タイマで強制 kill
+    //   する。30 秒は print spool 投入には十分な余裕。これが主要 exit
+    //   経路。
+    //
+    // Reader DC / Foxit / PDF-XChange: 通常通り close event を待つ。
+    //   120 秒は安全網 (理論上 close するはずだが念のため)。
+    const SPAWN_TIMEOUT_MS = readerInfo.engine === "adobe-acrobat"
+      ? 30000
+      : 120000;
     const timeoutTimer = setTimeout(() => {
       if (settled) return;
       settled = true;
