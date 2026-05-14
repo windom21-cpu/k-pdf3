@@ -49,6 +49,8 @@ import {
   applyFaxAsDefaultPrinter,
   restoreDefaultPrinter,
   restoreInflightDefaultPrinterSync,
+  setDevmodeCachePathResolver,
+  loadDevmodeCacheFromDisk,
 } from "./printer-properties-win.js";
 // β59: PS/PCL raw print 経路は撤去。C2360 で auto-detect エラー
 // (016-726 / 106-726) を引き起こすことが判明し、raw datatype で
@@ -579,6 +581,13 @@ app.whenReady().then(() => {
     },
   ]);
   Menu.setApplicationMenu(accelMenu);
+  // β60 F2: DEVMODE 永続キャッシュのパスを resolver で渡し、保存済の
+  // ユーザ設定を _userDevmodeCache に rehydrate。これにより以降の
+  // プロパティ起動が「前回設定」を起点に開く + 印刷経路にも継承される。
+  setDevmodeCachePathResolver(() =>
+    join(app.getPath("userData"), "printer-devmode-cache.json"),
+  );
+  loadDevmodeCacheFromDisk();
   createMainWindow();
   // Wire auto-update (§17.15). No-op in dev mode (!app.isPackaged) and
   // when launched with --no-update. The initial check fires ~3s after

@@ -16,10 +16,12 @@
 // "Properties" button never goes dead.
 
 import { spawn } from "child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // DocumentProperties fMode values (printer.h).
 const DM_OUT_BUFFER = 2;
 const DM_IN_PROMPT = 4;
+const DM_IN_BUFFER = 8;
 
 // DocumentProperties return values (IDOK=1 is implicit — anything
 // that isn't IDCANCEL or negative is OK).
@@ -96,6 +98,66 @@ let _inflightDevmodeToken = null;
 // OS 既定プリンタに引き戻されてしまう問題を回避する用)。同じく
 // shutdown hook で sync 復元できるよう module 変数で持つ。
 let _inflightDefaultPrinterToken = null;
+
+// β60 F2: DEVMODE cache の永続化先パス resolver。main.js が
+// setDevmodeCachePathResolver で渡す (app.getPath をこのファイルから
+// 直 import しないため。本ファイルは backend 寄りで electron を
+// 知らない造り)。
+let _devmodeCachePathResolver = null;
+export function setDevmodeCachePathResolver(fn) {
+  _devmodeCachePathResolver = fn;
+}
+function devmodeCacheFilePath() {
+  try {
+    return _devmodeCachePathResolver?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** β60 F2: app 起動時に呼ぶ。前回までに保存された DEVMODE bytes を
+ *  _userDevmodeCache に rehydrate。失敗は warn のみ (起動継続)。 */
+export function loadDevmodeCacheFromDisk() {
+  const path = devmodeCacheFilePath();
+  if (!path || !existsSync(path)) return;
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8"));
+    if (!data || typeof data !== "object") return;
+    for (const [deviceName, b64] of Object.entries(data)) {
+      if (typeof b64 !== "string") continue;
+      try {
+        _userDevmodeCache.set(deviceName, Buffer.from(b64, "base64"));
+      } catch {
+        // skip malformed entry
+      }
+    }
+  } catch (err) {
+    console.warn(
+      "[devmode-cache] load failed:",
+      err?.message ?? err,
+    );
+  }
+}
+
+/** プロパティ IDOK のたびに呼ばれ、_userDevmodeCache の現在値を
+ *  ディスクへ書き戻す。複数プリンタ分を 1 個の JSON にまとめる
+ *  (base64 エンコードした DEVMODE bytes)。 */
+function persistDevmodeCacheToDisk() {
+  const path = devmodeCacheFilePath();
+  if (!path) return;
+  try {
+    const out = {};
+    for (const [deviceName, buf] of _userDevmodeCache.entries()) {
+      out[deviceName] = buf.toString("base64");
+    }
+    writeFileSync(path, JSON.stringify(out, null, 2));
+  } catch (err) {
+    console.warn(
+      "[devmode-cache] persist failed:",
+      err?.message ?? err,
+    );
+  }
+}
 
 async function tryLoadNative() {
   if (_nativeAttempted) return _native;
@@ -249,13 +311,25 @@ export async function openPrinterPropertiesNative(deviceName, parentHwndBuf) {
     }
     const devmodeOut = Buffer.alloc(sizeNeeded);
 
+    // β60 F1: 前回 IDOK で取得した DEVMODE buffer を pDevModeInput に
+    // 渡して driver UI を「ユーザの前回設定」を起点に開く。これを
+    // 入れないと driver UI は per-user 既定 (= K-PDF3 が印刷後の
+    // restore で元に戻している値) を表示するため、ユーザは設定が
+    // リセットされたように見える (β59 ユーザ報告)。
+    // DM_IN_BUFFER フラグを併用し、pDevModeInput を有効化する。
+    // キャッシュサイズが今回の devmodeOut サイズと一致しない場合
+    // (driver 更新など) はキャッシュを無視して null 渡しに fallback。
+    const cached = _userDevmodeCache.get(deviceName);
+    const useCached = cached && cached.length === sizeNeeded;
+    const inputDevmode = useCached ? cached : null;
+    const fMode = DM_IN_PROMPT | DM_OUT_BUFFER | (useCached ? DM_IN_BUFFER : 0);
     const ret = native.DocumentPropertiesW(
       parentHwnd,
       hPrinter,
       deviceName,
       devmodeOut,
-      null,
-      DM_IN_PROMPT | DM_OUT_BUFFER,
+      inputDevmode,
+      fMode,
     );
     // ret values:
     //   IDOK     (1) → user clicked OK
@@ -274,6 +348,9 @@ export async function openPrinterPropertiesNative(deviceName, parentHwndBuf) {
     // via SetPrinter level 9. This is the only way to forward tray /
     // option presets that the driver stores in its private extension.
     _userDevmodeCache.set(deviceName, Buffer.from(devmodeOut));
+    // β60 F2: メモリキャッシュをディスクへも書き戻して、アプリ再起動
+    // 後も driver UI が「ユーザの前回設定」を起点に開けるようにする。
+    persistDevmodeCacheToDisk();
 
     // IDOK — parse DEVMODE for the fields we propagate to the renderer.
     // β46 J3: also extract duplex / tray (dmDefaultSource) / color so
