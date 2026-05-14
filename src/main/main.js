@@ -49,7 +49,9 @@ import {
   applyFaxAsDefaultPrinter,
   restoreDefaultPrinter,
   restoreInflightDefaultPrinterSync,
+  getCachedUserDevmode,
 } from "./printer-properties-win.js";
+import { printPdfViaWinGdi } from "./printer-print-win.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -574,9 +576,6 @@ app.whenReady().then(() => {
     },
   ]);
   Menu.setApplicationMenu(accelMenu);
-  // β55: 内蔵 Sumatra に PrintAsImage = true の portable settings を
-  // ensure (Win 限定。失敗時は warn のみで起動継続)。
-  ensureSumatraPortableSettings();
   createMainWindow();
   // Wire auto-update (§17.15). No-op in dev mode (!app.isPackaged) and
   // when launched with --no-update. The initial check fires ~3s after
@@ -1652,66 +1651,15 @@ function sumatraPath() {
   return null;
 }
 
-/**
- * β55: 内蔵 Sumatra に portable settings ファイル `SumatraPDF-settings.txt`
- * を exe 隣に ensure する。狙いは `PrinterDefaults.PrintAsImage = true`
- * を効かせること —
- *   GDI vector path (デフォルト) で日本語明朝が荒れる FUJIFILM Apeos
- *   C2360 等のドライバ向けに、Sumatra に mupdf でプリンタ DPI のビット
- *   マップを焼かせてから GDI StretchBlt で送る経路へ切替える。
- * 副次効果として Sumatra は portable mode に入り、%APPDATA%\SumatraPDF
- * のスタンドアロン Sumatra 設定とは独立した動作環境になる (ユーザの
- * 自前 Sumatra 設定を K-PDF3 が読まない / 書かない)。
- *
- * β46 J3 で `-print-settings` 経由で送る per-job 設定 (copies / duplex /
- * tray / color) は PrinterDefaults より優先される Sumatra のルール
- * なので、既存の DEVMODE 抽出経路には影響しない。詳細は HANDOVER の
- * β54→β55 移行メモを参照。
- *
- * ファイルが既に K-PDF3 管理印を持っていれば no-op、なければ書き込む。
- * アップデート毎に resources が置き換わる可能性に備え起動毎に check。
- */
-const SUMATRA_SETTINGS_MAGIC = "# K-PDF3 managed Sumatra portable settings.";
-function ensureSumatraPortableSettings() {
-  if (process.platform !== "win32") return;
-  const exe = sumatraPath();
-  if (!exe) return;
-  const settingsPath = join(dirname(exe), "SumatraPDF-settings.txt");
-  let needWrite = true;
-  try {
-    if (existsSync(settingsPath)) {
-      const content = readFileSync(settingsPath, "utf8");
-      if (content.includes(SUMATRA_SETTINGS_MAGIC)) {
-        needWrite = false;
-      }
-    }
-  } catch {
-    // 読めない場合は上書きを試みる (権限なしなら writeFileSync が失敗
-    // して warn → Sumatra は %APPDATA% 側 or 既定値で動く)
-  }
-  if (!needWrite) return;
-  const body = [
-    SUMATRA_SETTINGS_MAGIC,
-    "# PrintAsImage = true で Sumatra に mupdf 経由のラスタライズを",
-    "# 強制し、日本語明朝が GDI vector 経路で raster fallback を踏んで",
-    "# 荒れる FUJIFILM Apeos C2360 等のドライバ向けに Adobe 同等の",
-    "# 出力品質を得る。物理設定 (copies/duplex/tray/color) は per-job",
-    "# `-print-settings` が優先されるので既存の DEVMODE 抽出経路には",
-    "# 影響しない。",
-    "PrinterDefaults [",
-    "  PrintAsImage = true",
-    "]",
-    "",
-  ].join("\n");
-  try {
-    writeFileSync(settingsPath, body);
-  } catch (err) {
-    console.warn(
-      "[sumatra] failed to write portable settings:",
-      err?.message ?? err,
-    );
-  }
-}
+// β55 で導入した ensureSumatraPortableSettings (PrintAsImage = true を
+// Sumatra に書かせる) は β56 検証で「Sumatra 3.6.1 のバイナリに
+// PrintAsImage という文字列が存在しない = 設定キー自体が未実装」と
+// 判明したため撤回。β56 からは案 M (printer-print-win.js) の自前 GDI
+// 直接印刷を第一選択にしているので、Sumatra 側の品質トークンに依存
+// する必要がなくなった。既存ユーザの %resources%/sumatrapdf/
+// SumatraPDF-settings.txt は Sumatra が不明キーを silently ignore する
+// だけで実害はないので、ファイル削除コードは入れず放置 (次回再
+// インストール時に消える)。
 
 /**
  * Print via the bundled SumatraPDF (Windows). SumatraPDF parses the PDF
@@ -1988,30 +1936,36 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   // does not stall.
   const isFax = isFaxDevice(deviceName);
   const sumatraExe = sumatraPath();
-  // β53 J8: byte-copy も Sumatra に流す。β3 で「Chromium silent print
-  // は FUJIFILM Apeos C2360 でハング (~55s timeout)」と分かっていて
-  // rasterized 経路だけ Sumatra に逃がしていたが、byte-copy (overlay
-  // なしの元 PDF をそのまま送信) も同じ Chromium silent 経路を通る
-  // ので同じハングが発生していた (β52 crash.log の print-route から
-  // 確認 — pageCount=0 / source=byte-copy / printer=Apeos C2360)。
-  // Sumatra は通常 PDF も問題なく扱えるので Win + 非 FAX なら常に
-  // Sumatra に統一。これで FAX 以外は Chromium silent 経路を踏まない。
-  const useSumatra =
+  // β56: 案 M。Win + 非 FAX なら自前 GDI 直接印刷 (printer-print-win.js)
+  // を第一選択にする。Sumatra (β53 J8) は GDI 経路に koffi / native が
+  // 未ロードな環境や Win32 API エラーで失敗した時の fallback として
+  // 残す。FAX 経路は β42-β43 / β54 の通り Chromium silent:false に維持。
+  //
+  // GDI 経路の優位性:
+  // - Sumatra の GDI vector path で日本語明朝が raster fallback を踏ん
+  //   で荒れる問題 (β55 検証) を構造から回避 — mupdf でプリンタ DPI の
+  //   ビットマップを焼いて StretchDIBits で送るので Adobe Reader 同等
+  //   の質感
+  // - DEVMODE buffer (driver-private bytes 込み) を CreateDC に直接渡せ
+  //   るので、β46-β48 のお気に入りプリセット / トレイ反映経路がより
+  //   直接的になる (SetPrinter level 9 経由の per-user 既定書換 dance
+  //   が論理的に不要 — β48 J4b は Sumatra fallback でのみ意味を持つ)
+  const useGdiFirst = process.platform === "win32" && !isFax;
+  const canSumatra =
     process.platform === "win32"
     && !isFax
     && sumatraExe !== null;
-  // β52 J7b: log the routing decision to crash.log so when print fails
-  // we can see at a glance what path was taken without instrumenting
-  // the user's machine. deviceName drives FAX detection; sumatra
-  // missing means the build was stripped of vendor binary; source vs
-  // useSumatra mismatch points at the !isFax || sumatraExe gate.
+  // β52 J7b: 経路選択を crash.log に記録。β56 で engine 解決を 2 段階
+  // (試行→確定) にしたため、開始時の予定と終了時の確定を別エントリで
+  // 残す。"print-route" = 開始時の予定、"print-route-end" = 実エンジン。
   logCrash("print-route", {
     deviceName,
     source,
     pageCount: Array.isArray(pages) ? pages.length : 0,
     isFax,
     sumatraExe: sumatraExe ?? "(missing)",
-    useSumatra,
+    useGdiFirst,
+    canSumatra,
     copies,
     landscape,
     duplex,
@@ -2019,28 +1973,56 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     color,
   });
   // β48 J4b: push the user-modified DEVMODE (with driver-private
-  // extension intact) as per-user default. Sumatra reads it via its
-  // own GetPrinter call → tray + preset choices land correctly even
-  // when stored in the driver's private DEVMODE extension. Chromium
-  // (FAX / byte-copy) also benefits because webContents.print's OS
-  // dialog uses the same per-user default. Best-effort: null token =
-  // no cached DEVMODE → run without override.
+  // extension intact) as per-user default. β56 GDI 経路は CreateDC に
+  // DEVMODE buffer を直接渡すので per-user 既定への push は論理的には
+  // 不要だが、Sumatra fallback / Chromium fallback の両方が per-user
+  // 既定を読む経路なので安全網として保持。
   let devmodeToken = null;
   if (process.platform === "win32") {
     devmodeToken = await applyUserPrinterDevmode(deviceName);
   }
   _printInFlight = true;
+  let usedEngine = null;
   try {
-    if (useSumatra) {
-      await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
-    } else {
-      await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
+    // β56: 第一選択 = GDI 直接 (Win + 非 FAX)
+    if (useGdiFirst) {
+      try {
+        const devmodeBuffer = getCachedUserDevmode(deviceName);
+        const jobName = `K-PDF3 (${Array.isArray(pages) ? pages.length : 1} pages)`;
+        await printPdfViaWinGdi(pdfBytes, {
+          deviceName,
+          devmodeBuffer,
+          jobName,
+        });
+        usedEngine = "gdi";
+      } catch (err) {
+        logCrash("print-gdi-failed", {
+          deviceName,
+          errorType: err?.message ?? String(err),
+        });
+        console.warn(
+          "[print] GDI path failed, falling back:",
+          err?.message ?? err,
+        );
+      }
     }
+    // 第二選択 = Sumatra (β53 J8 経路、GDI が失敗 or 非対応な時)
+    if (!usedEngine && canSumatra) {
+      await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
+      usedEngine = "sumatra";
+    }
+    // 最終 = Chromium silent / silent:false 経路 (FAX 専用、または上記
+    // 2 つが両方使えない非 Win 環境など)
+    if (!usedEngine) {
+      await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
+      usedEngine = "chromium";
+    }
+    logCrash("print-route-end", { engine: usedEngine, deviceName });
   } finally {
     _printInFlight = false;
     if (devmodeToken) await restoreUserPrinterDevmode(devmodeToken);
   }
-  return { tempPath, deviceName, copies, landscape };
+  return { tempPath, deviceName, copies, landscape, engine: usedEngine };
 });
 
 /**
