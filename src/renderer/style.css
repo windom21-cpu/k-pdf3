@@ -1474,6 +1474,9 @@ button.toggled {
   border: 1px solid #888888;
   user-select: none;
   cursor: pointer;
+  /* β76: .thumb-size-badge (position: absolute) のアンカー。サイドバー
+   * サムネと同じ規則で非 A4 バッジを右上に出すため。 */
+  position: relative;
 }
 .split-thumb.is-selected {
   outline: 3px dashed #000080;

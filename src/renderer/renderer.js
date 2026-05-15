@@ -729,7 +729,9 @@ function dispatchOverlayCtx(target) {
       wsStatus.textContent = `${ov.type} をコピーしました`;
     }
   } else if (action === "paste") {
-    pasteOverlayFromClipboard();
+    // β76: 右クリック「貼り付け」も OS 画像を優先 (paste event は
+    // Ctrl+V でしか発火しないので、こちらは navigator.clipboard.read)。
+    void tryPasteFromAnyClipboard();
   }
 }
 
@@ -760,6 +762,158 @@ function pasteOverlayFromClipboard() {
   if (cmd._snapshot) setSelectedOverlay(cmd._snapshot.id);
   wsStatus.textContent = `${src.type} を貼り付けました`;
 }
+
+// ---- OS clipboard image paste ----------------------------------------
+//
+// 「画面キャプチャ → 貼り付け」「ブラウザの画像を右クリック → コピー →
+// 貼り付け」 等を K-PDF3 のページ上に画像 stamp として挿入する経路。
+// addAsset は workspace SQLite に永続化、type:"stamp" + kind:"image" で
+// 既存の resize handle / drag / export 経路にそのまま乗る。
+
+const PASTE_IMAGE_MAX_BYTES = 8 * 1024 * 1024; // 8MB — 画面 cap で十分
+const PASTE_IMAGE_MAX_WIDTH_PT = 200;          // 初期幅上限。ハンドルで拡縮可
+
+/** Insert a clipboard image Blob as an image-stamp overlay centered on
+ *  the visible page. Used by both the document paste event handler and
+ *  the right-click「貼り付け」menu (when OS clipboard has an image). */
+async function pasteImageBlob(blob, mime) {
+  if (!isOpen) {
+    wsStatus.textContent = "PDF を開いてから貼り付けてください";
+    return;
+  }
+  if (blob.size > PASTE_IMAGE_MAX_BYTES) {
+    wsStatus.textContent = `画像が大きすぎます (${Math.round(blob.size / 1024 / 1024)}MB > 8MB)`;
+    return;
+  }
+  // Natural size 計測 — Image() は async load。終わったら URL を解放。
+  const blobUrl = URL.createObjectURL(blob);
+  let imgW = 0, imgH = 0;
+  try {
+    await new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => { imgW = img.naturalWidth; imgH = img.naturalHeight; res(); };
+      img.onerror = rej;
+      img.src = blobUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(blobUrl);
+  }
+  if (!imgW || !imgH) {
+    wsStatus.textContent = "画像のサイズを取得できませんでした";
+    return;
+  }
+  const ab = await blob.arrayBuffer();
+  const u8 = new Uint8Array(ab);
+  const asset = await kpdf3.addAsset({
+    mime: mime || blob.type || "image/png",
+    blob: u8,
+    width: imgW,
+    height: imgH,
+    label: `clipboard-${Date.now()}`,
+  });
+  if (!asset?.id) {
+    wsStatus.textContent = "画像の登録に失敗しました";
+    return;
+  }
+  // 配置先ページの canonical 寸法 (pre-rotation) に userRotation で
+  // swap を反映。viewer.currentPage は scroll で更新される値。
+  const pageNo = viewer.currentPage || 1;
+  const row = viewer._pages?.find((p) => p.pageNo === pageNo);
+  const cw = row?.cropW ?? row?.width ?? 595;
+  const ch = row?.cropH ?? row?.height ?? 842;
+  const userRot = (((row?.userRotation ?? 0) % 360) + 360) % 360;
+  const swap = userRot === 90 || userRot === 270;
+  const pageW = swap ? ch : cw;
+  const pageH = swap ? cw : ch;
+  // 1px = 1pt (72dpi 換算) の素朴 mapping。スマホ写真等の巨大画像は
+  // PASTE_IMAGE_MAX_WIDTH_PT で頭打ち。さらにページ高 80% 超なら高さ基準。
+  const ratio = imgH / imgW;
+  let w = Math.min(PASTE_IMAGE_MAX_WIDTH_PT, imgW);
+  let h = w * ratio;
+  if (h > pageH * 0.8) {
+    h = pageH * 0.8;
+    w = h / ratio;
+  }
+  const x = Math.max(0, (pageW - w) / 2);
+  const y = Math.max(0, (pageH - h) / 2);
+  const cmd = new AddOverlayCommand(projectStore, {
+    pageNo,
+    type: "stamp",
+    x, y, w, h,
+    zOrder: 0,
+    properties: {
+      kind: "image",
+      stampKind: "image",
+      assetId: asset.id,
+      label: "clipboard-image",
+      text: "",
+      color: "",
+      frame: "none",
+      fontSize: 14,
+      rotation: 0,
+    },
+  });
+  history.execute(cmd);
+  if (cmd._snapshot) setSelectedOverlay(cmd._snapshot.id);
+  wsStatus.textContent = `画像を貼り付けました (${Math.round(w)}×${Math.round(h)}pt, ${imgW}×${imgH}px)`;
+}
+
+/** OS クリップボードに画像があれば貼り付け、なければ内部 _overlayClipboard
+ *  にフォールバック。右クリック「貼り付け」とメニューバー「貼り付け」
+ *  はこちらを呼ぶ (paste event は Ctrl+V ネイティブ経路で別途発火)。 */
+async function tryPasteFromAnyClipboard() {
+  // navigator.clipboard.read は permission 要 / async API。Electron では
+  // 通常許可されているが念のため try で囲んでフォールバック。
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      for (const type of item.types) {
+        if (/^image\/(png|jpe?g|webp)$/i.test(type)) {
+          const blob = await item.getType(type);
+          await pasteImageBlob(blob, type);
+          return;
+        }
+      }
+    }
+  } catch {
+    // permission denied / API unsupported — fall through to internal.
+  }
+  if (_overlayClipboard) {
+    pasteOverlayFromClipboard();
+  } else {
+    wsStatus.textContent = "貼り付けるものがありません";
+  }
+}
+
+// Document-level paste event: Ctrl+V のブラウザネイティブ経路で発火。
+// clipboardData.items から画像を直接取れるので、navigator.clipboard.read
+// の permission ダイアログを避けられて高速。
+document.addEventListener("paste", (e) => {
+  if (!isOpen) return;
+  // 入力欄 / inline-edit 中は素通し (テキスト paste をブラウザに任せる)。
+  if (viewer._editingId) return;
+  const t = e.target;
+  if (t) {
+    const tag = (t.tagName ?? "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || t.isContentEditable) return;
+  }
+  const items = e.clipboardData?.items;
+  if (items) {
+    for (const it of items) {
+      if (it.kind === "file" && /^image\/(png|jpe?g|webp)$/i.test(it.type)) {
+        e.preventDefault();
+        const file = it.getAsFile();
+        if (file) void pasteImageBlob(file, it.type);
+        return;
+      }
+    }
+  }
+  // 画像なし → 内部 overlay クリップボードへフォールバック。
+  if (_overlayClipboard) {
+    e.preventDefault();
+    pasteOverlayFromClipboard();
+  }
+});
 
 ctxOverlay.addEventListener("pointerdown", (e) => {
   // Stop the pointerdown so the document-level listener below doesn't
@@ -1080,11 +1234,10 @@ document.addEventListener("keydown", (e) => {
     };
     e.preventDefault();
     wsStatus.textContent = `${ov.type} をコピーしました`;
-  } else if (key === "v") {
-    if (!_overlayClipboard) return;
-    e.preventDefault();
-    pasteOverlayFromClipboard();
   }
+  // β76: Ctrl+V は preventDefault せず、ブラウザネイティブの paste event
+  // に任せる (上の document.addEventListener("paste") が一括処理)。
+  // OS クリップボード画像があればそれを優先、なければ _overlayClipboard。
 });
 
 /** Attach a contextmenu handler on a thumb element so right-click pops
@@ -1950,6 +2103,17 @@ function createThumbElement(pageRow, visualPos) {
     : String(pageRow.pageNo);
   lbl.textContent = pageRow.isSynthetic ? `✎ ${labelNum}` : labelNum;
   wrap.appendChild(lbl);
+  // Paper-size badge for non-A4 sources (A3/A5/B4/B5/Letter/Legal) —
+  // sidebar サムネと同じ規則。分割画面でも混在 PDF を一目で見分けたい。
+  const _spCw = pageRow.cropW ?? pageRow.width ?? 595;
+  const _spCh = pageRow.cropH ?? pageRow.height ?? 842;
+  const _spSizeName = detectPaperSize(_spCw, _spCh);
+  if (_spSizeName && _spSizeName !== "A4") {
+    const badge = document.createElement("span");
+    badge.className = "thumb-size-badge";
+    badge.textContent = _spSizeName;
+    wrap.appendChild(badge);
+  }
   wrap.addEventListener("click", (e) => {
     const ordered = getOrderedThumbPageNos(splitFlow, ".split-thumb[data-page-no]");
     handleThumbSelectionClick(splitThumbSelection, ordered, pageRow.pageNo, e);
