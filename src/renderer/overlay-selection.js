@@ -95,22 +95,26 @@ export function handleOverlayClick(id, mods = {}) {
   //   Ctrl/Cmd+click → toggle membership
   //   Shift+click    → reading-order range from anchor to here
   //   plain click    → replace (single)
-  // Inline-edit is suppressed when entering / staying in multi-select
-  // mode — otherwise Ctrl+click would immediately drop into edit mode
-  // on the new overlay, defeating the purpose.
+  // β74: シングルクリック = 選択のみ。テキスト等の編集モード入りは
+  //   ダブルクリック (handleOverlayDblclick) に分離した。新規プレース
+  //   直後の auto-edit (overlay-placement.js setTimeout enterTextEdit)
+  //   は変更なし — 置いた直後はそのまま打てるべき。
   let mode = "replace";
   if (mods.ctrl || mods.meta) mode = "toggle";
   else if (mods.shift) mode = "range";
-  const wasMultiSelected = selectedOverlayIds.size > 1;
   selectOverlay(id, mode);
-  if (selectedOverlayIds.size > 1 || wasMultiSelected) {
-    // Don't enter inline edit when the user is building or shrinking a
-    // multi-selection. Selection alone is the visible outcome.
-    return;
-  }
-  // For text/stamp/callout this enters inline edit; for redaction /
-  // marker / image overlays it short-circuits inside enterTextEdit so
-  // selection alone is the visible result.
+}
+
+/** ダブルクリック = テキスト/吹き出し/テキスト stamp の編集モード入り。
+ *  redaction / marker / image stamp は enterTextEdit 内で短絡されるので
+ *  実害なし (選択は handleOverlayClick 側で済んでいる)。 */
+export function handleOverlayDblclick(id, _mods = {}) {
+  if (!_isOpen()) return;
+  // multi-select 中は編集に入らない (まず単一選択にしてから編集が直感的)。
+  if (selectedOverlayIds.size > 1) return;
+  // dblclick は直前の 2 回の click ですでに id が選択されているはず
+  // だが、念のため単一選択に正規化してから編集に入る。
+  selectOverlay(id, "replace");
   _viewer.enterTextEdit(id);
 }
 

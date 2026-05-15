@@ -38,6 +38,7 @@ import {
 import {
   initOverlaySelection,
   handleOverlayClick,
+  handleOverlayDblclick,
   selectOverlay,
   setSelectedOverlay,
   clearSelection,
@@ -169,6 +170,7 @@ const viewer = new Viewer(viewerContainer, {
   projectStore,
   onPagePointerDown: handlePagePointerDown,
   onOverlayClick: handleOverlayClick,
+  onOverlayDblclick: handleOverlayDblclick,
   onTextEditCommit: handleTextEditCommit,
   onOverlayDragEnd: handleOverlayDragEnd,
   onOverlayResizeEnd: handleOverlayResizeEnd,
