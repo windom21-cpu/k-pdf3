@@ -403,6 +403,11 @@ const registerShortcuts = () => {
   }
 };
 const unregisterShortcuts = () => {
+  // β74: 2nd instance が singleton lock を取れず app.quit() 経由で
+  // will-quit に入った時、whenReady 未到達のため globalShortcut が
+  // "cannot be used before the app is ready" で throw する。crash.log
+  // に "PDF 開閉繰り返しでクラッシュ" として記録され続けていた症状の根治。
+  if (!app.isReady()) return;
   globalShortcut.unregisterAll();
 };
 app.on("will-quit", unregisterShortcuts);
