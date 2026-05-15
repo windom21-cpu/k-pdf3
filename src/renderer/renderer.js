@@ -3396,12 +3396,21 @@ function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
       return;
     }
     showBusy("挿入", "外部 PDF を取り込み中...", 0);
+    // β78: subscribe to per-page progress so the busy modal updates
+    // through the 20-30s heavy-PDF insertion instead of looking frozen.
+    const unsubProgress = kpdf3.onInsertPdfProgress?.((d) => {
+      const total = d?.total ?? 0;
+      const i = d?.i ?? 0;
+      const pct = total > 0 ? Math.round(((i + 1) / total) * 100) : 0;
+      updateBusy(`外部 PDF を取り込み中... (${i + 1} / ${total})`, pct);
+    });
     try {
       const r = await kpdf3.addInsertedPdfPages({
         afterPageNo,
         afterKey,
         externalPath: path,
       });
+      unsubProgress?.();
       hideBusy();
       markWorkspaceMutated();
       await refreshViewer();
@@ -3412,6 +3421,7 @@ function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
       const n = r?.syntheticPageNos?.length ?? 0;
       wsStatus.textContent = `${n} ページを挿入しました`;
     } catch (err) {
+      unsubProgress?.();
       hideBusy();
       console.error("[insert-pdf] failed", err);
       wsStatus.textContent = `挿入失敗: ${err.message ?? err}`;

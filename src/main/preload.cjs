@@ -106,6 +106,11 @@ contextBridge.exposeInMainWorld("kpdf3", {
   reorderAllPages:    (orderedKeys) => ipcRenderer.invoke("kpdf3:reorder-all-pages", orderedKeys),
   addInsertedPage:    (opts)    => ipcRenderer.invoke("kpdf3:add-inserted-page", opts),
   addInsertedPdfPages:(opts)    => ipcRenderer.invoke("kpdf3:add-inserted-pdf-pages", opts),
+  onInsertPdfProgress:(cb)      => {
+    const h = (_, d) => cb(d);
+    ipcRenderer.on("kpdf3:insert-pdf-progress", h);
+    return () => ipcRenderer.removeListener("kpdf3:insert-pdf-progress", h);
+  },
   getInsertedPageImage:(id)     => ipcRenderer.invoke("kpdf3:get-inserted-page-image", id),
   getInsertedSourcePdf:(id)     => ipcRenderer.invoke("kpdf3:get-inserted-source-pdf", id),
   renderInsertedSourcePage:(opts) => ipcRenderer.invoke("kpdf3:render-inserted-source-page", opts),

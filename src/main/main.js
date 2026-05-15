@@ -2944,10 +2944,12 @@ ipcMain.handle("kpdf3:remove-inserted-page", async (_, syntheticPageNo) => {
  * Import every page of an external PDF file as image-backed inserted
  * pages, anchored at `afterPageNo`.
  *
- * β31: dual-track storage —
- *   - image_blob (300 dpi PNG): viewer-preview path. Bumped from 144 dpi
- *     to make the on-screen preview sharp; printer/export does NOT use
- *     this when source_pdf_id is available.
+ * β31/β34/β78: dual-track storage —
+ *   - image_blob (96 dpi PNG): viewer fallback. β31 で 300 dpi に上げた
+ *     が、β34 で vector path (`kpdf3:render-inserted-source-page`) が
+ *     入って以降は viewer プレビューも vector が主経路。image_blob は
+ *     vector 失敗時のフォールバックに縮退したので β78 で 96 dpi まで
+ *     下げ、挿入時のメモリ・時間・workspace 容量を圧縮。
  *   - inserted_source_pdfs (vector): the entire external PDF is stored
  *     once (dedup by SHA-256). Exporter/print uses copyPages on this
  *     blob so vector text + lines stay crisp at any output resolution.
@@ -2957,7 +2959,7 @@ ipcMain.handle("kpdf3:remove-inserted-page", async (_, syntheticPageNo) => {
  */
 ipcMain.handle(
   "kpdf3:add-inserted-pdf-pages",
-  async (_, { afterPageNo, afterKey, externalPath }) => {
+  async (event, { afterPageNo, afterKey, externalPath }) => {
     if (!activeWorkspace) throw new Error("No active workspace");
     if (!externalPath) throw new Error("externalPath missing");
     const buf = readFileSync(externalPath);
@@ -3015,15 +3017,38 @@ ipcMain.handle(
       }
     }
     const synthetic = [];
+    const sender = event?.sender;
     try {
       const count = doc.countPages();
       for (let i = 0; i < count; i++) {
+        // β78: yield to the event loop between pages so the UI thread
+        // can answer renderer IPC pings / heartbeats. Without this the
+        // 25-page external PDF case blocks main for ~20-30s and the OS
+        // pops up a "Not responding" dialog even though we finish fine.
+        // The setImmediate gap is ~1ms — negligible vs the 0.5-1s per
+        // page raster.
+        if (i > 0) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        if (sender && !sender.isDestroyed()) {
+          try {
+            sender.send("kpdf3:insert-pdf-progress", { i, total: count });
+          } catch { /* renderer gone, keep going */ }
+        }
         const page = doc.loadPage(i);
         try {
           const bounds = page.getBounds();
           const pdfW = bounds[2] - bounds[0];
           const pdfH = bounds[3] - bounds[1];
-          const ZOOM = 300 / 72; // 300 dpi viewer preview
+          // β78: 300 → 96 dpi. β31 で 300 dpi に上げたのは vector path
+          // 不在時に viewer プレビューを鮮明化する目的だったが、β34 で
+          // `kpdf3:render-inserted-source-page` が入って以降は image_blob
+          // は vector 失敗時のフォールバック専用に縮退。実用上の鮮明さは
+          // vector path が担保するので、ここはフォールバック用の軽量
+          // サムネで十分。30 MB × 25 ページ級の外部 PDF を挿入する典型
+          // 操作で raster 時間 ~7x 短縮 + ピーク pixmap 26 → 2.7 MB
+          // (OOM 回避) + workspace 増分 25 MB → 5 MB の三重メリット。
+          const ZOOM = 96 / 72; // 96 dpi fallback thumbnail
           const matrix = mupdf.Matrix.scale(ZOOM, ZOOM);
           const pixmap = page.toPixmap(
             matrix,
