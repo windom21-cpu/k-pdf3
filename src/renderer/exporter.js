@@ -134,19 +134,34 @@ async function getTintedAssetCanvas(assetId, color) {
 function paintGlyphRun(ctx, text, x, y, color, fontSize, opts = {}) {
   const stroke = opts.stroke !== false; // default true (legacy)
   const bold = opts.bold !== false; // default true for stamp / 印影 compat
+  const hairline = opts.hairline === true; // β76: 明朝/serif 専用の極細 stroke
   ctx.save();
   ctx.fillStyle = color;
   if (stroke) {
     ctx.strokeStyle = color;
-    // Plain text: 0.03 keeps glyphs readable as thin but covers AA halo so
-    // printed pages don't look gray. Bold: 0.06 for visibly thicker text.
-    ctx.lineWidth = fontSize * (bold ? 0.06 : 0.03);
+    // Bold: 0.06 (見た目はっきり太字)。Plain: 0.03 (AA halo を覆う最小、
+    // β34 値)。Hairline: 0.02 (β76、明朝の hairline AA halo が紙で
+    // gray dot になるのを防ぐ。0.03 は「ちょっと太く感じる」と言われる
+    // ので 1/3 細くした、太字との中間ではなく非太字の薄い補強)。
+    let widthFactor;
+    if (bold) widthFactor = 0.06;
+    else if (hairline) widthFactor = 0.02;
+    else widthFactor = 0.03;
+    ctx.lineWidth = fontSize * widthFactor;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     ctx.strokeText(text, x, y);
   }
   ctx.fillText(text, x, y);
   ctx.restore();
+}
+
+/** β76: serif/mincho 系フォントは hairline がほそく、900dpi raster でも
+ *  AA halo がトナーに乗らず紙で薄く見える。bold OFF + これらのフォント
+ *  に限り、極細 overstroke (0.02×fontSize) で補強する。
+ *  Gothic / sans は元々ストロークが太いので何もしない (β73 状態を維持)。 */
+function _needsHairlineStroke(fontId) {
+  return fontId === "mincho" || fontId === "serif";
 }
 
 /**
@@ -644,7 +659,14 @@ async function drawOverlay(ctx, ov, zoom) {
     const text = props.text ?? "";
     const lineHeight = fontSize * (props.lineHeight ?? 1);
     const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
-    const boldOpt = { bold: !!props.bold, stroke: !!props.bold };
+    // β76: 明朝/serif で bold OFF のときだけ極細 stroke で補強。bold ON
+    // のときは従来どおり 0.06 stroke。Gothic/sans は β73 状態 (no stroke)。
+    const _hairline = !props.bold && _needsHairlineStroke(props.fontId);
+    const boldOpt = {
+      bold: !!props.bold,
+      stroke: !!props.bold || _hairline,
+      hairline: _hairline,
+    };
     if (rot === 0) {
       const lines = wrapCanvasText(ctx, text, w);
       for (let i = 0; i < lines.length; i++) {
@@ -847,7 +869,13 @@ async function drawOverlay(ctx, ov, zoom) {
     const lines = wrapCanvasText(ctx, text, w - padX * 2);
     // β73: 吹き出し内テキストもテキスト overlay と同じく bold OFF 時の
     // stroke を opt-out (詳細は drawOverlay text 経路の β73 コメント参照)。
-    const boldOpt = { bold: !!props.bold, stroke: !!props.bold };
+    // β76: 明朝/serif のときだけ極細 stroke (テキスト overlay と同じ規則)。
+    const _hairline = !props.bold && _needsHairlineStroke(props.fontId);
+    const boldOpt = {
+      bold: !!props.bold,
+      stroke: !!props.bold || _hairline,
+      hairline: _hairline,
+    };
     for (let i = 0; i < lines.length; i++) {
       paintGlyphRun(ctx, lines[i], x + padX, y + padY + i * lineHeight, color, fontSize, boldOpt);
     }
