@@ -2957,7 +2957,7 @@ ipcMain.handle("kpdf3:remove-inserted-page", async (_, syntheticPageNo) => {
  */
 ipcMain.handle(
   "kpdf3:add-inserted-pdf-pages",
-  async (_, { afterPageNo, externalPath }) => {
+  async (_, { afterPageNo, afterKey, externalPath }) => {
     if (!activeWorkspace) throw new Error("No active workspace");
     if (!externalPath) throw new Error("externalPath missing");
     const buf = readFileSync(externalPath);
@@ -2973,6 +2973,47 @@ ipcMain.handle(
       new Uint8Array(buf),
       "application/pdf",
     );
+    // β77: when `afterKey` is supplied we anchor on the *visible* page
+    // just before the drop target (positive = source pageNo, negative =
+    // synthetic key, 0 = before-everything). Reorder operations can move
+    // synth rows away from their slot anchor, so the legacy
+    // `MAX(order_in_slot)+1` strategy no longer matches the user's
+    // visual gap; we compute explicit display_orders in [lower, upper)
+    // around the visible neighbours instead.
+    let lower = null;
+    let upper = null;
+    let resolvedAfterPageNo = typeof afterPageNo === "number" ? afterPageNo : 0;
+    if (typeof afterKey === "number") {
+      const pages = activeWorkspace.getPages();
+      let idx;
+      if (afterKey === 0) {
+        idx = -1;
+      } else {
+        idx = pages.findIndex((p) => p.pageNo === afterKey);
+        if (idx < 0) {
+          throw new Error(
+            `add-inserted-pdf-pages: afterKey ${afterKey} not in visible pages`,
+          );
+        }
+      }
+      lower = idx >= 0 ? pages[idx].orderKey : 0;
+      upper =
+        idx + 1 < pages.length ? pages[idx + 1].orderKey : lower + 1;
+      // Derive the slot anchor (after_page_no column) from the visible
+      // neighbour. Even with explicit display_order set, after_page_no
+      // is kept consistent so listInsertedPages's secondary sort and any
+      // future legacy fallback stay sensible.
+      if (typeof afterPageNo !== "number") {
+        if (afterKey > 0) {
+          resolvedAfterPageNo = afterKey;
+        } else if (afterKey < 0) {
+          const synthRow = pages[idx];
+          resolvedAfterPageNo = synthRow.syntheticAfterPageNo ?? 0;
+        } else {
+          resolvedAfterPageNo = 0;
+        }
+      }
+    }
     const synthetic = [];
     try {
       const count = doc.countPages();
@@ -2998,8 +3039,14 @@ ipcMain.handle(
           } finally {
             pixmap.destroy?.();
           }
+          // Spread n pages evenly across (lower, upper) so subsequent
+          // inserts at the same gap retain headroom on both sides.
+          let displayOrder = null;
+          if (lower != null && upper != null) {
+            displayOrder = lower + ((i + 1) / (count + 1)) * (upper - lower);
+          }
           const syntheticPageNo = activeWorkspace.addInsertedImagePage({
-            afterPageNo,
+            afterPageNo: resolvedAfterPageNo,
             imageBlob: Buffer.from(pngBytes),
             imageW: imgW,
             imageH: imgH,
@@ -3007,6 +3054,7 @@ ipcMain.handle(
             height: pdfH,
             sourcePdfId,
             sourcePageIndex: i,
+            displayOrder,
           });
           synthetic.push(syntheticPageNo);
         } finally {

@@ -2000,8 +2000,9 @@ function rebuildSplitUI(pages) {
     const row = document.createElement("div");
     row.className = "split-thumbs-row";
     // Leading insert gap (always present). Anchored to the nearest
-    // preceding source page, or 0 when this part starts at the very
-    // beginning of the document.
+    // preceding source page (for legacy afterPageNo slot semantics) and
+    // to the page immediately before the gap (for the β77 visual-
+    // position display_order computation).
     {
       let anchor = 0;
       for (let k = part.start - 1; k >= 0; k--) {
@@ -2010,7 +2011,9 @@ function rebuildSplitUI(pages) {
           break;
         }
       }
-      row.appendChild(makeSplitInsertGap(anchor));
+      const afterKey =
+        part.start === 0 ? 0 : pages[part.start - 1].pageNo;
+      row.appendChild(makeSplitInsertGap(anchor, null, afterKey));
     }
     for (let i = part.start; i <= part.end; i++) {
       // Visual position passed in 1-indexed across the WHOLE document
@@ -2032,7 +2035,13 @@ function rebuildSplitUI(pages) {
       } else {
         anchor = pages[i].pageNo;
       }
-      cell.appendChild(makeSplitInsertGap(anchor, orderInSlot));
+      // β77: afterKey = the page right before this gap (positive for
+      // source, negative for synth). Drives the visual-position
+      // display_order so the drop lands exactly between pages[i] and
+      // pages[i+1] regardless of reorder state.
+      cell.appendChild(
+        makeSplitInsertGap(anchor, orderInSlot, pages[i].pageNo),
+      );
       row.appendChild(cell);
       if (i < part.end) {
         // Inner separator — click to split here.
@@ -3240,10 +3249,11 @@ function rebuildThumbs(pages) {
 
   // Insert "+" gap before page 1 (afterPageNo = 0). Only for source-PDF
   // pages — gaps are anchored to the prior source page, so they sit
-  // before the first source page or after each one.
+  // before the first source page or after each one. afterKey = 0
+  // signals "before everything" to the β77 drop handler.
   const firstSrcRow = list.find((r) => !r.isSynthetic);
   if (firstSrcRow) {
-    thumbList.appendChild(makeInsertGap(0));
+    thumbList.appendChild(makeInsertGap(0, null, 0));
   }
 
   for (let visualIdx = 0; visualIdx < list.length; visualIdx++) {
@@ -3311,12 +3321,18 @@ function rebuildThumbs(pages) {
     //   (syntheticAfterPageNo), orderInSlot = its order + 1, so the
     //   new blank lands right after this synthetic and bumps any
     //   following synthetics in the same slot down by one.
+    // β77: afterKey = this row's pageNo (positive for source, negative
+    // for synth) drives the visual-position display_order at drop time.
     if (row.isSynthetic) {
       thumbList.appendChild(
-        makeInsertGap(row.syntheticAfterPageNo ?? 0, (row.syntheticOrderInSlot ?? 0) + 1),
+        makeInsertGap(
+          row.syntheticAfterPageNo ?? 0,
+          (row.syntheticOrderInSlot ?? 0) + 1,
+          i,
+        ),
       );
     } else {
-      thumbList.appendChild(makeInsertGap(i));
+      thumbList.appendChild(makeInsertGap(i, null, i));
     }
   }
   refreshThumbSelectionVisuals();
@@ -3325,9 +3341,16 @@ function rebuildThumbs(pages) {
 /** Wire drop-on-gap so dragging a PDF onto an insert gap inserts that
  *  PDF's pages here. stopPropagation prevents the global drop handler
  *  (which opens a fresh PDF) from firing too.
- *  TODO: pass orderInSlot through to addInsertedPdfPages once main supports it.
+ *
+ *  β77: `afterKey` identifies the page directly before this gap in the
+ *  current visual layout (positive = source pageNo, negative = synthetic
+ *  key, 0 = before-everything). Pass-through to main lets the IPC
+ *  handler compute an explicit display_order between the visible
+ *  neighbours — necessary because reorder operations can move synthetic
+ *  rows away from their slot anchor (afterPageNo / orderInSlot), at
+ *  which point `MAX(order_in_slot)+1` no longer matches the visual gap.
  */
-function attachInsertGapDrop(gap, afterPageNo) {
+function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
   gap.addEventListener("dragover", (e) => {
     if (!e.dataTransfer) return;
     const types = [...e.dataTransfer.types];
@@ -3367,14 +3390,18 @@ function attachInsertGapDrop(gap, afterPageNo) {
     const path = kpdf3.getPathForFile?.(file) || file.path || "";
     // β75 diag: ユーザがサムネ間の "+" 帯にうっかり落として「open でなく
     // insert になった」のを区別するために、gap drop での file 受領を残す。
-    kpdf3.logDiag?.("gap-drop-file", { path, afterPageNo });
+    kpdf3.logDiag?.("gap-drop-file", { path, afterPageNo, afterKey });
     if (!path || !/\.pdf$/i.test(path)) {
       wsStatus.textContent = "PDF ファイルをドロップしてください";
       return;
     }
     showBusy("挿入", "外部 PDF を取り込み中...", 0);
     try {
-      const r = await kpdf3.addInsertedPdfPages({ afterPageNo, externalPath: path });
+      const r = await kpdf3.addInsertedPdfPages({
+        afterPageNo,
+        afterKey,
+        externalPath: path,
+      });
       hideBusy();
       markWorkspaceMutated();
       await refreshViewer();
@@ -3436,7 +3463,7 @@ async function applyThumbReorderToGap(draggedKey, afterPageNo) {
   }
 }
 
-function makeInsertGap(afterPageNo, orderInSlot = null) {
+function makeInsertGap(afterPageNo, orderInSlot = null, afterKey = null) {
   const gap = document.createElement("div");
   gap.className = "thumb-insert-gap";
   gap.tabIndex = 0;
@@ -3449,11 +3476,11 @@ function makeInsertGap(afterPageNo, orderInSlot = null) {
       promptAndInsertBlank(afterPageNo, orderInSlot);
     }
   });
-  attachInsertGapDrop(gap, afterPageNo);
+  attachInsertGapDrop(gap, afterPageNo, afterKey);
   return gap;
 }
 
-function makeSplitInsertGap(afterPageNo, orderInSlot = null) {
+function makeSplitInsertGap(afterPageNo, orderInSlot = null, afterKey = null) {
   const gap = document.createElement("div");
   gap.className = "thumb-insert-gap thumb-insert-gap-vertical";
   gap.tabIndex = 0;
@@ -3466,7 +3493,7 @@ function makeSplitInsertGap(afterPageNo, orderInSlot = null) {
       promptAndInsertBlank(afterPageNo, orderInSlot);
     }
   });
-  attachInsertGapDrop(gap, afterPageNo);
+  attachInsertGapDrop(gap, afterPageNo, afterKey);
   return gap;
 }
 

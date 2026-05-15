@@ -487,6 +487,7 @@ export function addInsertedImagePage(db, {
   height,
   sourcePdfId = null,
   sourcePageIndex = null,
+  displayOrder = null,
 }) {
   const orderRow = db
     .prepare(
@@ -495,18 +496,28 @@ export function addInsertedImagePage(db, {
     )
     .get(afterPageNo);
   const nextOrder = orderRow?.nextOrder ?? 0;
+  // β77: caller may supply an explicit `displayOrder` so the new synth
+  // lands exactly between two visible pages regardless of how the slot
+  // anchor (afterPageNo) relates to the current visual layout. When
+  // omitted, the row falls back to slot-derived ordering in getPages.
+  const explicitDisplayOrder =
+    typeof displayOrder === "number" && Number.isFinite(displayOrder)
+      ? displayOrder
+      : null;
   const info = db
     .prepare(
       `INSERT INTO inserted_pages
          (after_page_no, order_in_slot, text, width, height,
           image_blob, image_w, image_h,
-          source_pdf_id, source_page_index)
-       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+          source_pdf_id, source_page_index,
+          display_order)
+       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       afterPageNo, nextOrder, width, height,
       imageBlob, imageW, imageH,
       sourcePdfId, sourcePageIndex,
+      explicitDisplayOrder,
     );
   return Number(info.lastInsertRowid);
 }

@@ -238,8 +238,8 @@ export class Workspace {
     });
     const out = [];
     for (const m of mergedRaw) {
-      if (m.kind === "src") out.push({ ...m.row, isSynthetic: false });
-      else out.push(syntheticRow(m.row));
+      if (m.kind === "src") out.push({ ...m.row, isSynthetic: false, orderKey: m.orderKey });
+      else out.push({ ...syntheticRow(m.row), orderKey: m.orderKey });
     }
     return out;
   }
@@ -291,10 +291,12 @@ export class Workspace {
   addInsertedImagePage({
     afterPageNo, imageBlob, imageW, imageH, width, height,
     sourcePdfId = null, sourcePageIndex = null,
+    displayOrder = null,
   }) {
     const id = addInsertedImagePage(this.db, {
       afterPageNo, imageBlob, imageW, imageH, width, height,
       sourcePdfId, sourcePageIndex,
+      displayOrder,
     });
     return -id;
   }
