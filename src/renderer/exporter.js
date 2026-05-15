@@ -634,10 +634,17 @@ async function drawOverlay(ctx, ov, zoom) {
     // same color — plugs the AA halo that prints as gray dots.
     // β34: overstroke is now opt-in via props.bold (default off for
     // text overlay so the glyph is its natural weight).
+    // β73: bold OFF のときは stroke 自体を完全に skip。β34 当時は 0.03×
+    // fontSize の薄い stroke を残していたが、ユーザ報告で「焼き付け
+    // 保存後にやたらに太い」「画面と印刷で字の太さが違う」と判明。
+    // 900dpi (EXPORT_ZOOM) では fillText の AA halo が紙で gray dot に
+    // ならないことが β41 (日付スタンプ I4) で実証済なので、テキスト
+    // overlay も同じ判断で stroke opt-out できる。bold ON のときだけ
+    // 0.06×fontSize の overstroke で見た目の太さを増す。
     const text = props.text ?? "";
     const lineHeight = fontSize * (props.lineHeight ?? 1);
     const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
-    const boldOpt = { bold: !!props.bold };
+    const boldOpt = { bold: !!props.bold, stroke: !!props.bold };
     if (rot === 0) {
       const lines = wrapCanvasText(ctx, text, w);
       for (let i = 0; i < lines.length; i++) {
@@ -838,7 +845,9 @@ async function drawOverlay(ctx, ov, zoom) {
     const padY = 1 * zoom;
     const lineHeight = fontSize * (props.lineHeight ?? 1);
     const lines = wrapCanvasText(ctx, text, w - padX * 2);
-    const boldOpt = { bold: !!props.bold };
+    // β73: 吹き出し内テキストもテキスト overlay と同じく bold OFF 時の
+    // stroke を opt-out (詳細は drawOverlay text 経路の β73 コメント参照)。
+    const boldOpt = { bold: !!props.bold, stroke: !!props.bold };
     for (let i = 0; i < lines.length; i++) {
       paintGlyphRun(ctx, lines[i], x + padX, y + padY + i * lineHeight, color, fontSize, boldOpt);
     }

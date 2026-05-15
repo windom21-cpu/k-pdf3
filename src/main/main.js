@@ -2289,12 +2289,20 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
   const exeName = basename(readerInfo.exePath);
   const helpers = PDF_READER_HELPER_EXES[exeName] ?? [];
   const allExes = [exeName, ...helpers];
+  // β73: PID snapshot (4 回 tasklist) と印刷キュー snapshot (1 回 PowerShell)
+  // は元々完全に独立な操作なので Promise.all で並列化。逐次だと
+  // ~1.3-2.3 秒、並列なら ~max(800ms, 1500ms) ≈ 1.5 秒。Adobe spawn 前の
+  // 体感待ちが約 1 秒短くなる (Adobe 自体の startup 3-5 秒は外部依存で
+  // 削れない)。
+  const [pidsArr, beforeJobIds] = await Promise.all([
+    Promise.all(allExes.map((name) => getProcessPidsByName(name))),
+    snapshotPrintJobs(),
+  ]);
   /** @type {Record<string, number[]>} */
   const beforePidsByExe = {};
-  for (const name of allExes) {
-    beforePidsByExe[name] = await getProcessPidsByName(name);
+  for (let i = 0; i < allExes.length; i++) {
+    beforePidsByExe[allExes[i]] = pidsArr[i];
   }
-  const beforeJobIds = await snapshotPrintJobs();
 
   return new Promise((resolve, reject) => {
     const args = ["/n", "/s", "/o", "/p", pdfPath];
