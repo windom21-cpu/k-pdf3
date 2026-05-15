@@ -2172,58 +2172,6 @@ function getProcessPidsByName(exeName) {
   });
 }
 
-/**
- * β70: 印刷起因で起動した PDF Reader プロセスのウィンドウを Win32
- * ShowWindowAsync で HIDE する。Adobe Acrobat Pro は /h フラグを完全
- * honor せず印刷中にウィンドウを表示する quirk への対策。
- *
- * PowerShell + Add-Type で user32.dll ShowWindowAsync(SW_HIDE) を 5 秒間
- * polling 呼び出し、protectPids (印刷開始前から存在していたプロセス)
- * は除外して、印刷起因で新規生成された window のみを hide する。
- *
- * fire-and-forget で PowerShell process は背景で完結。アプリの IPC
- * return を阻害しない。
- *
- * 第一引数: 対象 exe 名のリスト (拡張子なし、例: ["Acrobat", "AcroCEF"])
- * 第二引数: protect 対象 PID 配列 (印刷前から動いていた既存 process)
- */
-function hideNewPdfReaderWindowsInBackground(targetExeNames, protectPids) {
-  if (process.platform !== "win32") return;
-  if (!Array.isArray(targetExeNames) || targetExeNames.length === 0) return;
-  const protectArr = (protectPids || []).filter(Number.isFinite).join(",");
-  const namesArr = targetExeNames.map((n) => `'${n}'`).join(",");
-  // PowerShell インライン script. Get-Process は 200ms 毎に走り、5 秒間
-  // continuous monitoring。print spool 投入完了までの間に Acrobat が
-  // 表示してくるウィンドウを片端から hide。
-  const psScript = `
-    $protect = @(${protectArr || "0"})
-    $names = @(${namesArr})
-    $src = 'public class W { [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindowAsync(System.IntPtr h, int n); }'
-    try { $type = Add-Type -TypeDefinition $src -PassThru -ErrorAction Stop } catch { return }
-    $end = (Get-Date).AddSeconds(5)
-    while ((Get-Date) -lt $end) {
-      try {
-        Get-Process -ErrorAction SilentlyContinue | Where-Object {
-          ($names -contains $_.ProcessName) -and ($_.Id -notin $protect)
-        } | ForEach-Object {
-          if ($_.MainWindowHandle -ne 0) { [void]$type::ShowWindowAsync($_.MainWindowHandle, 0) }
-        }
-      } catch { }
-      Start-Sleep -Milliseconds 200
-    }
-  `;
-  try {
-    const sp = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-WindowStyle", "Hidden", "-Command", psScript],
-      { windowsHide: true, detached: false, stdio: "ignore" },
-    );
-    sp.on("error", () => { /* ignore — best-effort window hiding */ });
-  } catch {
-    // PowerShell 未インストール / 起動失敗 — best-effort なので silent fail
-  }
-}
-
 /** β67: PDF Reader engine ごとに生成しうるヘルパープロセスの exe 名
  *  リスト。Adobe Acrobat Pro / Reader DC は主プロセスの他に Chromium
  *  ベースの UI (AcroCEF.exe) や IPC ブローカ (AcroBroker.exe) を派生
@@ -2277,12 +2225,67 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
   } catch { /* ignore */ }
 }
 
-async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
-  // β66/β67: spawn 前に該当 Reader と関連ヘルパープロセスの PID を
-  // exe 名ごとに snapshot。close 後に差分検出して印刷起因の新規
-  // プロセスのみ taskkill する。Adobe Acrobat Pro は CLI /h を完全
-  // honor せず、子プロセス (AcroCEF.exe 等) がタスクバーアイコンを
-  // 維持する quirk への対策。
+/**
+ * β72: 印刷キューのジョブ ID 一覧を PowerShell 経由で snapshot する。
+ * Get-CimInstance Win32_PrintJob で全プリンタ・全 FAX のジョブを列挙し
+ * JobId だけ抜き出す。ジョブが無いとき / 取得失敗時は空配列。
+ *
+ * 用途: printPdfViaReaderDialog が起動前と polling tick で snapshot を
+ * 取り、差分 (= ユーザが Adobe ダイアログで「印刷」を押したことで投入
+ * された新規ジョブ) を検出する。
+ */
+function snapshotPrintJobs() {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") { resolve([]); return; }
+    try {
+      const ps =
+        "Get-CimInstance Win32_PrintJob -ErrorAction SilentlyContinue"
+        + " | Select-Object -ExpandProperty JobId";
+      const sp = spawn(
+        "powershell.exe",
+        ["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+        { windowsHide: true },
+      );
+      let out = "";
+      sp.stdout?.on("data", (d) => { out += d.toString(); });
+      sp.on("error", () => resolve([]));
+      sp.on("close", () => {
+        const ids = out
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map(Number)
+          .filter(Number.isFinite);
+        resolve(ids);
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+/**
+ * β72 (案 D + 案 X): PDF Reader を `/p` フラグで起動して印刷ダイアログを
+ * 出させる。ユーザがプリンタ・部数・FAX 送信先を Adobe ダイアログで設定
+ * してから「印刷」ボタンを押す → 印刷キュー監視で新規ジョブ投入を検知
+ * → 3 秒バッファ後に Reader を kill する (Pro DC は `/p` 経路でも自然
+ * exit しないため、kill が主要 exit メカニズム)。
+ *
+ * 5 分の安全網タイムアウト (ユーザがダイアログ放置 / キャンセル / × 閉じ
+ * の場合)。Reader 自身が exit した時 (× 閉じ等) は即 finish。
+ *
+ * `/p` 仕様 (Adobe / Foxit / PDF-XChange 共通):
+ *   <exe> /n /s /o /p <pdf>
+ *     /n = 新インスタンス
+ *     /s = スプラッシュ抑止
+ *     /o = open リマインダー抑止
+ *     /p = 印刷ダイアログ付きで開く
+ *
+ * `/h` (hidden) や `/t` (silent print) は使わない: 印刷ダイアログを
+ * ユーザに見せるのが目的。FAX 送信先入力ダイアログも Reader ネイティブ
+ * 経路で正しく出る (β54-β70 で苦労した FAX freeze 問題が根治)。
+ */
+async function printPdfViaReaderDialog(readerInfo, pdfPath) {
   const exeName = basename(readerInfo.exePath);
   const helpers = PDF_READER_HELPER_EXES[exeName] ?? [];
   const allExes = [exeName, ...helpers];
@@ -2291,24 +2294,10 @@ async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
   for (const name of allExes) {
     beforePidsByExe[name] = await getProcessPidsByName(name);
   }
+  const beforeJobIds = await snapshotPrintJobs();
 
   return new Promise((resolve, reject) => {
-    // β69: 戦略改訂。
-    //
-    // β68 までは「/h フラグの有無で Pro exit 挙動が変わる」と推測して
-    // いたが、ユーザ追加情報で β64 ログの「32 秒後 exit code 1」は
-    // 手動で Adobe を閉じた結果と判明。**Acrobat Pro DC は /n /t /h で
-    // 起動しても自然 exit しない仕様** が正解 (editor 設計のため
-    // document タブを保持し続ける)。
-    //
-    // 解: Pro は engine 判定で 30 秒タイマによる強制 kill を主要 exit
-    // メカニズムにする。Pro は print spool への投入が数秒で完了する
-    // ので、30 秒も待てば spool 投入は十分終わっており、強制 kill で
-    // 影響なし。
-    //
-    // /h フラグは Pro でも残す: 印刷中 30 秒間ウィンドウが minimize で
-    // 出る方が、visible で表示されるより UX 良いため。
-    const args = ["/n", "/s", "/o", "/h", "/t", pdfPath, opts.deviceName];
+    const args = ["/n", "/s", "/o", "/p", pdfPath];
     let sp;
     try {
       sp = spawn(readerInfo.exePath, args, {
@@ -2322,94 +2311,61 @@ async function printPdfViaPdfReader(readerInfo, pdfPath, opts) {
       return;
     }
     _activePdfReaderProcess = sp;
-    let stderr = "";
+
     let settled = false;
-    sp.stderr?.on("data", (d) => { stderr += d.toString(); });
+    const POLL_MS = 1000;
+    const POST_JOB_BUFFER_MS = 3000;
+    const SAFETY_TIMEOUT_MS = 5 * 60 * 1000;
+    const startMs = Date.now();
 
-    // β70: ウィンドウ flash 抑止 — spawn 直後にバックグラウンド PowerShell
-    // が 5 秒間 polling して、印刷起因で生成された PDF Reader 系の
-    // ウィンドウを ShowWindowAsync(SW_HIDE) で hide する。protect PID
-    // (印刷前から動いていた既存プロセス) は対象外。
-    // 主に Acrobat Pro の /h 未対応問題への対策だが、他 engine でも
-    // 動かしておく (副作用は worst case 何もしない)。
-    const targetExeBaseNames = [
-      exeName.replace(/\.exe$/i, ""),
-      ...(PDF_READER_HELPER_EXES[exeName] ?? []).map((n) => n.replace(/\.exe$/i, "")),
-    ];
-    const protectAllPids = Object.values(beforePidsByExe).flat();
-    hideNewPdfReaderWindowsInBackground(targetExeBaseNames, protectAllPids);
-
-    // β69: タイムアウト戦略を engine 別に分岐。
-    //
-    // Acrobat Pro: 自然 exit しない仕様なので、30 秒タイマで強制 kill
-    //   する。30 秒は print spool 投入には十分な余裕。これが主要 exit
-    //   経路。
-    //
-    // Reader DC / Foxit / PDF-XChange: 通常通り close event を待つ。
-    //   120 秒は安全網 (理論上 close するはずだが念のため)。
-    const SPAWN_TIMEOUT_MS = readerInfo.engine === "adobe-acrobat"
-      ? 30000
-      : 120000;
-    const timeoutTimer = setTimeout(() => {
+    const finish = (reason) => {
       if (settled) return;
       settled = true;
-      console.warn(
-        `[print] ${readerInfo.displayName} timed out after ${SPAWN_TIMEOUT_MS}ms, force kill`,
-      );
-      try { sp.kill(); } catch { /* ignore */ }
-      // タイムアウトでも子プロセスは残り得るので cleanup を即起動
-      killNewPdfReaderProcesses(readerInfo, beforePidsByExe).catch(() => {});
+      _activePdfReaderProcess = null;
       try {
-        logCrash("pdfreader-timeout", {
+        logCrash("pdfreader-dialog-finish", {
           engine: readerInfo.engine,
-          timeoutMs: SPAWN_TIMEOUT_MS,
+          reason,
+          elapsedMs: Date.now() - startMs,
         });
       } catch { /* ignore */ }
-      // 印刷自体は spool に投入されている可能性が高いので success 扱い
-      _activePdfReaderProcess = null;
-      resolve({ success: true, timedOut: true });
-    }, SPAWN_TIMEOUT_MS);
+      killNewPdfReaderProcesses(readerInfo, beforePidsByExe).catch(() => {});
+      resolve({ success: true, reason });
+    };
 
     sp.on("error", (err) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeoutTimer);
       _activePdfReaderProcess = null;
-      // spawn 中 / 起動失敗の本物のエラーは reject (上位は Sumatra
-      // fallback に流れる)。
       reject(err);
     });
-    sp.on("close", (code) => {
+    sp.on("close", () => {
+      // Reader 自身が exit (主に Reader DC の自然 exit / ユーザ × 閉じ)
+      // → 印刷せずに終了したと判断、即 finish (helpers cleanup のみ)
       if (settled) return;
-      settled = true;
-      clearTimeout(timeoutTimer);
-      _activePdfReaderProcess = null;
-      // β65: Adobe Reader は印刷ジョブを spool に投入した時点で exit
-      // するが、バージョン依存で exit code が非ゼロ (1 等) になる
-      // ことがある (実際は印刷成功している)。β64 では非ゼロを失敗
-      // 扱いにして fall-through していたため、Adobe で正常印刷した
-      // 後に Sumatra が二重印刷するユーザ報告が出た。
-      // → spawn が成功した時点で「Reader に投げた」とみなし、exit
-      // code は warning ログするだけ resolve する。Reader 自体が
-      // 起動できない真の失敗は spawn 時点の error event で reject
-      // されるので、ここでの非ゼロは「印刷自体は OK だけど Adobe
-      // の戻り値が非ゼロ」の事例として扱う。
-      if (code !== 0) {
-        console.warn(
-          `[print] ${readerInfo.displayName} exited code=${code}`
-          + ` (treating as success): ${stderr.trim() || "no output"}`,
-        );
-      }
-      // β66/β67: 印刷起因の新規 Reader プロセス + ヘルパー (AcroCEF.exe
-      // 等) を kill。before-snapshot の PID は保護なのでユーザが別途
-      // 開いている Adobe ウィンドウは影響を受けない。2 秒待機: spool
-      // への投入完了バッファ。fire-and-forget で IPC return は阻害
-      // しない。
-      setTimeout(() => {
-        killNewPdfReaderProcesses(readerInfo, beforePidsByExe).catch(() => {});
-      }, 2000);
-      resolve({ success: true, exitCode: code });
+      finish("reader-closed");
     });
+
+    const tick = async () => {
+      if (settled) return;
+      const elapsed = Date.now() - startMs;
+      if (elapsed > SAFETY_TIMEOUT_MS) {
+        finish("timeout");
+        return;
+      }
+      try {
+        const currentJobs = await snapshotPrintJobs();
+        const newJobs = currentJobs.filter((id) => !beforeJobIds.includes(id));
+        if (newJobs.length > 0) {
+          // 新規ジョブ検出 = ユーザが Adobe ダイアログで「印刷」を押した
+          // → 3 秒バッファ後に Reader を kill (spool 投入完了待ち)
+          setTimeout(() => finish("job-detected"), POST_JOB_BUFFER_MS);
+          return;
+        }
+      } catch { /* ignore — keep polling */ }
+      setTimeout(tick, POLL_MS);
+    };
+    setTimeout(tick, POLL_MS);
   });
 }
 
@@ -2661,6 +2617,61 @@ function cancelInFlightPrint() {
   try { restoreInflightDefaultPrinterSync(); } catch { /* ignore */ }
 }
 
+/**
+ * β72: ある PDF Reader (Adobe / Foxit / PDF-XChange) が OS にインストール
+ * されているかを検出して boolean で返す。renderer 側はこれで「印刷ボタン
+ * → Adobe ダイアログ直行 (案 D)」と「印刷ボタン → 自前ダイアログ + Sumatra
+ * /Chromium silent (Reader 不在 fallback)」のどちらに分岐するかを決める。
+ */
+ipcMain.handle("kpdf3:has-pdf-reader", async () => {
+  return findPdfReader() !== null;
+});
+
+/**
+ * β72 (案 D): K-PDF3 の印刷ボタンから直接 Adobe / Foxit / PDF-XChange の
+ * 印刷ダイアログを開く経路。renderer 側はサイドバー / split-view 選択を
+ * 読んで filteredPages を作り、ここに渡す。プリンタ・部数・FAX 送信先・
+ * 各種 driver プロパティはすべて Reader ダイアログでユーザが設定する。
+ *
+ * payload:
+ *   { source: 'byte-copy' | 'rasterized', pages?: composedPages[] }
+ *
+ * 中止: Adobe ダイアログを × で閉じれば中止 (K-PDF3 側の中止 IPC は廃止)。
+ */
+ipcMain.handle("kpdf3:print-via-reader-dialog", async (_, payload) => {
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const { source, pages } = payload ?? {};
+  let pdfBytes;
+  if (source === "byte-copy") {
+    pdfBytes = activeWorkspace.getSourceBytes();
+    if (!pdfBytes) throw new Error("No source PDF in workspace");
+  } else if (source === "rasterized" && Array.isArray(pages) && pages.length > 0) {
+    const sourceBytes = activeWorkspace.getSourceBytes() ?? null;
+    pdfBytes = await assembleHybridPdf(pages, sourceBytes);
+  } else {
+    throw new Error("print-via-reader-dialog: invalid source / pages");
+  }
+  const tempPath = tempPrintPath();
+  writeFileSync(tempPath, pdfBytes);
+
+  const reader = findPdfReader();
+  if (!reader) throw new Error("No PDF Reader detected");
+
+  logCrash("print-via-reader-dialog-start", {
+    source,
+    pageCount: Array.isArray(pages) ? pages.length : 0,
+    engine: reader.engine,
+    exe: reader.exePath,
+  });
+  _printInFlight = true;
+  try {
+    const result = await printPdfViaReaderDialog(reader, tempPath);
+    return { tempPath, engine: reader.engine, reason: result.reason };
+  } finally {
+    _printInFlight = false;
+  }
+});
+
 ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   const {
@@ -2693,69 +2704,22 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
 
   const tempPath = tempPrintPath();
   writeFileSync(tempPath, pdfBytes);
-  // Windows + rasterized: hand off to bundled SumatraPDF, which uses its
-  // own PDF engine + WinSpool directly. Chromium silent print stalls on
-  // some hardware drivers (β3 testing reproduced ~55s timeout on FUJIFILM
-  // Apeos C2360 wireless) when handed our mupdf-generated PDFs with
-  // large PNG XObjects. byte-copy keeps using Chromium silent print —
-  // the source PDF is normal-shape and goes through quickly.
+  // β72: PDF Reader (Adobe / Foxit / PDF-XChange) 検出時の経路は
+  // kpdf3:print-via-reader-dialog に分離した (案 D)。本ハンドラは Reader
+  // 不在環境向けの fallback path 専用となり、Sumatra (Win + 非 FAX) →
+  // Chromium silent / silent:false (FAX or 非 Win or Sumatra 不在) の二段
+  // のみで構成される。
   //
-  // β42 J2: FAX devices CANNOT go through Sumatra at all — mupdf +
-  // WinSpool fails to initialize the FAX driver ("プリンタを初期化でき
-  // ませんでした" / exit 1). Routing FAX to silentPrintPdf, which in
-  // turn already uses silent:false for FAX (β42 J1) → OS print dialog
-  // pops, user enters fax number through the driver UI, send. The
-  // β3-era Chromium stall was specifically silent:TRUE + mupdf PDFs;
-  // silent:false uses a different code path (interactive spool) that
-  // does not stall.
+  // β42 J2: FAX devices CANNOT go through Sumatra — mupdf + WinSpool
+  // fails to initialize the FAX driver ("プリンタを初期化できませんで
+  // した" / exit 1). FAX は silentPrintPdf へ直行し、silent:false で
+  // OS 印刷ダイアログ (送信先入力含む) を出す。
   const isFax = isFaxDevice(deviceName);
   const sumatraExe = sumatraPath();
-  // β64: 印刷経路を「PDF Reader CLI 優先 / Sumatra fallback / Chromium
-  // 最終手段」の三段に再設計 (C アプローチ採用)。
-  //
-  // 経緯:
-  // - β56-β63 の自前 vector 印刷試行 (案 M GDI / 案 N PostScript /
-  //   案 N' PCL / ζ font embed) はすべて C2360 ドライバの PDF コンテンツ
-  //   検査 → 全面 raster fallback 挙動に阻まれた
-  // - 真の解は Adobe Reader 等の独自 PDF print engine に委譲すること
-  //   (Adobe XPS Print Path 等の固有経路を持つため C2360 でも vector)
-  // - ただし PDF Reader 未インストール環境では Sumatra に fallback、
-  //   さらに失敗時は Chromium silent:false (FAX 用) という安全網
-  //
-  // 経路選択:
-  //   Win + 非 FAX:
-  //     1. Adobe/Foxit/PDF-XChange → CLI で印刷 (Adobe 同等品質)
-  //     2. Sumatra (β53 J8 経路、明朝荒れ含むが確実)
-  //     3. Chromium silent (最終手段、C2360 ハングリスクあり)
-  //   Win + FAX:
-  //     1. Adobe/Foxit/PDF-XChange → CLI で印刷
-  //        (各 Reader が FAX 系プリンタを認識すると driver dialog を出す)
-  //     2. Chromium silent:false + β54 FAX 規定プリンタ切替
-  //   非 Win: Chromium silent
-  // β70: engineOverride があれば、その engine の Reader を選ぶ。
-  // pdfReader 系 (adobe-*/foxit/pdfxchange) なら findAllPdfReaders から
-  // 該当を探す。sumatra/chromium は専用フォールバック分岐で扱う。
-  let pdfReader = null;
   let forceSumatra = false;
   let forceChromium = false;
-  if (engineOverride === "sumatra") {
-    forceSumatra = true;
-  } else if (engineOverride === "chromium") {
-    forceChromium = true;
-  } else if (engineOverride) {
-    // 特定 PDF Reader 指定 → 該当を探す
-    const all = findAllPdfReaders();
-    pdfReader = all.find((r) => r.engine === engineOverride) ?? null;
-    if (!pdfReader) {
-      // 指定された engine が見つからない → auto detection に fallback
-      console.warn(
-        `[print] engineOverride="${engineOverride}" not detected, falling back to auto`,
-      );
-      pdfReader = findPdfReader();
-    }
-  } else {
-    pdfReader = findPdfReader();
-  }
+  if (engineOverride === "sumatra") forceSumatra = true;
+  else if (engineOverride === "chromium") forceChromium = true;
   const canSumatra =
     process.platform === "win32"
     && !isFax
@@ -2766,10 +2730,9 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     pageCount: Array.isArray(pages) ? pages.length : 0,
     isFax,
     sumatraExe: sumatraExe ?? "(missing)",
-    pdfReader: pdfReader
-      ? { engine: pdfReader.engine, exe: pdfReader.exePath }
-      : null,
     canSumatra,
+    forceSumatra,
+    forceChromium,
     copies,
     landscape,
     duplex,
@@ -2781,9 +2744,7 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   // β61: FAX のときは applyCleanFaxDevmode を呼んで dmDriverExtra (driver-
   // private bytes) を 0 埋めしてから push。FUJIFILM Apeos C2360 等が
   // driver-private に「最後の宛先」を残す挙動への対策で、毎送信前に
-  // 宛先欄を空でリセットする。通常印刷では従来通り applyUserPrinterDevmode
-  // (driver-private 込みで push) を呼ぶので、お気に入りプリセット等は
-  // 引き続き活きる。
+  // 宛先欄を空でリセットする。
   let devmodeToken = null;
   if (process.platform === "win32") {
     if (isFax) {
@@ -2795,33 +2756,14 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   _printInFlight = true;
   let usedEngine = null;
   try {
-    // β70: engineOverride で明示指定された経路があればそれを最優先。
-    // 第一選択 = PDF Reader CLI (Adobe/Foxit/PDF-XChange、検出時のみ)
-    // forceSumatra / forceChromium ならこの段は飛ばす
-    if (pdfReader && !forceSumatra && !forceChromium) {
-      try {
-        await printPdfViaPdfReader(pdfReader, tempPath, { deviceName });
-        usedEngine = pdfReader.engine;
-      } catch (err) {
-        logCrash("print-pdfreader-failed", {
-          deviceName,
-          engine: pdfReader.engine,
-          errorType: err?.message ?? String(err),
-        });
-        console.warn(
-          `[print] ${pdfReader.displayName} failed, falling back:`,
-          err?.message ?? err,
-        );
-      }
-    }
-    // 第二選択 = Sumatra (β53 J8 経路、Win + 非 FAX + Sumatra 同梱あり)
-    // forceChromium 時は飛ばす
-    if (!usedEngine && canSumatra && !forceChromium) {
+    // 第一選択 = Sumatra (Win + 非 FAX + Sumatra 同梱あり、forceChromium
+    // 時はスキップ)
+    if (canSumatra && !forceChromium) {
       await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
       usedEngine = "sumatra";
     }
-    // 最終 = Chromium silent / silent:false (FAX 専用 = β54 規定切替、
-    //                                       または非 Win 環境、または force)
+    // 最終 = Chromium silent / silent:false (FAX、非 Win、Sumatra 不在、
+    //                                       force chromium のいずれか)
     if (!usedEngine) {
       await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
       usedEngine = "chromium";

@@ -438,20 +438,69 @@ printPropertiesBtn.addEventListener("click", async () => {
   }
 });
 
+/**
+ * β72 (案 D): PDF Reader (Adobe / Foxit / PDF-XChange) が検出された場合の
+ * 印刷経路。K-PDF3 自前ダイアログを skip して直接 Reader の印刷ダイアログ
+ * を開く。プリンタ・部数・FAX 送信先などはユーザが Reader 側で設定する。
+ *
+ * 範囲はサイドバー / split-view 選択をそのまま filteredPages に反映して
+ * temp PDF を生成 → Reader はその PDF を「全ページ」のつもりで開く。
+ */
+async function actionPrintViaReader(pages, preselected, preselectedSource) {
+  const filteredPages = preselected
+    ? pages.filter((p) => preselected.includes(p.pageNo))
+    : pages;
+  if (filteredPages.length === 0) {
+    _wsStatus.textContent = "印刷対象ページがありません";
+    return;
+  }
+  const projectStore = _projectStore();
+  const overlayCount = projectStore.count();
+  const allPagesSelected = filteredPages.length === pages.length;
+  const isCopy = overlayCount === 0 && allPagesSelected;
+
+  // 中止ボタンは出さない (Adobe ダイアログを × で閉じれば中止)
+  showBusy("印刷準備", "ページを描画中...", 0);
+  let composed = null;
+  try {
+    if (!isCopy) {
+      composed = await composePagesForExport({
+        pages: filteredPages,
+        projectStore,
+        renderPage: kpdf3.renderPage,
+        renderSyntheticPage: renderSyntheticPagePixels,
+        onProgress: ({ done, total }) => {
+          updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
+        },
+      });
+    }
+    updateBusy("PDF Reader を起動しています...", 90);
+    const result = await kpdf3.printViaReaderDialog({
+      source: isCopy ? "byte-copy" : "rasterized",
+      pages: composed,
+    });
+    hideBusy();
+    const summary = preselectedSource
+      ? `${filteredPages.length} ページ (${preselectedSource === "split" ? "分割画面選択" : "サイドバー選択"})`
+      : `${filteredPages.length} ページ`;
+    const reasonText =
+      result.reason === "job-detected" ? "印刷ジョブ投入を検出"
+      : result.reason === "reader-closed" ? "Reader を終了"
+      : result.reason === "timeout" ? "タイムアウト"
+      : "完了";
+    _wsStatus.textContent = `印刷経路: ${result.engine} (${reasonText}) — ${summary}`;
+  } catch (err) {
+    hideBusy();
+    console.error("[renderer] print failed:", err);
+    _wsStatus.textContent = `印刷失敗: ${err.message ?? err}`;
+  }
+}
+
 export async function actionPrint() {
   if (!_isOpen()) return;
   const pages = await _fetchVisiblePages();
   if (pages.length === 0) return;
 
-  showBusy("プリンタ情報を取得中...", "プリンタ一覧を読み込んでいます...", 50);
-  let printers;
-  try {
-    printers = await kpdf3.listPrinters();
-  } finally {
-    hideBusy();
-  }
-
-  const currentPageNo = _viewer.currentPage || 1;
   // Split-view or sidebar selection seeds the print range so the user
   // doesn't have to retype it. Mirrors the same pattern used by rotate
   // (see resolveRotationTargets) and the sidebar's right-click
@@ -487,6 +536,29 @@ export async function actionPrint() {
       ? `分割画面で選択した ${preselected.length} ページを印刷範囲に設定しました`
       : `選択した ${preselected.length} ページを印刷範囲に設定しました`;
   }
+
+  // β72 (案 D): Adobe / Foxit / PDF-XChange が入っていれば Reader の
+  // 印刷ダイアログを直接開く経路に分岐。K-PDF3 自前ダイアログは Reader
+  // 不在環境用の fallback として残す。
+  let hasReader = false;
+  try {
+    hasReader = await kpdf3.hasPdfReader();
+  } catch (err) {
+    console.warn("[print] hasPdfReader failed, fall back to legacy dialog:", err);
+  }
+  if (hasReader) {
+    return actionPrintViaReader(pages, preselected, preselectedSource);
+  }
+
+  showBusy("プリンタ情報を取得中...", "プリンタ一覧を読み込んでいます...", 50);
+  let printers;
+  try {
+    printers = await kpdf3.listPrinters();
+  } finally {
+    hideBusy();
+  }
+
+  const currentPageNo = _viewer.currentPage || 1;
   const choice = await showPrintDialog(printers, pages, currentPageNo, preselected);
   if (!choice) {
     _wsStatus.textContent = "印刷をキャンセルしました";
