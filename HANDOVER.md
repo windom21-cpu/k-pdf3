@@ -1,12 +1,14 @@
 # K-PDF3 開発引き継ぎ書
 
 最終更新: 2026-05-15  
-現在のバージョン: **v2.0.0-beta.71**
+現在のバージョン: **v2.0.0-beta.73**
 
 直近セッション (2026-05-14〜05-15) の成果:
 - **B2 renderer.js モジュール分離 完結** — renderer.js 8631 → 4472 行 (-48.2%)、12 モジュールに分散
 - **B3 タブ別ウインドウ機能 完成** — 別ウインドウ起動 5 経路 (右クリック / ツールバー / File menu / drag tearout / drag dock-back)
 - **印刷経路** — β64-β70 で PDF Reader CLI 委譲 (Adobe / Foxit / PDF-XChange) を採用、β70 で印刷エンジン選択 UI 追加
+- **β72 案 D 採用 — 印刷ボタン → Adobe `/p` 直接** : K-PDF3 自前印刷ダイアログを skip して Reader (Adobe / Foxit / PDF-XChange) のネイティブ印刷ダイアログを直接開く方式へ転換。**FAX 送信先入力ダイアログが出ない freeze バグを根治** (β54-β70 で苦労した FAX 経路の構造的問題が解決)。**案 X 印刷キュー監視で Acrobat Pro 自動 close** : Win32_PrintJob を 1 秒間隔 polling、新規ジョブ検出 → 3 秒バッファ後に Reader を kill (Pro DC は `/p` 経路でも自然 exit しないため)。安全網 5 分 timeout
+- **β73 印刷品質 + 速度改善** : テキスト overlay の太字化バグ修正 (β34 0.03×fontSize overstroke を bold OFF 時は完全 skip、画面 = 細字 / 焼き付け = 太字 の不整合を解消)。Adobe spawn 前の PID + 印刷キュー snapshot を `Promise.all` で並列化、preamble ~1.3-2.3 秒 → ~1.5 秒 (Adobe ダイアログ表示まで体感 ~1 秒短縮)
 
 このドキュメントは、K-PDF3 の開発を引き継ぐ次の AI アシスタント（または別環境の自分）が会話履歴なしで作業継続できるよう書かれています。**着手前に §0 → §1 → §2 → §3 → §6 → §8 → §17 の順で必ず読んでください**。
 
@@ -14,7 +16,7 @@
 
 ---
 
-## 直近進捗 (β12〜β71、概観)
+## 直近進捗 (β12〜β73、概観)
 
 詳細な per-β エントリは `git log --oneline` + 各 tag の commit message が一次資料。HANDOVER 上は要点のみ。
 
@@ -24,6 +26,8 @@
 - **β36〜β53** (2026-05-13〜14): 吹き出し枠ぴったり化、日付スタンプ年月のみバリアント、FAX 経路対応、ウインドウ位置永続化、印刷プロパティ完全反映 (DEVMODE 同期 restore + 印刷中クローズ確認)、診断クラッシュロガー、FAX 誤検出修正 + Apeos C2360 ハング解消 (byte-copy も Sumatra 経路統一)
 - **β54〜β70** (2026-05-14): 印刷品質改善の長い試行錯誤。案 M (Win32 GDI) / 案 N (PostScript raw) / 案 N' (PCL) / ζ (font embed) すべて C2360 ドライバの構造的制約に阻まれ撤回。**最終的に C アプローチ = Adobe / Foxit / PDF-XChange CLI 委譲経路を採用**。β70 で印刷エンジン選択 UI + Acrobat Pro ウィンドウ強制 hide
 - **β71** (2026-05-14〜15): **B2 renderer.js モジュール分離 完結** (8631→4472 行 / -48.2% / 12 モジュール) + **B3 タブ別ウインドウ機能完成** (5 経路: 右クリック / ツールバー / File menu / drag tearout / drag dock-back + 子ウインドウ自動 close)
+- **β72** (2026-05-15): **案 D 印刷経路の再々設計** — K-PDF3 自前印刷ダイアログを skip して Adobe `/p` 直接起動に切替、エンジン丸投げ。**FAX 送信先ダイアログが出ない freeze バグ根治** (β54-β70 で残っていた FAX 経路の構造的問題が解決、Acrobat Pro `/t` silent flag が driver UI を抑止する仕様 + β70 SW_HIDE が併発していた)。**案 X 印刷キュー監視 (Win32_PrintJob)** で新規ジョブ検出 → 3 秒バッファ後に Reader を kill (Pro DC は `/p` でも自然 exit しないため)。安全網 5 分 timeout、Reader × 閉じ即 finish。Reader 不在環境は既存 K-PDF3 自前ダイアログ + Sumatra/Chromium silent fallback (kpdf3:print-pdf-silent から Reader CLI 経路撤去、Sumatra → Chromium silent の二段に縮小)
+- **β73** (2026-05-15): **テキスト太字化バグ修正** — drawOverlay の text + callout 経路で `boldOpt = { bold, stroke }` に拡張、bold OFF なら strokeText 自体を skip。β34 で残していた 0.03×fontSize overstroke が「画面 = 細字 / 焼き付け = 太字」の不整合を生んでいたのを根治 (900dpi なら fillText AA halo は紙で gray dot にならないことは β41 日付スタンプで実証済)。**Adobe spawn 高速化** — printPdfViaReaderDialog の preamble (PID snapshot 4 回 + 印刷キュー snapshot 1 回) を `Promise.all` で並列化、~1.3-2.3 秒 → ~1.5 秒 (体感 ~1 秒短縮)。Adobe 自体の startup 3-5 秒は外部依存で削れない
 
 ## 当面の残課題 / 未解決事項
 
@@ -31,7 +35,7 @@
 - **「後で」仮説の恒久対応** — autoUpdater 「ダウンロードしますか?」で「後で」を選ぶと中間ダウンロード残留 → 後続バージョン取得時に整合性破壊の仮説 (β34 配布前に判明)。対応案: (a) ダイアログから「後で」撤去、(b) キャンセル時の差分ファイル cleanup
 - **PDF 開閉繰り返しでクラッシュ** (β51 ユーザー報告) — 原因未特定。診断ロガー (β51 J7) を仕込み済、再現したら `userData/crash.log` を解析
 - **CI release matrix race** (stable 時に再発リスク) — β タグでは案 B-2 (Win 単独) で構造的に解消、stable v2.0.0 リリース時に手動シーケンシャル trigger or `needs:` 化を検討
-- **印刷経路の構造的制約 (受容済)** — Acrobat Pro 環境では 30 秒の体感待ち (Pro DC は CLI 自然 exit せず、β69 の強制 kill タイマが主要 exit メカニズム)。Reader DC 排他で代替不可。画像スタンプは bbox raster (β62) で影響範囲は最小化済
+- **印刷経路の構造的制約 (β72 で大幅軽減)** — β69 までの 30 秒体感待ちは β72 案 D 採用 (Adobe `/p` + 印刷キュー監視) で解決。Pro DC を含めユーザが「印刷」を押した瞬間に新規ジョブが検出されるので 3 秒バッファ後に kill、平均 ~4 秒で Adobe が自動 close する。画像スタンプは bbox raster (β62) で影響範囲は最小化済
 - **stable リリース時の cleanup**: β51 で追加した **クラッシュ診断ロガー一式を撤去** (`crashLogPath()` / `logCrash()` / `print-route` 等のログ呼び出し / `kpdf3:open-crash-log` IPC / preload `openCrashLog` / index.html の `data-action="open-crash-log"` / `actionOpenCrashLog`)
 - **Wayland ショートカット** — F5 / Ctrl+R / F12 が Ubuntu Wayland で発火しない。バージョン情報ダイアログのリロード / 開発者ツールボタンで代替可。`project_kpdf3_shortcut_unresolved.md` 参照
 
@@ -349,8 +353,8 @@ M1 Foundation → M2 Core → M3 Editing UI → M4 Export → M5 Feature Migrati
 | ✅ **M2** | tag: `v2.0.0-alpha.M2` | object model / virtualization / page render / Win95 chrome (98.css) / PDF-first UX | 400p PDF を滑らかに virtualization スクロール |
 | ✅ **M3** | tag: `v2.0.0-alpha.M3` | text/stamp/redaction 編集 / IME / Undo/Redo / Ctrl+S / close 警告 / drag・resize / right-click 削除 / zoom / page navigation | 編集 → 保存 → 再開で正確復元 |
 | ✅ **M4** | tag: `v2.0.0-alpha.M4` | export pipeline (rasterized) / Smart Save As (byte-copy) / exports 監査ログ / userData 集中保管 | flatten PDF を Adobe で確認 + revision_id 監査トレイル |
-| 🚧 **M5** | tag: **`v2.0.0-beta.71` 配布中** | M5 主要機能 + α (タブ並列編集 / 自動アップデート / 印刷 / しおり / スタンプ等) を実装済、加えて β71 で **タブ別ウインドウ機能 (§17.10) も完成** (5 経路: 右クリック / ツールバー / File menu / drag tearout / drag dock-back)。**残 exit 条件**: β テスト継続による安定確認 + CI Mac/Win 署名 (任意) | K-PDF2 主要機能 + α が新アーキで動く + 業務移行可能 |
-| 🚧 **M6 (大半完了)** | tag: 未 (β リリースに同梱) | UI ポリッシュ + 機能投入済 (自前タイトルバー / カスタムファイルダイアログ / 印刷プレビュー / 98 風アップデートダイアログ / マーカー / 墨消し白 / テキスト・吹き出し・スタンプ・画像スタンプ / 編集可能しおり (階層 + drag-reorder) / フォント設定 / ＋ページ番号フッター / **タブ別ウインドウ D&D (β71)** / **renderer.js モジュール分離 (β71、12 モジュール)** 等)。残: annotation read-only proxy / qpdf sanitize / Wayland ショートカット | v2.0.0 stable |
+| 🚧 **M5** | tag: **`v2.0.0-beta.73` 配布中** | M5 主要機能 + α (タブ並列編集 / 自動アップデート / 印刷 / しおり / スタンプ等) を実装済、加えて β71 で **タブ別ウインドウ機能 (§17.10) も完成** (5 経路: 右クリック / ツールバー / File menu / drag tearout / drag dock-back)、β72 で **印刷経路を案 D (Adobe `/p` 直接) に再々設計** して FAX freeze 根治 + 案 X 印刷キュー監視で Pro 自動 close、β73 で **テキスト太字化バグ修正** + **Adobe spawn 高速化**。**残 exit 条件**: β テスト継続による安定確認 + CI Mac/Win 署名 (任意) | K-PDF2 主要機能 + α が新アーキで動く + 業務移行可能 |
+| 🚧 **M6 (大半完了)** | tag: 未 (β リリースに同梱) | UI ポリッシュ + 機能投入済 (自前タイトルバー / カスタムファイルダイアログ / 印刷プレビュー / 98 風アップデートダイアログ / マーカー / 墨消し白 / テキスト・吹き出し・スタンプ・画像スタンプ / 編集可能しおり (階層 + drag-reorder) / フォント設定 / ＋ページ番号フッター / **タブ別ウインドウ D&D (β71)** / **renderer.js モジュール分離 (β71、12 モジュール)** / **印刷案 D + 案 X (β72)** / **テキスト太字化修正 (β73)** 等)。残: annotation read-only proxy / qpdf sanitize / Wayland ショートカット | v2.0.0 stable |
 
 ### 6.4 β テストフロー（**現在ここ**）
 
@@ -404,6 +408,22 @@ M1 Foundation → M2 Core → M3 Editing UI → M4 Export → M5 Feature Migrati
 - **v2.0.0-beta.71** — 2026-05-15、**B2 + B3 大物 2 件着地**:
   - **B2 renderer.js モジュール分離 完結**: 8631 → 4472 行 (-48.2%)。12 モジュールに分散 (`busy-modal` / `dialogs` / `file-browser` / `overlay-{edit,selection,placement}` / `stamp-{helpers,presets,dialogs}` / `bookmark-pane` / `print-flow` / `tab-manager`)。390 tests pass、機能変更ゼロ。
   - **B3 タブ別ウインドウ機能 完成**: タブを別 BrowserWindow に切り出し / 戻す。multi-window infra (per-window `windowState` Map / `activeForEvent` でクロスウインドウ race を遮断 / cross-window D&D は target 側 tab-bar が drop を直接受ける方式 + main の `activeTabDrag` 中継で迂回)。起動経路 5 通り: タブ右クリック「別ウインドウへ」/ ツールバー「別窓化」/ ファイル → 別ウインドウで開く... / タブを bar 外へドラッグ (tearout) / 別窓のタブを本窓のバーへドラッグ (dock-back)。Chrome 風「last-tab-out で child window 自動 close」。
+
+- **v2.0.0-beta.72** — 2026-05-15、**案 D 印刷経路の再々設計 + 案 X 自動 close (FAX freeze 根治)**:
+  - **背景**: β70 までは「K-PDF3 自前印刷ダイアログ → Adobe `/t` silent print → spool 投入」だったが、ユーザ報告で「FAX を選択して印刷ボタンを押すと送信先入力ダイアログが出ないままフリーズする」が判明。原因解析: Adobe `/t` flag は仕様上 driver UI を抑止するため FAX driver の送信先ダイアログが立ち上がれない + β70 で追加した `hideNewPdfReaderWindowsInBackground` の SW_HIDE polling が万一出ても 5 秒間消し続ける + Acrobat Pro は β69 の 30 秒 kill タイマで強制 kill → ユーザ視点では「30 秒沈黙してから印刷失敗」のフリーズ体験。
+  - **設計検討の経緯**: 案 A (FAX のみ Chromium silent:false) → 案 B (FAX も Adobe `/t` 続行) → 案 C (FAX のみ Adobe `/p`、通常は silent 継続) → 案 D (全部 Adobe `/p` 直接、エンジン丸投げ) → 案 E (案 D + 設定 Adobe で再入力) → 案 F (案 D + DEVMODE push で K-PDF3 設定を Adobe にプリセット) を検討。最終的に **「エンジン丸投げを徹底し、中途半端に K-PDF3 ダイアログを挟まない」案 D** を採用 (「もう少し設定しておく」系の便利機能は FAX 副作用リスクが大きい [β54-β61 の規定プリンタ swap が FAX 送信先まで記憶した過去あり] のでプリンタ swap も DEVMODE push もしない、ユーザは Adobe ダイアログで毎回プリンタ・部数・FAX 送信先を入力する)。
+  - **新経路 (案 D)**: K-PDF3 印刷ボタン → サイドバー / split-view 選択を読んで filteredPages を作る → main 経由で temp PDF を生成 (assembleHybridPdf、範囲・回転・overlay は従来通り焼き込み) → 検出済 PDF Reader (Adobe / Foxit / PDF-XChange) を `/n /s /o /p <pdf>` で起動 (`/h` `/t` 撤去) → Reader のネイティブ印刷ダイアログが開く → ユーザがプリンタ・部数・FAX 送信先を Reader 上で設定 → 印刷ボタン → spool に投入。範囲は temp PDF に焼き込み済なので Reader ダイアログでは「すべて」のままで OK (Adobe CLI に範囲を渡す flag は仕様上ない)。
+  - **自動 close (案 X)**: Acrobat Pro DC は `/p` 経路でも自然 exit しないため、印刷キュー監視ベースの auto-kill を実装。spawn 前に `Win32_PrintJob` を PowerShell snapshot して beforeJobIds をベースライン化、spawn 後 1 秒間隔で polling、新規ジョブ ID 検出 = ユーザが「印刷」を確定したと判断 → 3 秒バッファ後 (spool 投入完了待ち) に Reader + ヘルパー (AcroCEF.exe / AcroBroker.exe / AcroFlattener.exe) を `taskkill /F /T` で kill。Reader 自身が exit (× 閉じ等) した場合は `sp.on("close")` で即 finish (helpers cleanup のみ)。安全網タイムアウト 5 分 (ユーザがダイアログ放置 / キャンセル時)。
+  - **Reader 不在環境フォールバック**: 既存 K-PDF3 自前ダイアログ + Sumatra/Chromium silent 経路は維持。`kpdf3:print-pdf-silent` IPC から Reader CLI 経路を撤去して Sumatra (Win + 非 FAX + 同梱) → Chromium silent (FAX or 非 Win or Sumatra 不在) の二段に縮小。`hasPdfReader` IPC で renderer 側が分岐。
+  - **削除コード**: `printPdfViaPdfReader` (β64-β70 の `/t` silent path、~140 行) / `hideNewPdfReaderWindowsInBackground` (β70 SW_HIDE polling、~50 行) / `print-pdf-silent` 内の Reader 経路 + engineOverride による Reader 指定。
+  - **追加コード**: `snapshotPrintJobs` (PowerShell `Win32_PrintJob` 列挙) / `printPdfViaReaderDialog` (新 spawn + 監視ループ) / `kpdf3:has-pdf-reader` + `kpdf3:print-via-reader-dialog` IPC / preload の `hasPdfReader` + `printViaReaderDialog` / renderer の `actionPrintViaReader` (新経路エントリ)。
+  - **差分**: +259 / -243 行、380/380 tests pass。トラブルシュート用に `pdfreader-dialog-finish` / `print-via-reader-dialog-start` を `userData/crash.log` にログ。中止ボタンは案 D 経路では撤去 (Adobe を × で閉じれば中止)、busy modal は描画進捗のみ。
+
+- **v2.0.0-beta.73** — 2026-05-15、**テキスト太字化バグ修正 + Adobe spawn 高速化**:
+  - **テキスト overlay 太字化バグ**: ユーザ報告「テキストで打った文字が、焼き付け保存するとやたらに太くなる」。原因解析: `src/renderer/exporter.js` `drawOverlay` の text 経路 + callout 経路で `boldOpt = { bold: !!props.bold }` のみ渡しており、`paintGlyphRun` の `stroke` パラメータが default true (β34 で「AA halo を plug する 0.03×fontSize の薄い stroke」を残していた)。bold OFF でも常に `lineWidth = fontSize * 0.03` の strokeText が走るため「画面 = 細字 (CSS は stroke なし) / 焼き付け = 太字」の不整合が発生。
+  - **修正**: `boldOpt = { bold: !!props.bold, stroke: !!props.bold }` に拡張、bold OFF なら strokeText 自体を skip。900dpi (EXPORT_ZOOM) では fillText の AA halo が紙で gray dot にならないことは β41 で日付スタンプ (I4) で実証済なので、テキスト overlay も同じ判断で stroke opt-out できる。bold ON 時は従来通り 0.06×fontSize で太く。
+  - **Adobe spawn 高速化**: ユーザ報告「Adobe ダイアログの立ち上がりもう少し早くならない?」。`printPdfViaReaderDialog` の preamble は元々 `getProcessPidsByName` (Acrobat.exe + AcroCEF.exe + AcroBroker.exe + AcroFlattener.exe = 4 回 tasklist、各 ~200ms) と `snapshotPrintJobs` (1 回 PowerShell、~500-1500ms) を逐次実行で **1.3-2.3 秒** preamble に消費していた。`Promise.all` で並列化 → `~max(800ms, 1500ms) ≈ 1.5 秒` (体感 ~1 秒短縮)。Adobe 自体の startup 3-5 秒は外部依存で削れないが、JS 側は限界まで詰めた。差分 +23 / -6 行。
+  - **trade-off 記録**: PID snapshot は spawn より前に取らないと「新規 Adobe」を kill 対象から逃す race リスクがあるため spawn と並列化はしない。snapshot 同士の並列化は完全に独立操作なので race なし。
 
 配布フォルダは Google Drive 経由を継続中だが、**β5 以降はテスターが手動入れ替え不要**：起動時に autoUpdater が新版を検出して 98 風ダイアログから 1 クリック更新 (β7 以降は完全 silent)。新規テスター向けの初回 installer のみ Google Drive 共有 (最新は GitHub Release `windom21-cpu/k-pdf3-releases` 直リンク推奨)。
 
@@ -706,6 +726,7 @@ npm test              # 全テスト（380/380 pass、2026-05-09）
 | **2026-05-12 末（β34〜β35 + CI 案 B-2 + 「後で」仮説）** | β34 で E1 太字を独立軸 chk + E2 外部 PDF 挿入 viewer も vector render 化 + CI を案 B-2 に分割 (β=Win 単独 / stable=3 OS)。β35 で F1 `image-rendering: -webkit-optimize-contrast` + F2 synthetic を 1.5x oversample。β31/β32 起動クラッシュは autoUpdater 経路の一時不整合 (「後で」仮説) と確定。 |
 | **2026-05-13〜14（β36〜β70 大量 polish + 印刷経路試行錯誤）** | 詳細は git log。要点: β36 吹き出し枠ぴったり化、β37〜β41 日付スタンプ年月のみバリアント + プレビュー / ゴースト統一 + 印刷 overstroke 調整、β42〜β43 FAX 経路対応、β44 ウインドウサイズ永続化、β45 削除ダイアログ視覚位置 + サムネ右クリック削除、β46〜β50 印刷プロパティ完全反映 (DEVMODE 同期 restore + 印刷中クローズ確認)、β51 診断クラッシュロガー (stable 前撤去予定)、β52〜β53 Apeos C2360 ハング解消 (byte-copy も Sumatra 経路統一)。β54〜β63 印刷品質改善試行 (案 M GDI / 案 N PostScript / 案 N' PCL / ζ font embed) すべて C2360 ドライバ構造的制約に阻まれ撤回。β64〜β70 で **C アプローチ = PDF Reader CLI 委譲** (Adobe Reader DC / Acrobat Pro / Foxit / PDF-XChange、三段カスケード) を採用、β70 で印刷エンジン選択 UI + Acrobat Pro ウィンドウ強制 hide。 |
 | **2026-05-14〜15（B2 リファクタ + B3 タブ別ウインドウ + β71）** | **B2 renderer.js モジュール分離 完結**: S1 (busy-modal/dialogs/file-browser) + S2 (overlay-edit/selection/placement) を経て、S3-a (stamp-helpers + stamp-presets + stamp-dialogs (manager+register+trial 統合)) + S3-b (bookmark-pane) + S4 (print-flow) + S5 (tab-manager) を一気に着地。renderer.js 8631 → 4472 行 (-48.2%)、12 モジュールに分散。tab-manager は callback 注入 (saveActiveStateInto / applyStateFromTab) で renderer 側 let alias の書き換え責任を保ったまま tabs Map + activeTabId を完全所有。380 tests pass。/ **B3 タブ別ウインドウ機能 完成**: B3-α タブ右クリック「別ウインドウへ」+ multi-window infra (windowState Map + activeForEvent でクロスウインドウ race を遮断)、B3-α 拡張で File menu「別ウインドウで開く...」と ツールバー「別窓化」、B3-β タブを bar 外へドラッグで tearout (text/plain dataTransfer はデスクトップ drop で OS 副産物が出るため撤去)、B3-γ 別窓のタブを本窓のタブバーへドラッグで dock-back (Electron は cross-window で source dragend 不発火のため target tab-bar の drop event で main の activeTabDrag を引き当てる方式に切替)。Chrome 風 last-tab-out で child window 自動 close。ProjectStore に markDirty() 追加 (adopt 経路の dirty 維持)。/ **β71 リリース**: 上記 B2+B3 を載せて配布。 |
+| **2026-05-15（案 D 印刷経路再々設計 + β72/β73）** | **β72 案 D + 案 X**: K-PDF3 印刷ボタン → サイドバー / split-view 選択を読んで temp PDF 生成 → Adobe / Foxit / PDF-XChange を `/n /s /o /p` で起動 → Reader ネイティブ印刷ダイアログ → ユーザがプリンタ・部数・FAX 送信先を Reader 上で設定 → 印刷。**FAX 送信先ダイアログが出ない freeze バグ根治** (β54-β70 で残っていた構造的問題、Adobe `/t` silent 仕様 + β70 SW_HIDE polling が併発していた)。Acrobat Pro 自動 close は印刷キュー監視 (`Win32_PrintJob` PowerShell snapshot → spawn → 1 秒間隔 polling → 新規ジョブ ID 検出 = ユーザ「印刷」確定 → 3 秒バッファ後 `taskkill /F /T`) で実装、Pro DC は `/p` でも自然 exit しない問題に対処。安全網 5 分タイムアウト。Reader 不在環境は既存 K-PDF3 自前ダイアログ + Sumatra/Chromium silent fallback (kpdf3:print-pdf-silent から Reader CLI 経路撤去、二段に縮小)。`printPdfViaPdfReader` (~140 行) + `hideNewPdfReaderWindowsInBackground` (~50 行) 削除、`snapshotPrintJobs` + `printPdfViaReaderDialog` + `kpdf3:has-pdf-reader` + `kpdf3:print-via-reader-dialog` IPC 追加。/ **β73**: テキスト太字化バグ修正 — drawOverlay の text + callout 経路で `boldOpt = { bold, stroke }` に拡張、bold OFF なら strokeText 自体を skip。β34 で残していた 0.03×fontSize overstroke が「画面 = 細字 / 焼き付け = 太字」の不整合を生んでいたのを根治 (β41 日付スタンプで「900dpi なら fillText AA halo は紙で gray dot にならない」と実証済の判断を踏襲)。/ Adobe spawn 高速化 — printPdfViaReaderDialog の preamble (PID snapshot 4 回 + 印刷キュー snapshot 1 回) を `Promise.all` で並列化、~1.3-2.3 秒 → ~1.5 秒 (体感 ~1 秒短縮)。Adobe 自体の startup 3-5 秒は外部依存で削れない。 |
 
 ---
 
