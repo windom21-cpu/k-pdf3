@@ -80,6 +80,10 @@ contextBridge.exposeInMainWorld("kpdf3", {
   // Drag&drop helper — Electron 32+ removed File.path from the renderer,
   // so dropped files now need webUtils.getPathForFile() (preload-only).
   getPathForFile:     (file)    => webUtils.getPathForFile(file),
+  // β75 diag: renderer から fire-and-forget で crash.log に追記。
+  // D&D で「開かない」現象の追跡に使う (drop event 発火 / path 解決 /
+  // openPdfSmart 結果 / OS-open 受領)。本番でも常時 ON でよい程度に軽量。
+  logDiag:            (label, data) => ipcRenderer.send("kpdf3:log-diag", label, data),
   // Open the OS-native printer properties dialog for a given printer.
   printerProperties:  (name)    => ipcRenderer.invoke("kpdf3:printer-properties", name),
   searchPdf:          (q)       => ipcRenderer.invoke("kpdf3:search-pdf", q),

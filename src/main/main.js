@@ -132,6 +132,11 @@ app.on("child-process-gone", (_event, details) => {
 app.whenReady().then(() => {
   logCrash("session-start", `pid=${process.pid} version=${app.getVersion()}`);
 });
+// β75 diag: renderer から fire-and-forget でログを残せるチャンネル。
+// D&D 経路の追跡 (drop event 発火 / path 解決 / openPdfSmart 結果) に使う。
+ipcMain.on("kpdf3:log-diag", (_event, label, data) => {
+  try { logCrash(String(label ?? "diag"), data); } catch { /* swallow */ }
+});
 // ---- Tab registry (ADR-0015 案 B) ----------------------------------------
 //
 // Each tab owns an open Workspace + mupdf Document handle. The
@@ -651,9 +656,10 @@ function pdfPathsFromArgv(argv) {
 //     mutex to release, then retry. If retry succeeds, continue
 //     normally.
 let gotInstanceLock = app.requestSingleInstanceLock();
+const _diagInitArgvPdfs = pdfPathsFromArgv(process.argv);
 if (!gotInstanceLock
     && process.platform === "win32"
-    && pdfPathsFromArgv(process.argv).length === 0) {
+    && _diagInitArgvPdfs.length === 0) {
   // β48 J5b: β47 used Atomics.wait + SharedArrayBuffer for a precise
   // synchronous sleep but Electron's main process disables shared
   // memory by default → the call threw, the unhandled error escaped
@@ -661,6 +667,10 @@ if (!gotInstanceLock
   // user saw the same "click does nothing" symptom and had to manually
   // kill via Task Manager. Replace with a plain busy-wait inside a
   // try/catch so any koffi/taskkill failure can't take down startup.
+  // β75 diag: zombie-kill が生きた 1st instance を誤殺している疑い
+  // を晴らす / 確定させるため、attempt と result をログに残す。
+  const _j5Start = Date.now();
+  logCrash("j5-zombie-kill-attempt", { pid: process.pid });
   try {
     spawnSync(
       "taskkill",
@@ -682,13 +692,38 @@ if (!gotInstanceLock
     // or when the user attaches a console. Never throw from here.
     console.warn("[startup] zombie-kill recovery failed:", err?.message ?? err);
   }
+  logCrash("j5-zombie-kill-result", {
+    pid: process.pid,
+    gotLockAfter: gotInstanceLock,
+    elapsedMs: Date.now() - _j5Start,
+  });
 }
 if (!gotInstanceLock) {
+  // β75 diag: 2nd instance が silent quit する瞬間を残す。hadPdfArg=true
+  // なら 1st instance の second-instance event で開かれるはず、false
+  // なら β47 J5 が動かなかった経路 (zombie-kill 失敗 / non-win32)。
+  logCrash("second-instance-quit", {
+    pid: process.pid,
+    hadPdfArg: _diagInitArgvPdfs.length > 0,
+    argvPdfs: _diagInitArgvPdfs,
+  });
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
     const paths = pdfPathsFromArgv(argv);
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    const mwAlive = !!(mainWindow && !mainWindow.isDestroyed());
+    // β75 diag: 2nd instance が PDF arg を持って来た時の routing を残す。
+    // mainWindow 死亡 + B3 子ウインドウ alive のケースで paths が宙に
+    // 浮く疑いを確証 / 否認するための情報。
+    let allWindowsCount = 0;
+    try { allWindowsCount = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length; } catch { /* noop */ }
+    logCrash("second-instance-received", {
+      paths,
+      mainWindowAlive: mwAlive,
+      mainWindowMinimized: mwAlive ? mainWindow.isMinimized() : null,
+      totalWindows: allWindowsCount,
+    });
+    if (mwAlive) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
@@ -697,6 +732,7 @@ if (!gotInstanceLock) {
       }
     } else {
       pendingOpens.push(...paths);
+      logCrash("second-instance-deferred", { paths, reason: "no-main-window" });
     }
   });
 }
