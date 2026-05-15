@@ -3184,6 +3184,9 @@ function attachInsertGapDrop(gap, afterPageNo) {
     e.stopPropagation();
     const file = e.dataTransfer.files[0];
     const path = kpdf3.getPathForFile?.(file) || file.path || "";
+    // β75 diag: ユーザがサムネ間の "+" 帯にうっかり落として「open でなく
+    // insert になった」のを区別するために、gap drop での file 受領を残す。
+    kpdf3.logDiag?.("gap-drop-file", { path, afterPageNo });
     if (!path || !/\.pdf$/i.test(path)) {
       wsStatus.textContent = "PDF ファイルをドロップしてください";
       return;
@@ -4276,22 +4279,42 @@ document.addEventListener("drop", async (e) => {
   e.preventDefault();
   _clearFileDragging();
   const files = e.dataTransfer?.files;
-  if (!files || files.length === 0) return;
+  // β75 diag: D&D「開かない」現象の追跡。各 early-return / openPdfSmart
+  // 呼出をログに残して、どこで止まったか / そもそも drop event が
+  // 発火したかを crash.log で判別できるようにする。
+  const _diagBase = {
+    target: e.target instanceof Element ? `${e.target.tagName}.${e.target.className || ""}`.slice(0, 80) : "?",
+    isOpen,
+  };
+  if (!files || files.length === 0) {
+    kpdf3.logDiag?.("drop-no-files", _diagBase);
+    return;
+  }
   const file = files[0];
   // Electron 32+ removed File.path on the renderer side; resolve the
   // backing OS path via the preload helper instead.
-  const path = kpdf3.getPathForFile?.(file) || file.path || "";
+  const fromWebUtils = kpdf3.getPathForFile?.(file) || "";
+  const path = fromWebUtils || file.path || "";
   if (!path) {
+    kpdf3.logDiag?.("drop-no-path", { ..._diagBase, fileName: file?.name, fileSize: file?.size });
     wsStatus.textContent = "ドロップされたファイルのパスを取得できませんでした";
     return;
   }
   if (!/\.pdf$/i.test(path)) {
+    kpdf3.logDiag?.("drop-not-pdf", { ..._diagBase, path });
     wsStatus.textContent = "PDF ファイルを指定してください";
     return;
   }
+  kpdf3.logDiag?.("drop-opening", { ..._diagBase, path, source: fromWebUtils ? "webUtils" : "file.path" });
   // No dirty check — drop opens in a fresh tab when the active one is
   // already busy, mirroring the toolbar 開く button.
-  await openPdfSmart(path);
+  try {
+    await openPdfSmart(path);
+    kpdf3.logDiag?.("drop-opened", { path });
+  } catch (err) {
+    kpdf3.logDiag?.("drop-error", { path, msg: String(err?.message ?? err) });
+    throw err;
+  }
 });
 // Belt-and-braces: ensure the file-dragging class clears even when the
 // dragenter/dragleave pair gets out of sync (which is easy to do on
@@ -4398,6 +4421,10 @@ kpdf3.onReloadRequest?.(() => reloadRenderer());
 // path opens in a fresh tab when the active one is already in use
 // (preserves the user's editing context).
 kpdf3.onOpenPdfByOS?.((pdfPath) => {
+  // β75 diag: second-instance routing が renderer 側に届いた瞬間を残す。
+  // main の "second-instance-received" と対応付けて、IPC で paths が
+  // 落ちていないか・受領後に openPdfSmart が成功したかを追跡できる。
+  kpdf3.logDiag?.("os-open-received", { pdfPath, isOpen });
   if (!pdfPath || typeof pdfPath !== "string") return;
   void openPdfSmart(pdfPath);
 });
