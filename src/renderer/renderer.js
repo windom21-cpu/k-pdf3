@@ -2759,6 +2759,7 @@ function applyFitWidthNow() {
   const targetWidth = viewerContainer.clientWidth - 32;
   if (targetWidth <= 0 || sz.w <= 0) return false;
   applyZoom(targetWidth / sz.w);
+  recenterCurrentPageHorizontally();
   return true;
 }
 
@@ -2775,7 +2776,23 @@ function applyFitPageNow() {
   const targetH = viewerContainer.clientHeight - 32;
   if (targetW <= 0 || targetH <= 0 || sz.w <= 0 || sz.h <= 0) return false;
   applyZoom(Math.min(targetW / sz.w, targetH / sz.h));
+  recenterCurrentPageHorizontally();
   return true;
+}
+
+/** β76: 横スクロール位置を「現在ページが viewport 中央に来るよう」reset。
+ *  混在サイズ PDF (A3 + A4 など) で fit-width が A4 基準で計算された場合、
+ *  inner 幅 = max page width = A3 のため margin auto が効かず inner が
+ *  viewport 左端に張り付き、A4 ページが右にずれて見える症状の対策。
+ *  fit 系操作 (Ctrl+3 / 幅をウィンドウに合わせる / 1 ページ全体) の直後に
+ *  呼んで、現在ページの中央が viewport 中央に来るよう scrollLeft を調整。 */
+function recenterCurrentPageHorizontally() {
+  const pageNo = viewer.currentPage;
+  if (!pageNo) return;
+  const pageEl = viewer.pageEls?.get(pageNo);
+  if (!pageEl) return;
+  const target = pageEl.offsetLeft - (viewerContainer.clientWidth - pageEl.offsetWidth) / 2;
+  viewerContainer.scrollLeft = Math.max(0, target);
 }
 
 function actionZoomFit() {
@@ -4173,6 +4190,12 @@ window.addEventListener("keydown", (e) => {
   } else if (key === "0") {
     e.preventDefault();
     actionZoom100();
+  } else if (key === "3") {
+    // β76: 慣れ親しんだ Ctrl+3 で「幅をウィンドウに合わせる」 (現在ページ
+    // 基準のフィット + 横スクロール中央寄せ)。混在サイズ PDF で他ページ
+    // へ移動した後に元の見やすさへ戻すリセット用。
+    e.preventDefault();
+    actionZoomFit();
   } else if (key === "g") {
     e.preventDefault();
     actionPageGoto();
@@ -4359,7 +4382,7 @@ const MENU_HINTS = {
   redo: "取り消した編集をやり直します (Ctrl+Y)",
   "zoom-in": "表示を拡大します (Ctrl++)",
   "zoom-out": "表示を縮小します (Ctrl+-)",
-  "zoom-fit": "ページがウィンドウに収まる倍率にします",
+  "zoom-fit": "ページがウィンドウに収まる倍率にします (Ctrl+3)",
   "zoom-fit-page": "1 ページ全体がウィンドウに収まる倍率にします",
   "zoom-100": "表示を 100% に戻します (Ctrl+0)",
   "page-prev": "前のページへ移動します (PageUp)",
