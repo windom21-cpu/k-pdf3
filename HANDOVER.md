@@ -1,7 +1,7 @@
 # K-PDF3 開発引き継ぎ書
 
 最終更新: 2026-05-15  
-現在のバージョン: **v2.0.0-beta.73**
+現在のバージョン: **v2.0.0-beta.76**
 
 直近セッション (2026-05-14〜05-15) の成果:
 - **B2 renderer.js モジュール分離 完結** — renderer.js 8631 → 4472 行 (-48.2%)、12 モジュールに分散
@@ -9,6 +9,9 @@
 - **印刷経路** — β64-β70 で PDF Reader CLI 委譲 (Adobe / Foxit / PDF-XChange) を採用、β70 で印刷エンジン選択 UI 追加
 - **β72 案 D 採用 — 印刷ボタン → Adobe `/p` 直接** : K-PDF3 自前印刷ダイアログを skip して Reader (Adobe / Foxit / PDF-XChange) のネイティブ印刷ダイアログを直接開く方式へ転換。**FAX 送信先入力ダイアログが出ない freeze バグを根治** (β54-β70 で苦労した FAX 経路の構造的問題が解決)。**案 X 印刷キュー監視で Acrobat Pro 自動 close** : Win32_PrintJob を 1 秒間隔 polling、新規ジョブ検出 → 3 秒バッファ後に Reader を kill (Pro DC は `/p` 経路でも自然 exit しないため)。安全網 5 分 timeout
 - **β73 印刷品質 + 速度改善** : テキスト overlay の太字化バグ修正 (β34 0.03×fontSize overstroke を bold OFF 時は完全 skip、画面 = 細字 / 焼き付け = 太字 の不整合を解消)。Adobe spawn 前の PID + 印刷キュー snapshot を `Promise.all` で並列化、preamble ~1.3-2.3 秒 → ~1.5 秒 (Adobe ダイアログ表示まで体感 ~1 秒短縮)
+- **β74 起動 / 編集 UX 改善** : β51 から原因未特定だった **「PDF 開閉繰り返しクラッシュ」を根治** — 2nd instance が singleton lock を取れず `app.quit()` → `will-quit` → `globalShortcut.unregisterAll()` が `whenReady` 未到達のため throw する経路を `app.isReady()` ガードで遮断。テキスト/吹き出し/テキスト stamp の編集モード入りを **シングルクリック = 選択 / ダブルクリック = 編集** に分離 (新規プレース直後の auto-edit は維持)
+- **β75 D&D 診断ログ追加** : 「D&D で PDF が開かない時がある」報告に対し、`drop-*` / `gap-drop-file` / `os-open-received` / `j5-zombie-kill-*` / `second-instance-*` の診断ログを main + renderer に仕込み。**最有力仮説**: β47 J5 の "no PDF arg + lock 失敗 → 全 K-PDF3.exe を taskkill /F" 経路が生きた 1st instance を誤殺している可能性 (β74 期間に 2-30 秒間隔の session-start クラスタが多発)。crash.log 集計後に β77 で修正方針確定
+- **β76 編集機能 + 表示品質** : (1) **クリップボード画像 paste** — Ctrl+V / 右クリック「貼り付け」で OS クリップボード画像 (PNG/JPEG/WebP) を image stamp として挿入 (max 200pt 幅 / 8MB、ページ中央配置、既存 resize handle そのまま)。OS 画像 > 内部 _overlayClipboard の優先順。(2) **明朝/serif の hairline 補強** — β73 で stroke 全 skip した結果、明朝の hairline が 900dpi raster でも AA halo を吸われ紙で薄く見える症状を修正。bold OFF + fontId が mincho/serif のときだけ `lineWidth = 0.02 × fontSize` (太字 0.06 の 1/3、β34 0.03 の 2/3)。Gothic は β73 状態維持。(3) **混在サイズ PDF の fit-width 中央寄せ** — A3+A4 / A4 縦+横 等で 1 ページ目 (A4) なのに右に寄って見えていた症状を修正。`inner.style.width = layout.maxWidth` (= A3 幅) で fit-width が A4 基準なら inner が viewport より広く margin auto が効かない構造的問題。`recenterCurrentPageHorizontally()` を新設し fit 操作後に viewport 中央寄せ。**Ctrl+3 で「幅をウィンドウに合わせる」** ショートカット追加。(4) 分割画面サムネに **非 A4 バッジ** (サイドバーと同じ規則)
 
 このドキュメントは、K-PDF3 の開発を引き継ぐ次の AI アシスタント（または別環境の自分）が会話履歴なしで作業継続できるよう書かれています。**着手前に §0 → §1 → §2 → §3 → §6 → §8 → §17 の順で必ず読んでください**。
 
@@ -16,7 +19,7 @@
 
 ---
 
-## 直近進捗 (β12〜β73、概観)
+## 直近進捗 (β12〜β76、概観)
 
 詳細な per-β エントリは `git log --oneline` + 各 tag の commit message が一次資料。HANDOVER 上は要点のみ。
 
@@ -28,15 +31,20 @@
 - **β71** (2026-05-14〜15): **B2 renderer.js モジュール分離 完結** (8631→4472 行 / -48.2% / 12 モジュール) + **B3 タブ別ウインドウ機能完成** (5 経路: 右クリック / ツールバー / File menu / drag tearout / drag dock-back + 子ウインドウ自動 close)
 - **β72** (2026-05-15): **案 D 印刷経路の再々設計** — K-PDF3 自前印刷ダイアログを skip して Adobe `/p` 直接起動に切替、エンジン丸投げ。**FAX 送信先ダイアログが出ない freeze バグ根治** (β54-β70 で残っていた FAX 経路の構造的問題が解決、Acrobat Pro `/t` silent flag が driver UI を抑止する仕様 + β70 SW_HIDE が併発していた)。**案 X 印刷キュー監視 (Win32_PrintJob)** で新規ジョブ検出 → 3 秒バッファ後に Reader を kill (Pro DC は `/p` でも自然 exit しないため)。安全網 5 分 timeout、Reader × 閉じ即 finish。Reader 不在環境は既存 K-PDF3 自前ダイアログ + Sumatra/Chromium silent fallback (kpdf3:print-pdf-silent から Reader CLI 経路撤去、Sumatra → Chromium silent の二段に縮小)
 - **β73** (2026-05-15): **テキスト太字化バグ修正** — drawOverlay の text + callout 経路で `boldOpt = { bold, stroke }` に拡張、bold OFF なら strokeText 自体を skip。β34 で残していた 0.03×fontSize overstroke が「画面 = 細字 / 焼き付け = 太字」の不整合を生んでいたのを根治 (900dpi なら fillText AA halo は紙で gray dot にならないことは β41 日付スタンプで実証済)。**Adobe spawn 高速化** — printPdfViaReaderDialog の preamble (PID snapshot 4 回 + 印刷キュー snapshot 1 回) を `Promise.all` で並列化、~1.3-2.3 秒 → ~1.5 秒 (体感 ~1 秒短縮)。Adobe 自体の startup 3-5 秒は外部依存で削れない
+- **β74** (2026-05-15): **globalShortcut crash 根治** — 2nd instance が singleton lock 失敗 → `app.quit()` → `will-quit` → `unregisterShortcuts()` → `globalShortcut.unregisterAll()` が `whenReady` 未到達のため "cannot be used before the app is ready" を throw する経路を `if (!app.isReady()) return` で遮断。β51 から原因未特定だった「PDF 開閉繰り返しクラッシュ」の正体だった可能性が高い。**テキスト系 overlay の click 分離** — handleOverlayClick から enterTextEdit を除去し handleOverlayDblclick を新設。**シングル = 選択 / ダブル = 編集**。新規プレース直後の auto-edit (overlay-placement.js setTimeout) は維持
+- **β75** (2026-05-15): **D&D 診断ログ追加** — 「D&D で開かない時がある」報告に対し、main.js + renderer.js + preload.cjs に `kpdf3:log-diag` IPC を追加し、`j5-zombie-kill-attempt/result` / `second-instance-quit/received/deferred` / `drop-no-files/no-path/not-pdf/opening/opened/error` / `gap-drop-file` / `os-open-received` を仕込み。**最有力仮説**: β47 J5 の no-PDF-arg + lock 失敗 → 全 K-PDF3.exe taskkill が生きた 1st instance を誤殺している (β74 期間の crash.log で 2-30 秒間隔の session-start クラスタが多発)。確証取得後 β77 で修正、修正候補は (a) taskkill 前に他 K-PDF3 の最近 session-start を確認、(b) `second-instance` で mainWindow 死亡 + 子ウインドウ alive 時の routing 改善、(c) renderer の getPathForFile fallback。詳細は auto-memory `[[d-and-d-diag-then-fix]]`
+- **β76** (2026-05-15): 編集機能 + 表示品質 4 件。**(1) クリップボード画像 paste** — `document.addEventListener("paste")` 経由で OS クリップボードの PNG/JPEG/WebP を `addAsset` 登録 → image stamp として挿入。`pasteImageBlob()` (max 200pt 幅 / 8MB / ページ中央配置)、`tryPasteFromAnyClipboard()` (右クリック経路用、`navigator.clipboard.read`)。OS 画像 > 内部 `_overlayClipboard` の優先順、Ctrl+V keydown は preventDefault せず paste event に委譲。既存 resize handle / drag / export 経路にそのまま乗る。**(2) 明朝/serif hairline 補強** — `paintGlyphRun` に `opts.hairline` 追加。bold OFF + fontId が mincho/serif のとき `lineWidth = 0.02 × fontSize` (太字 0.06 の 1/3、β34 0.03 の 2/3)。Gothic は β73 状態 (no stroke) 維持。Adobe (β72 案 D) は印刷ダイアログ/spooler 担当のみで glyph pixel 化は K-PDF3 Canvas2D fillText 完結なので、Adobe 経由で字を濃くする手段は無い。**(3) 混在サイズ PDF の fit-width 中央寄せ + Ctrl+3** — A3+A4 等で 1 ページ目 (A4) が右に寄る症状の根治。`inner.style.width = layout.maxWidth` で fit-width が A4 基準計算されると inner が viewport より広く `margin: 0 auto` が overflow 時に効かない構造的問題を、`recenterCurrentPageHorizontally()` で fit 操作後に `viewerContainer.scrollLeft` を「現在ページ中央が viewport 中央」になるよう調整。**Ctrl+3 で「幅をウィンドウに合わせる」** リセット (慣れ親しまれているショートカット)。**(4) 分割画面サムネに非 A4 バッジ** — サイドバーと同じ `detectPaperSize` 規則 (A3/A5/B4/B5/Letter/Legal)、`.split-thumb { position: relative }` を追加して既存 `.thumb-size-badge` をそのまま流用
 
 ## 当面の残課題 / 未解決事項
 
+- **D&D「開かない」根因確定 → β77 修正** (進行中) — β75 で診断ログ仕込み済。**ユーザの 1 日使用後の crash.log を集計 → 仮説確定 → 修正**。最有力仮説は β47 J5 の no-PDF-arg + lock 失敗 → 全 K-PDF3.exe taskkill が生きた 1st instance を誤殺。修正候補 (a) taskkill 前に他 K-PDF3 の最近 session-start を確認、(b) `second-instance` で mainWindow 死亡 + B3 子ウインドウ alive 時の routing 改善、(c) renderer の getPathForFile fallback (OneDrive / 添付 placeholder 対策)。詳細は auto-memory `[[d-and-d-diag-then-fix]]`
+- **サムネ D&D で別ウインドウへ選択ページ挿入** (設計済、未着手 — D&D 修正後) — A ウインドウのサムネ複数選択 → B のサイドバー or 分割画面 gap にドロップ → 選択ページだけ B に synthetic page として挿入。B3-γ `activeTabDrag` の page 版を main に新設、`addInsertedPdfPages` を `pageIndices?: number[]` 対応に拡張。~150 行/半日。確定論点: path 渡し / マルチ選択 Phase 1 必須 / gap のみ受付 / synthetic + sha256 は Phase 2。詳細は auto-memory `[[thumb-cross-window-insert]]`
 - **C3 Adobe で押した annotation が viewer 表示されない** (印刷では出る) — §15.3 / §17 の **annotation read-only proxy**。実装は新セッション規模
 - **「後で」仮説の恒久対応** — autoUpdater 「ダウンロードしますか?」で「後で」を選ぶと中間ダウンロード残留 → 後続バージョン取得時に整合性破壊の仮説 (β34 配布前に判明)。対応案: (a) ダイアログから「後で」撤去、(b) キャンセル時の差分ファイル cleanup
-- **PDF 開閉繰り返しでクラッシュ** (β51 ユーザー報告) — 原因未特定。診断ロガー (β51 J7) を仕込み済、再現したら `userData/crash.log` を解析
+- ~~**PDF 開閉繰り返しでクラッシュ** (β51 ユーザー報告)~~ — **β74 で根治済** (2nd instance の `app.quit()` → `will-quit` → `globalShortcut.unregisterAll()` が `whenReady` 未到達で throw する経路だった)。診断ロガーは β75 拡張継続中
 - **CI release matrix race** (stable 時に再発リスク) — β タグでは案 B-2 (Win 単独) で構造的に解消、stable v2.0.0 リリース時に手動シーケンシャル trigger or `needs:` 化を検討
-- **印刷経路の構造的制約 (β72 で大幅軽減)** — β69 までの 30 秒体感待ちは β72 案 D 採用 (Adobe `/p` + 印刷キュー監視) で解決。Pro DC を含めユーザが「印刷」を押した瞬間に新規ジョブが検出されるので 3 秒バッファ後に kill、平均 ~4 秒で Adobe が自動 close する。画像スタンプは bbox raster (β62) で影響範囲は最小化済
-- **stable リリース時の cleanup**: β51 で追加した **クラッシュ診断ロガー一式を撤去** (`crashLogPath()` / `logCrash()` / `print-route` 等のログ呼び出し / `kpdf3:open-crash-log` IPC / preload `openCrashLog` / index.html の `data-action="open-crash-log"` / `actionOpenCrashLog`)
+- **印刷経路の構造的制約 (β72 で大幅軽減)** — β69 までの 30 秒体感待ちは β72 案 D 採用 (Adobe `/p` + 印刷キュー監視) で解決。Pro DC を含めユーザが「印刷」を押した瞬間に新規ジョブが検出されるので 3 秒バッファ後に kill、平均 ~4 秒で Adobe が自動 close する。画像スタンプは bbox raster (β62) で影響範囲は最小化済。**β76 で明朝の薄さも対策済** (mincho/serif 限定 hairline overstroke)
+- **stable リリース時の cleanup**: β51 で追加した **クラッシュ診断ロガー一式を撤去** (`crashLogPath()` / `logCrash()` / `print-route` 等のログ呼び出し / `kpdf3:open-crash-log` IPC / preload `openCrashLog` / index.html の `data-action="open-crash-log"` / `actionOpenCrashLog`)。**β75 で追加した D&D 診断ログ** (`drop-*` / `gap-drop-file` / `os-open-received` / `j5-zombie-kill-*` / `second-instance-*` / `kpdf3:log-diag` IPC) **も同時撤去対象**
 - **Wayland ショートカット** — F5 / Ctrl+R / F12 が Ubuntu Wayland で発火しない。バージョン情報ダイアログのリロード / 開発者ツールボタンで代替可。`project_kpdf3_shortcut_unresolved.md` 参照
 
 **HANDOVER 更新ルール**: HANDOVER.md は **ユーザーが明示的に依頼した時だけ** 書き換える。β タグを切る毎に勝手に refresh しない (2026-05-12 にユーザーから明示)。
