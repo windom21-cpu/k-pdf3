@@ -4298,6 +4298,43 @@ const menuBar = new MenuBar({
   },
 });
 
+// ---- β.80 Phase E: form-text-font select に system フォントを動的追加 ----
+//   既存 4 preset (明朝/ゴシック/Serif/Sans) は <optgroup label="プリセット">
+//   に集約し、main から取得した OS インストール済フォントを
+//   <optgroup label="システム"> として末尾に追加する。フォント値は
+//   そのまま form_field.fontFace に保存され、viewer / 印刷経路で
+//   getTextFontStack(fontFace) が解決する (preset 名以外は CSS の
+//   font-family にダイレクトに引き渡す、fonts.js 参照)。
+(async () => {
+  const sel = document.getElementById("form-text-font");
+  if (!sel || !kpdf3?.listSystemFonts) return;
+  try {
+    const fonts = await kpdf3.listSystemFonts();
+    if (!Array.isArray(fonts) || fonts.length === 0) return;
+    const oldValue = sel.value;
+    const presetGroup = document.createElement("optgroup");
+    presetGroup.label = "プリセット";
+    const existing = [...sel.querySelectorAll("option")];
+    for (const opt of existing) presetGroup.appendChild(opt);
+    sel.innerHTML = "";
+    sel.appendChild(presetGroup);
+    const sysGroup = document.createElement("optgroup");
+    sysGroup.label = "システム";
+    for (const name of fonts) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      // option のスタイルにそのフォントを当てるとプレビュー風になる
+      opt.style.fontFamily = `"${name.replace(/"/g, '\\"')}"`;
+      sysGroup.appendChild(opt);
+    }
+    sel.appendChild(sysGroup);
+    sel.value = oldValue || "mincho";
+  } catch (err) {
+    console.warn("[form-text-font] system fonts load failed:", err);
+  }
+})();
+
 // ---- Render quality (oversample level) -------------------------------
 const RENDER_QUALITY_KEY = "kpdf3.renderQuality";
 

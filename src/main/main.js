@@ -3461,6 +3461,94 @@ ipcMain.handle("kpdf3:render-inserted-source-page", async (_, payload) => {
   }
 });
 
+/**
+ * β.80: OS にインストールされた system font 名一覧を返す (申請書テンプレ
+ * のフォーム枠でフォント指定するため)。result は string[]、エラー時は
+ * 空配列。OS 別の手段:
+ *
+ *   - Linux: `fc-list :scalable=true family` を spawn。同義 alias は
+ *     コンマ区切りで返るので primary name (先頭) のみ採用
+ *   - Windows: PowerShell + System.Drawing.Text.InstalledFontCollection
+ *   - macOS: `system_profiler SPFontsDataType -json` (将来対応、現状は
+ *     空配列で fallback)
+ *
+ * 取得結果は 1 セッション分 module-level でキャッシュ (毎回 spawn せず
+ * とも変化しない前提)。
+ */
+let _systemFontsCache = null;
+ipcMain.handle("kpdf3:list-system-fonts", async () => {
+  if (_systemFontsCache) return _systemFontsCache;
+  const fonts = await _collectSystemFonts();
+  _systemFontsCache = fonts;
+  return fonts;
+});
+
+function _runOnce(cmd, args, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    try {
+      const proc = spawn(cmd, args, { windowsHide: true });
+      const chunks = [];
+      let settled = false;
+      const settle = (value) => {
+        if (settled) return;
+        settled = true;
+        try { proc.kill(); } catch { /* ignore */ }
+        resolve(value);
+      };
+      const timer = setTimeout(() => settle(""), timeoutMs);
+      proc.stdout.on("data", (b) => chunks.push(b));
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve(Buffer.concat(chunks).toString("utf-8"));
+        else settle("");
+      });
+      proc.on("error", () => { clearTimeout(timer); settle(""); });
+    } catch {
+      resolve("");
+    }
+  });
+}
+
+async function _collectSystemFonts() {
+  const platform = process.platform;
+  try {
+    if (platform === "linux") {
+      const stdout = await _runOnce("fc-list", [":scalable=true", "family"]);
+      if (!stdout) return [];
+      const set = new Set();
+      for (const line of stdout.split(/\r?\n/)) {
+        // 各行は "Family A,Family A Bold,Family A 太字" のようにカンマ
+        // 区切り alias を持つことがある。primary name = 先頭フィールド。
+        const primary = line.split(",")[0].trim();
+        if (primary && primary.length <= 64) set.add(primary);
+      }
+      return [...set].sort((a, b) => a.localeCompare(b, "ja"));
+    }
+    if (platform === "win32") {
+      const ps =
+        "Add-Type -AssemblyName System.Drawing; " +
+        "(New-Object System.Drawing.Text.InstalledFontCollection).Families | " +
+        "ForEach-Object { $_.Name }";
+      const stdout = await _runOnce(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", ps],
+        8000,
+      );
+      if (!stdout) return [];
+      const set = new Set();
+      for (const line of stdout.split(/\r?\n/)) {
+        const name = line.trim();
+        if (name && name.length <= 64) set.add(name);
+      }
+      return [...set].sort((a, b) => a.localeCompare(b, "ja"));
+    }
+    // macOS: 後回し (system_profiler は出力が巨大、parse を別途実装)
+    return [];
+  } catch {
+    return [];
+  }
+}
+
 ipcMain.handle("kpdf3:get-app-info", async () => {
   return {
     appVersion: app.getVersion(),

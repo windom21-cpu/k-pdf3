@@ -65,6 +65,16 @@ export function getTextFontStack(fontId, opts = {}) {
     // β31 legacy — map to the new two-axis form (mincho + hanko digits)
     return `${TEXT_DIGITS_HANKO_FAMILY}, ${TEXT_FONT_STACKS.mincho}`;
   }
+  // β.80: fontId が既知 preset でない場合、system font name とみなして
+  // CSS の font-family にそのまま流す (フォーム枠用、ユーザが申請書の
+  // 不動文字に合わせて選んだ OS インストール済フォントが直接書ける)。
+  // フォント名は CSS 上で引用符付きが安全 (空白・記号含む場合)。
+  if (fontId && !Object.prototype.hasOwnProperty.call(TEXT_FONT_STACKS, fontId)) {
+    const family = `"${String(fontId).replace(/"/g, '\\"')}"`;
+    // 末尾に既定 sans フォントを fallback として追加 (フォントがその PC
+    // に無いとき素の "MS UI Gothic" 系で表示される)。
+    return `${family}, "MS UI Gothic", "Hiragino Kaku Gothic ProN", sans-serif`;
+  }
   const main = TEXT_FONT_STACKS[fontId] ?? TEXT_FONT_STACKS.default;
   if (opts.digitsHanko) return `${TEXT_DIGITS_HANKO_FAMILY}, ${main}`;
   return main;
