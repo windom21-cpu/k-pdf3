@@ -67,6 +67,7 @@ import {
   placeFormRadio,
   startFormTextDrag,
   startFormCircleDrag,
+  // (form-fill imports below)
   currentRedactionColor,
   currentMarkerColor,
   currentTextFontId,
@@ -104,6 +105,14 @@ import {
   clearBookmarkState,
 } from "./bookmark-pane.js";
 import { initPrintFlow, actionPrint } from "./print-flow.js";
+import {
+  initFormFill,
+  invalidateTabOrderCache,
+  focusFirst as formFillFocusFirst,
+  setFocusedFieldId as setFormFocusedFieldId,
+  handleFillModeClickOnField,
+  handleFillModeKeydown,
+} from "./form-fill.js";
 import {
   createTabState,
   initTabManager,
@@ -179,7 +188,14 @@ const btnRotateRight = $("btn-rotate-right");
 const viewer = new Viewer(viewerContainer, {
   projectStore,
   onPagePointerDown: handlePagePointerDown,
-  onOverlayClick: handleOverlayClick,
+  // β.80: 記入モード中はクリックを form-fill に振り、通常はそれまで通り
+  // overlay-selection.handleOverlayClick に流す。ダブルクリックは作成
+  // モードと同じ振る舞い (記入モードでもダブルクリックでテキスト編集
+  // 入りが期待できる) を維持。
+  onOverlayClick: (id, mods) => {
+    if (formFillMode && handleFillModeClickOnField(id)) return;
+    handleOverlayClick(id, mods);
+  },
   onOverlayDblclick: handleOverlayDblclick,
   onTextEditCommit: handleTextEditCommit,
   onOverlayDragEnd: handleOverlayDragEnd,
@@ -297,6 +313,14 @@ initPrintFlow({
   sidebarThumbSelection: () => sidebarThumbSelection,
   isSplitMode: () => isSplitMode,
   fetchVisiblePages: () => fetchVisiblePages(),
+});
+// β.80: 記入モード (form-fill)
+initFormFill({
+  projectStore: () => projectStore,
+  history: () => history,
+  viewer,
+  isFormFillMode: () => formFillMode,
+  setFormFillMode: (on) => setFormFillMode(on),
 });
 
 initTabManager({
@@ -1042,6 +1066,13 @@ document.addEventListener("pointerdown", (ev) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hidePageContextMenu();
 });
+// β.80: 記入モード時の Tab / Space / Enter / Esc を最優先で捕捉。
+// capture phase に居るので、デフォルトのブラウザ Tab フォーカス移動や
+// 他の keydown listener より先に preventDefault できる。記入モードで
+// 無いときは form-fill ハンドラ自身が早期 return するので干渉しない。
+document.addEventListener("keydown", (e) => {
+  handleFillModeKeydown(e);
+}, { capture: true });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     hideOverlayContextMenu();
@@ -1319,6 +1350,15 @@ function setFormFillMode(on) {
       : "記入モードへ (Tab で次のフィールドへ移動して値を入力)";
   }
   document.body.classList.toggle("form-fill-mode", formFillMode);
+  if (formFillMode) {
+    // 記入モードに入ったら、現在表示中のページに合わせて最初のフィールド
+    // にフォーカスする。フィールドが 1 つも無いときは黙って何もしない
+    // (ユーザーが先にフィールドを配置してから記入する想定)。
+    invalidateTabOrderCache();
+    formFillFocusFirst();
+  } else {
+    setFormFocusedFieldId(null);
+  }
 }
 
 /** Toggle the mode-options bar + the per-mode child visible to match
@@ -1530,6 +1570,10 @@ function attachStoreSubscribers() {
   _projectStoreUnsub = projectStore.subscribe((event) => {
     refreshDirtyIndicator();
     refreshMenuState();
+    // β.80: form_field の add/remove/update で Tab 順キャッシュを無効化。
+    // page 並び替えは event.kind="reset" で reset され、その後の
+    // page-registry rebuild 後に次回参照で再計算される。
+    invalidateTabOrderCache();
     // Invalidate thumb caches for pages whose overlays changed so the
     // sidebar / split-save thumbs reflect the latest content (stamps,
     // marks, text).

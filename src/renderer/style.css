@@ -941,6 +941,27 @@ body.form-fill-mode .overlay-form_field.overlay-form-text {
   background: rgba(255, 255, 0, 0.04);
 }
 
+/* Focused field in 記入モード — bright blue ring + slightly stronger
+   background so the user always knows where Tab landed. */
+.overlay-form_field.form-focused {
+  outline: 2px solid #0078d4 !important;
+  outline-offset: -1px;
+  background: rgba(0, 120, 212, 0.10);
+  z-index: 5;
+}
+body.form-fill-mode .overlay-form_field.form-focused {
+  outline: 2px solid #0078d4 !important;
+  background: rgba(0, 120, 212, 0.14);
+}
+/* While editing the text inside a focused form-text field, the outer
+   outline would visually compete with the contentEditable caret/blink.
+   The .editing class is added by viewer.enterTextEdit; combine it with
+   .form-focused to switch the look to a softer fill. */
+.overlay-form_field.form-focused.editing {
+  outline-color: #00569c !important;
+  background: rgba(0, 120, 212, 0.05);
+}
+
 /* Drag previews for form-text / form-circle */
 .form-text-preview {
   position: absolute;

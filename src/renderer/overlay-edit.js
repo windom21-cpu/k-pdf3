@@ -48,6 +48,20 @@ export function handleTextEditCommit(id, newText, opts = {}) {
   const history = _history();
   const ov = projectStore.get(id);
   if (!ov) return;
+  // β.80: form_field stores the typed string under `value`. Its bbox is
+  // user-defined (drag) and stays fixed on commit — we don't auto-fit
+  // to the entered text because the申請書 has a printed slot whose
+  // size the user has matched. Just write the value back.
+  const isFormText =
+    ov.type === "form_field" && ov.properties?.fieldKind === "text";
+  if (isFormText) {
+    history.execute(
+      new UpdateOverlayCommand(projectStore, id, {
+        properties: { ...ov.properties, value: newText },
+      }),
+    );
+    return;
+  }
   // Auto-fit the box to the entered text so longer / multi-line content
   // doesn't overflow the initial placement size. Both callout and
   // plain text overlays use the same recipe: the editor's reported
