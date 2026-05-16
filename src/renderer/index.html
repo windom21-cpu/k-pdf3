@@ -615,6 +615,13 @@
     <button id="btn-mode-redaction" disabled>墨消し</button>
     <button id="btn-mode-marker" disabled title="ドラッグで半透明マーカーを引きます">マーカー</button>
     <button id="btn-mode-callout" disabled title="クリック→ドラッグで矢印付き吹き出しテキストを配置します">吹き出し</button>
+    <span class="toolbar-sep"></span>
+    <button id="btn-mode-form-text" disabled title="申請書テンプレ用テキスト枠を配置 (記入モードで Tab 移動)">枠</button>
+    <button id="btn-mode-form-check" disabled title="チェック欄を配置 (✓/✗/☑/■)">☑</button>
+    <button id="btn-mode-form-circle" disabled title="既存印字を囲む丸 (○) を配置 (記入時にトグル)">〇</button>
+    <button id="btn-mode-form-radio" disabled title="ラジオ欄を配置 (同一グループ内で排他)">◉</button>
+    <button id="btn-toggle-fill-mode" disabled title="記入モード ↔ 作成モードを切替 (Tab で次のフィールドへ)">記入</button>
+    <span class="toolbar-sep"></span>
     <button id="btn-page-numbers" disabled title="全ページのフッターにページ番号を一括追加">＋ページ番号</button>
     <button id="btn-page-popup" disabled title="現在のページを別ウインドウで表示（比較用）">別窓</button>
     <button id="btn-detach-tab" disabled title="現在のタブを別ウインドウに分離します">別窓化</button>
@@ -719,6 +726,84 @@
         <option value="#a5d6a7">緑</option>
         <option value="#f8bbd0">桃</option>
         <option value="#90caf9">青</option>
+      </select>
+    </div>
+    <div class="mode-options" data-mode="form-text" hidden>
+      <span class="mode-options-label">フォント:</span>
+      <select id="form-text-font" class="toolbar-inline-select"
+              title="記入時に使うフォント">
+        <option value="mincho" selected>明朝</option>
+        <option value="gothic">ゴシック</option>
+        <option value="serif">Serif</option>
+        <option value="sans">Sans</option>
+      </select>
+      <span class="mode-options-label">サイズ:</span>
+      <select id="form-text-size" class="toolbar-inline-select" title="記入時の文字サイズ (pt)">
+        <option value="8">8</option>
+        <option value="10">10</option>
+        <option value="12" selected>12</option>
+        <option value="14">14</option>
+        <option value="18">18</option>
+        <option value="24">24</option>
+        <option value="36">36</option>
+      </select>
+      <span class="mode-options-label">色:</span>
+      <select id="form-text-color" class="toolbar-inline-select" title="記入時の色">
+        <option value="#000000" selected>黒</option>
+        <option value="#0066cc">青</option>
+      </select>
+      <span class="mode-options-label" style="margin-left:12px">枠線:</span>
+      <input type="checkbox" id="form-text-frame" title="作成時に薄いガイド枠を表示 (印刷時は出ません)" checked>
+    </div>
+    <div class="mode-options" data-mode="form-check" hidden>
+      <span class="mode-options-label">記号:</span>
+      <select id="form-check-style" class="toolbar-inline-select" title="チェックに使う記号">
+        <option value="✓" selected>✓ (チェック)</option>
+        <option value="✗">✗ (バツ)</option>
+        <option value="☑">☑ (黒チェック)</option>
+        <option value="■">■ (黒塗り)</option>
+      </select>
+      <span class="mode-options-label" style="margin-left:12px">サイズ:</span>
+      <select id="form-check-size" class="toolbar-inline-select" title="記号の高さ (pt)">
+        <option value="10">10</option>
+        <option value="12">12</option>
+        <option value="14" selected>14</option>
+        <option value="18">18</option>
+        <option value="24">24</option>
+      </select>
+    </div>
+    <div class="mode-options" data-mode="form-circle" hidden>
+      <span class="mode-options-label">線太さ:</span>
+      <select id="form-circle-stroke" class="toolbar-inline-select" title="丸囲みの線の太さ (pt)">
+        <option value="0.7">細</option>
+        <option value="1.2" selected>標準</option>
+        <option value="1.8">太</option>
+      </select>
+      <span class="mode-options-label" style="margin-left:12px">色:</span>
+      <select id="form-circle-color" class="toolbar-inline-select" title="丸囲みの色">
+        <option value="#000000" selected>黒</option>
+        <option value="#cc0000">赤</option>
+        <option value="#0066cc">青</option>
+      </select>
+    </div>
+    <div class="mode-options" data-mode="form-radio" hidden>
+      <span class="mode-options-label">グループ:</span>
+      <input type="text" id="form-radio-group" class="toolbar-inline-input"
+             placeholder="例: 続柄"
+             title="同じグループ名のラジオは排他選択 (1 つだけ ON)"
+             style="width:120px;font-family:'MS UI Gothic',sans-serif;font-size:12px">
+      <span class="mode-options-label" style="margin-left:12px">記号:</span>
+      <select id="form-radio-style" class="toolbar-inline-select" title="選択時に表示する記号">
+        <option value="●" selected>● (黒丸)</option>
+        <option value="✓">✓ (チェック)</option>
+        <option value="○">○ (丸囲み)</option>
+      </select>
+      <span class="mode-options-label" style="margin-left:12px">サイズ:</span>
+      <select id="form-radio-size" class="toolbar-inline-select" title="記号の高さ (pt)">
+        <option value="10">10</option>
+        <option value="12">12</option>
+        <option value="14" selected>14</option>
+        <option value="18">18</option>
       </select>
     </div>
   </div>

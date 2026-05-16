@@ -63,6 +63,10 @@ import {
   placeMarker,
   placeCallout,
   placeText,
+  placeFormCheck,
+  placeFormRadio,
+  startFormTextDrag,
+  startFormCircleDrag,
   currentRedactionColor,
   currentMarkerColor,
   currentTextFontId,
@@ -156,6 +160,12 @@ const textBoldChk = $("text-bold");
 const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
 const btnModeCallout = $("btn-mode-callout");
+// β.80: form-field tools (申請書テンプレ)
+const btnModeFormText = $("btn-mode-form-text");
+const btnModeFormCheck = $("btn-mode-form-check");
+const btnModeFormCircle = $("btn-mode-form-circle");
+const btnModeFormRadio = $("btn-mode-form-radio");
+const btnToggleFillMode = $("btn-toggle-fill-mode");
 const wsStatus = $("ws-status");
 const viewerContainer = $("viewer-container");
 const sidebar = $("sidebar");
@@ -222,8 +232,13 @@ function updatePageIndicator(current, total) {
 }
 
 let isOpen = false;
-/** @type {'none' | 'text' | 'stamp' | 'redaction'} */
+/** @type {'none' | 'text' | 'stamp' | 'redaction' | 'marker' | 'callout' | 'form-text' | 'form-check' | 'form-circle' | 'form-radio'} */
 let placementMode = "none";
+// β.80: 申請書フォームの「記入モード」フラグ。true 時はフィールドを
+// 配置・移動・サイズ変更できず、Tab で次のフィールドへ移動して値だけ
+// 入力する。デフォルトは false (=作成/通常モード)。Phase B では state
+// だけ持ち、実際の挙動は Phase C で接続する。
+let formFillMode = false;
 let activeSourceName = "";
 
 // Wire the overlay-edit / overlay-selection modules up to renderer.js
@@ -540,6 +555,14 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
     startMarkerDrag(pageNo, x, y, evt, div);
   } else if (placementMode === "callout") {
     startCalloutDrag(pageNo, x, y, evt, div);
+  } else if (placementMode === "form-text") {
+    startFormTextDrag(pageNo, x, y, evt, div);
+  } else if (placementMode === "form-check") {
+    placeFormCheck(pageNo, x, y);
+  } else if (placementMode === "form-circle") {
+    startFormCircleDrag(pageNo, x, y, evt, div);
+  } else if (placementMode === "form-radio") {
+    placeFormRadio(pageNo, x, y);
   }
   // Clicks on empty page area no longer deselect — that fired even
   // when the user "exited" inline edit by clicking outside, leaving
@@ -1271,15 +1294,38 @@ function setPlacementMode(mode) {
   btnModeRedaction.classList.toggle("toggled", mode === "redaction");
   btnModeMarker.classList.toggle("toggled", mode === "marker");
   if (btnModeCallout) btnModeCallout.classList.toggle("toggled", mode === "callout");
+  // β.80: form-* tool toggle highlights
+  if (btnModeFormText) btnModeFormText.classList.toggle("toggled", mode === "form-text");
+  if (btnModeFormCheck) btnModeFormCheck.classList.toggle("toggled", mode === "form-check");
+  if (btnModeFormCircle) btnModeFormCircle.classList.toggle("toggled", mode === "form-circle");
+  if (btnModeFormRadio) btnModeFormRadio.classList.toggle("toggled", mode === "form-radio");
   syncStampGhostMode();
   syncStampPalettePopup();
   refreshMenuState();
   refreshModeOptionsBar();
 }
 
+/** β.80: 「記入」トグル — 作成モード ↔ 記入モードの切替。記入モードで
+ *  は placementMode を強制 none にし、フォームフィールドの位置/サイズ
+ *  変更を無効化する。Phase C で Tab nav と入力フォーカスを接続する。 */
+function setFormFillMode(on) {
+  formFillMode = !!on;
+  if (formFillMode && placementMode !== "none") setPlacementMode("none");
+  if (btnToggleFillMode) {
+    btnToggleFillMode.classList.toggle("toggled", formFillMode);
+    btnToggleFillMode.textContent = formFillMode ? "作成へ" : "記入";
+    btnToggleFillMode.title = formFillMode
+      ? "作成モードに戻す (フィールドを配置・移動できます)"
+      : "記入モードへ (Tab で次のフィールドへ移動して値を入力)";
+  }
+  document.body.classList.toggle("form-fill-mode", formFillMode);
+}
+
 /** Toggle the mode-options bar + the per-mode child visible to match
  *  the current placementMode. text and callout share the same options
- *  row (font + size). When mode is "none", the bar collapses entirely. */
+ *  row (font + size). When mode is "none", the bar collapses entirely.
+ *  β.80: form-text / form-check / form-circle / form-radio each have
+ *  their own options panel keyed by `data-mode`. */
 function refreshModeOptionsBar() {
   const bar = $("mode-options-bar");
   if (!bar) return;
@@ -1315,6 +1361,12 @@ function setOpen(open) {
   if (btnModeMarker) btnModeMarker.disabled = !open;
   if (markerColorSel) markerColorSel.disabled = !open;
   if (btnModeCallout) btnModeCallout.disabled = !open;
+  // β.80: form-field tools
+  if (btnModeFormText) btnModeFormText.disabled = !open;
+  if (btnModeFormCheck) btnModeFormCheck.disabled = !open;
+  if (btnModeFormCircle) btnModeFormCircle.disabled = !open;
+  if (btnModeFormRadio) btnModeFormRadio.disabled = !open;
+  if (btnToggleFillMode) btnToggleFillMode.disabled = !open;
   const btnPageNums = $("btn-page-numbers");
   if (btnPageNums) btnPageNums.disabled = !open;
   const btnPagePopup = $("btn-page-popup");
@@ -1325,6 +1377,7 @@ function setOpen(open) {
   // managed by rebuildStampPalette + the mode-options bar visibility.)
   if (!open) {
     setPlacementMode("none");
+    if (formFillMode) setFormFillMode(false);
     setSplitMode(false);
     // Clear sidebar artifacts that survive across close paths. Some
     // close routes (tab × button when no other tabs remain, switching
@@ -4817,6 +4870,34 @@ if (btnModeCallout) {
   btnModeCallout.addEventListener("click", () =>
     setPlacementMode(placementMode === "callout" ? "none" : "callout"),
   );
+}
+// β.80: form-field tool buttons
+if (btnModeFormText) {
+  btnModeFormText.addEventListener("click", () => {
+    if (formFillMode) setFormFillMode(false);
+    setPlacementMode(placementMode === "form-text" ? "none" : "form-text");
+  });
+}
+if (btnModeFormCheck) {
+  btnModeFormCheck.addEventListener("click", () => {
+    if (formFillMode) setFormFillMode(false);
+    setPlacementMode(placementMode === "form-check" ? "none" : "form-check");
+  });
+}
+if (btnModeFormCircle) {
+  btnModeFormCircle.addEventListener("click", () => {
+    if (formFillMode) setFormFillMode(false);
+    setPlacementMode(placementMode === "form-circle" ? "none" : "form-circle");
+  });
+}
+if (btnModeFormRadio) {
+  btnModeFormRadio.addEventListener("click", () => {
+    if (formFillMode) setFormFillMode(false);
+    setPlacementMode(placementMode === "form-radio" ? "none" : "form-radio");
+  });
+}
+if (btnToggleFillMode) {
+  btnToggleFillMode.addEventListener("click", () => setFormFillMode(!formFillMode));
 }
 
 // Stamp template / color: picking either auto-switches into stamp mode

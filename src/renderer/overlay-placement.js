@@ -436,3 +436,220 @@ export function placeText(pageNo, x, y) {
 
 // Marker mode is sticky — re-arming setPlacementMode("none") is the
 // caller's job (handlePagePointerDown / mode button toggle).
+
+// ============================================================
+// β.80 — Form fields (申請書テンプレ用)
+// ============================================================
+//
+// Four sub-types (fieldKind): 'text' | 'check' | 'circle' | 'radio'.
+// All four share the overlay type 'form_field' and are discriminated
+// by properties.fieldKind. Placement is sticky-or-one-shot per kind:
+//   - form-text: drag a rectangle (sticky exits to none on commit)
+//   - form-check: click a point (固定サイズ, sticky stays on for多重配置)
+//   - form-circle: drag a rectangle (the bbox of the ellipse)
+//   - form-radio: click a point (固定サイズ, group=options bar input)
+//
+// In 記入モード (formFillMode) renderer.js bypasses these placement
+// dispatches entirely — Tab nav + value entry takes over (Phase C).
+
+function _readFormTextDefaults() {
+  const fontSel = document.getElementById("form-text-font");
+  const sizeSel = document.getElementById("form-text-size");
+  const colorSel = document.getElementById("form-text-color");
+  const frameChk = document.getElementById("form-text-frame");
+  const fontSize = Math.max(6, parseInt(sizeSel?.value ?? "12", 10) || 12);
+  return {
+    fontFace: fontSel?.value || "mincho",
+    fontSize,
+    color: colorSel?.value || "#000000",
+    showFrame: frameChk ? !!frameChk.checked : true,
+  };
+}
+function _readFormCheckDefaults() {
+  const styleSel = document.getElementById("form-check-style");
+  const sizeSel = document.getElementById("form-check-size");
+  const size = Math.max(6, parseInt(sizeSel?.value ?? "14", 10) || 14);
+  return {
+    checkStyle: styleSel?.value || "✓",
+    size,
+  };
+}
+function _readFormCircleDefaults() {
+  const strokeSel = document.getElementById("form-circle-stroke");
+  const colorSel = document.getElementById("form-circle-color");
+  return {
+    strokeWidth: parseFloat(strokeSel?.value ?? "1.2") || 1.2,
+    color: colorSel?.value || "#000000",
+  };
+}
+function _readFormRadioDefaults() {
+  const groupInp = document.getElementById("form-radio-group");
+  const styleSel = document.getElementById("form-radio-style");
+  const sizeSel = document.getElementById("form-radio-size");
+  const size = Math.max(6, parseInt(sizeSel?.value ?? "14", 10) || 14);
+  return {
+    groupId: (groupInp?.value || "").trim() || "default",
+    radioStyle: styleSel?.value || "●",
+    size,
+  };
+}
+
+/** β.80: click → fixed-size form_field (check sub-type). */
+export function placeFormCheck(pageNo, x, y) {
+  const { checkStyle, size } = _readFormCheckDefaults();
+  // Square box centered on the click point; size measured in PDF point.
+  const cmd = new AddOverlayCommand(_projectStore(), {
+    pageNo,
+    type: "form_field",
+    x: x - size / 2,
+    y: y - size / 2,
+    w: size,
+    h: size,
+    zOrder: 0,
+    properties: {
+      fieldKind: "check",
+      value: "",                // empty = unchecked
+      checkStyle,
+      color: "#000000",
+    },
+  });
+  _history().execute(cmd);
+  // Sticky placement — testers can drop multiple check fields in a row
+  // without re-clicking the toolbar. Esc exits to none.
+}
+
+/** β.80: click → fixed-size form_field (radio sub-type). */
+export function placeFormRadio(pageNo, x, y) {
+  const { groupId, radioStyle, size } = _readFormRadioDefaults();
+  const cmd = new AddOverlayCommand(_projectStore(), {
+    pageNo,
+    type: "form_field",
+    x: x - size / 2,
+    y: y - size / 2,
+    w: size,
+    h: size,
+    zOrder: 0,
+    properties: {
+      fieldKind: "radio",
+      value: "",
+      radioGroupId: groupId,
+      checkStyle: radioStyle,
+      color: "#000000",
+    },
+  });
+  _history().execute(cmd);
+}
+
+/** Helper: shared drag-rect handler used by form-text and form-circle.
+ *  onCommit receives (pageNo, x, y, w, h) for the final bbox; a tiny
+ *  drag (<5pt in either dim) falls back to a default 80×20 rect. */
+function _formDragRect(pageNo, startX, startY, downEvt, div, klass, onCommit) {
+  if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
+    onCommit(pageNo, startX - 40, startY - 10, 80, 20);
+    return;
+  }
+  const pointerId = downEvt.pointerId;
+  const z = _viewer.zoom;
+  const preview = document.createElement("div");
+  preview.className = klass;
+  preview.style.left = `${startX * z}px`;
+  preview.style.top = `${startY * z}px`;
+  preview.style.width = "0px";
+  preview.style.height = "0px";
+  div.appendChild(preview);
+
+  let curX = startX;
+  let curY = startY;
+  try { div.setPointerCapture(pointerId); } catch { /* ignore */ }
+
+  function onMove(e) {
+    if (e.pointerId !== pointerId) return;
+    const rect = div.getBoundingClientRect();
+    curX = (e.clientX - rect.left) / z;
+    curY = (e.clientY - rect.top) / z;
+    const x = Math.min(startX, curX);
+    const y = Math.min(startY, curY);
+    const w = Math.abs(curX - startX);
+    const h = Math.abs(curY - startY);
+    preview.style.left = `${x * z}px`;
+    preview.style.top = `${y * z}px`;
+    preview.style.width = `${w * z}px`;
+    preview.style.height = `${h * z}px`;
+  }
+  function cleanup() {
+    try { div.releasePointerCapture(pointerId); } catch { /* ignore */ }
+    div.removeEventListener("pointermove", onMove);
+    div.removeEventListener("pointerup", onUp);
+    div.removeEventListener("pointercancel", onCancel);
+    preview.remove();
+  }
+  function onUp(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+    const x = Math.min(startX, curX);
+    const y = Math.min(startY, curY);
+    const w = Math.abs(curX - startX);
+    const h = Math.abs(curY - startY);
+    if (w < 5 || h < 5) {
+      onCommit(pageNo, startX - 40, startY - 10, 80, 20);
+    } else {
+      onCommit(pageNo, x, y, w, h);
+    }
+  }
+  function onCancel(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+  }
+  div.addEventListener("pointermove", onMove);
+  div.addEventListener("pointerup", onUp);
+  div.addEventListener("pointercancel", onCancel);
+}
+
+/** β.80: drag → form_field (text sub-type) rectangle. */
+export function startFormTextDrag(pageNo, startX, startY, downEvt, div) {
+  const { fontFace, fontSize, color } = _readFormTextDefaults();
+  _formDragRect(
+    pageNo, startX, startY, downEvt, div,
+    "form-text-preview",
+    (pno, x, y, w, h) => {
+      const cmd = new AddOverlayCommand(_projectStore(), {
+        pageNo: pno,
+        type: "form_field",
+        x, y, w, h,
+        zOrder: 0,
+        properties: {
+          fieldKind: "text",
+          value: "",
+          fontFace,
+          fontSize,
+          color,
+        },
+      });
+      _history().execute(cmd);
+    },
+  );
+}
+
+/** β.80: drag → form_field (circle sub-type), bbox of the ellipse. */
+export function startFormCircleDrag(pageNo, startX, startY, downEvt, div) {
+  const { strokeWidth, color } = _readFormCircleDefaults();
+  _formDragRect(
+    pageNo, startX, startY, downEvt, div,
+    "form-circle-preview",
+    (pno, x, y, w, h) => {
+      const cmd = new AddOverlayCommand(_projectStore(), {
+        pageNo: pno,
+        type: "form_field",
+        x, y, w, h,
+        zOrder: 0,
+        properties: {
+          fieldKind: "circle",
+          value: "on",          // 丸囲みは常に「表示する」が初期値
+          strokeWidth,
+          color,
+        },
+      });
+      _history().execute(cmd);
+    },
+  );
+}

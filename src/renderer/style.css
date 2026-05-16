@@ -904,6 +904,60 @@ button.toggled {
   z-index: 999;
 }
 
+/* ----- β.80: Form fields (申請書テンプレ) -----
+ * 作成モードでは薄い破線ガイド枠を出して位置確認しやすくする。
+ * 記入モード (body.form-fill-mode) では枠を最小化してフォーカス枠で
+ * 識別する。印刷時は overlay-only PDF が値だけを出すのでガイド枠は
+ * 物理紙に印字されない。
+ */
+.overlay-form_field {
+  pointer-events: auto;
+  outline: 1px dashed rgba(0, 0, 128, 0.45);
+  background: rgba(0, 0, 128, 0.04);
+}
+.overlay-form_field.overlay-form-text {
+  /* テキスト枠は薄い背景 + 破線 outline で位置と書込領域を明示 */
+  background: rgba(255, 255, 0, 0.10);
+}
+.overlay-form_field.overlay-form-check,
+.overlay-form_field.overlay-form-radio {
+  /* チェック / ラジオは小さい squares、 outline は更に控えめに */
+  outline: 1px dashed rgba(0, 0, 128, 0.55);
+  background: rgba(255, 255, 255, 0.5);
+}
+.overlay-form_field.overlay-form-circle {
+  /* 丸囲み: outline は使わず inline border-radius:50% に任せる
+     (overlay 共通の dotted outline を消す) */
+  outline: none;
+  background: transparent;
+}
+/* 記入モード: ガイド枠は薄くして、選択中のフィールドだけ強調する
+   (詳細は Phase C で focus styling を追加) */
+body.form-fill-mode .overlay-form_field {
+  outline-color: rgba(0, 0, 128, 0.20);
+  background: rgba(0, 0, 128, 0.02);
+}
+body.form-fill-mode .overlay-form_field.overlay-form-text {
+  background: rgba(255, 255, 0, 0.04);
+}
+
+/* Drag previews for form-text / form-circle */
+.form-text-preview {
+  position: absolute;
+  background: rgba(255, 255, 0, 0.12);
+  outline: 1px dashed rgba(0, 0, 128, 0.55);
+  pointer-events: none;
+  z-index: 999;
+}
+.form-circle-preview {
+  position: absolute;
+  border: 1px dashed rgba(0, 0, 128, 0.55);
+  border-radius: 50%;
+  background: transparent;
+  pointer-events: none;
+  z-index: 999;
+}
+
 /* ----- Stamp overlays (印影) -----
  *
  * The stamp's hit-test region must be a *rectangle* — otherwise CSS
