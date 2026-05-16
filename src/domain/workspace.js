@@ -301,6 +301,14 @@ export class Workspace {
     return -id;
   }
 
+  /** Lightweight list of inserted_pages rows (no image_blob).
+   *  Exposed for the `kpdf3:render-inserted-source-page` IPC handler
+   *  which needs sourcePdfId / sourcePageIndex to locate the
+   *  vector-source PDF for a given synthetic page id. */
+  listInsertedPages() {
+    return listInsertedPages(this.db);
+  }
+
   /** Read the raw image bytes for an inserted-image page (lookup by
    *  positive id; the renderer translates synthetic pageNo → id by
    *  negating). */
