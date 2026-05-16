@@ -16,7 +16,20 @@
 const randomUUID = () => globalThis.crypto.randomUUID();
 
 /**
- * @typedef {'text' | 'stamp' | 'image' | 'redaction' | 'line' | 'rect' | 'signature' | 'page_number'} OverlayType
+ * @typedef {'text' | 'stamp' | 'image' | 'redaction' | 'line' | 'rect' | 'signature' | 'page_number' | 'form_field'} OverlayType
+ *
+ * form_field (β.80+): 申請書テンプレート用。properties に
+ *   {
+ *     fieldKind: 'text' | 'check' | 'circle' | 'radio',
+ *     value: string,              // text: 入力文字列 / check, circle, radio: 'on' | ''
+ *     fontFace?: string,          // text のみ
+ *     fontSize?: number,          // text のみ (pt)
+ *     color?: string,             // 既定 '#000000'
+ *     checkStyle?: '✓' | '✗' | '☑' | '■',  // check のみ
+ *     tabIndex?: number,          // null/undefined = 自動 (Y → X)
+ *     radioGroupId?: string,      // radio のみ (同 group 排他)
+ *   }
+ * を持つ。下敷き印刷時は背景 PDF を除外し overlay のみを出力する。
  */
 
 /**

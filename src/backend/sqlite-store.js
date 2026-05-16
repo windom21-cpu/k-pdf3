@@ -63,6 +63,7 @@ export function openWorkspace(filePath, opts = {}) {
     migrateInsertedSourcePdfsTable(db);
     migrateInsertedPagesTable(db);
     migrateOverlaysDropPageFk(db);
+    migrateOverlaysAddFormField(db);
     migrateBookmarksDropPageFk(db);
     migrateStampPresetsTable(db);
   }
@@ -151,6 +152,67 @@ function migrateOverlaysDropPageFk(db) {
         type        TEXT NOT NULL CHECK(type IN (
                         'text', 'stamp', 'image', 'redaction',
                         'line', 'rect', 'signature', 'page_number'
+                    )),
+        x           REAL NOT NULL,
+        y           REAL NOT NULL,
+        w           REAL NOT NULL,
+        h           REAL NOT NULL,
+        z_order     INTEGER NOT NULL DEFAULT 0,
+        properties  TEXT NOT NULL,
+        asset_id    TEXT REFERENCES assets(id),
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO overlays_new
+        (id, page_no, type, x, y, w, h, z_order,
+         properties, asset_id, created_at, updated_at)
+        SELECT id, page_no, type, x, y, w, h, z_order,
+               properties, asset_id, created_at, updated_at
+          FROM overlays;
+      DROP TABLE overlays;
+      ALTER TABLE overlays_new RENAME TO overlays;
+      CREATE INDEX idx_overlays_page ON overlays(page_no, z_order);
+      CREATE INDEX idx_overlays_type ON overlays(type);
+      DELETE FROM overlays_spatial;
+      COMMIT;
+    `);
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+}
+
+/**
+ * β.80: extend overlays.type CHECK constraint to include 'form_field'
+ * (申請書テンプレート用フィールド種別). SQLite has no ALTER CONSTRAINT,
+ * so we rebuild the table when the existing CHECK does not contain
+ * 'form_field'. Idempotent — no-op once the new constraint is in place.
+ *
+ * Detection uses sqlite_master.sql since pragma() does not expose the
+ * CHECK expression directly. The rebuild preserves all rows and
+ * indices; the overlays_spatial rtree is reset because rowids are
+ * reassigned, and the next saveOverlays() repopulates it (same pattern
+ * as migrateOverlaysDropPageFk).
+ */
+function migrateOverlaysAddFormField(db) {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='overlays'")
+    .get();
+  if (!row || !row.sql) return;
+  if (row.sql.includes("'form_field'")) return; // already migrated
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE overlays_new (
+        id          TEXT PRIMARY KEY,
+        page_no     INTEGER NOT NULL,
+        type        TEXT NOT NULL CHECK(type IN (
+                        'text', 'stamp', 'image', 'redaction',
+                        'line', 'rect', 'signature', 'page_number',
+                        'form_field'
                     )),
         x           REAL NOT NULL,
         y           REAL NOT NULL,

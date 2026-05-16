@@ -115,7 +115,8 @@ CREATE TABLE overlays (
     page_no     INTEGER NOT NULL,
     type        TEXT NOT NULL CHECK(type IN (
                     'text', 'stamp', 'image', 'redaction',
-                    'line', 'rect', 'signature', 'page_number'
+                    'line', 'rect', 'signature', 'page_number',
+                    'form_field'
                 )),
     -- canonical bbox（top-left origin）
     x           REAL NOT NULL,
@@ -124,9 +125,11 @@ CREATE TABLE overlays (
     h           REAL NOT NULL,
     z_order     INTEGER NOT NULL DEFAULT 0,
     -- type 固有のプロパティ（JSON）
-    --   text:      { text, fontSize, fontId, color, lineHeight, ... }
-    --   stamp:     { kind, text?, dateText?, color, frame, assetId?, fontSize? }
-    --   redaction: { color, mode } -- mode: 'draft' | 'applied'
+    --   text:       { text, fontSize, fontId, color, lineHeight, ... }
+    --   stamp:      { kind, text?, dateText?, color, frame, assetId?, fontSize? }
+    --   redaction:  { color, mode } -- mode: 'draft' | 'applied'
+    --   form_field: { fieldKind, value, fontFace?, fontSize?, color?,
+    --                 checkStyle?, tabIndex?, radioGroupId? } -- β.80+
     --   etc.
     properties  TEXT NOT NULL,
     asset_id    TEXT REFERENCES assets(id),           -- 画像系の場合

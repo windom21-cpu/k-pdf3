@@ -79,7 +79,16 @@ try {
     x: 100, y: 200, w: 200, h: 30, zOrder: 0,
     properties: { color: "black", mode: "draft" },
   });
-  ok(store1.count() === 3, "store has 3 overlays");
+  // β.80: form_field overlay (申請書テンプレート用)
+  const ov4 = store1.add({
+    pageNo: 1, type: "form_field",
+    x: 200, y: 300, w: 80, h: 24, zOrder: 2,
+    properties: {
+      fieldKind: "check", value: "on", checkStyle: "✓",
+      color: "#000000", tabIndex: 1,
+    },
+  });
+  ok(store1.count() === 4, "store has 4 overlays");
 
   console.log("\n[3] Save overlays to workspace + close");
   // Snapshot the overlays in canonical order so we can compare after reload.
@@ -87,6 +96,7 @@ try {
     store1.get(ov1.id),
     store1.get(ov2.id),
     store1.get(ov3.id),
+    store1.get(ov4.id),
   ];
   ws1.saveOverlays(snapshot);
   ok(ws1.getMetadata("overlays_saved_at") !== null, "overlays_saved_at metadata recorded");
@@ -95,7 +105,7 @@ try {
   console.log("\n[4] Re-open workspace + load overlays");
   const ws2 = Workspace.open(wsPath);
   const reloaded = ws2.loadOverlays();
-  eq(reloaded.length, 3, "loaded 3 overlays");
+  eq(reloaded.length, 4, "loaded 4 overlays");
 
   console.log("\n[5] Verify field-by-field round-trip");
   const byId = new Map(reloaded.map((o) => [o.id, o]));
@@ -123,10 +133,14 @@ try {
   console.log("\n[6] ProjectStore.reset feeds reloaded overlays back in");
   const store2 = new ProjectStore();
   store2.reset(reloaded);
-  eq(store2.count(), 3, "reset → count = 3");
+  eq(store2.count(), 4, "reset → count = 4");
   eq(store2.isDirty(), false, "reset → not dirty (matches save semantic)");
-  eq(store2.getPageOverlays(1).length, 2, "page 1 has 2 overlays");
+  eq(store2.getPageOverlays(1).length, 3, "page 1 has 3 overlays (text + stamp + form_field)");
   eq(store2.getPageOverlays(2).length, 1, "page 2 has 1 overlay");
+  const reloadedFormField = reloaded.find((o) => o.id === ov4.id);
+  ok(reloadedFormField?.type === "form_field", "form_field type round-trips through CHECK constraint");
+  eq(reloadedFormField?.properties?.fieldKind, "check", "form_field.fieldKind = check");
+  eq(reloadedFormField?.properties?.checkStyle, "✓", "form_field.checkStyle = ✓");
 
   console.log("\n[7] Empty save round-trip (replace with 0 overlays)");
   ws2.saveOverlays([]);
