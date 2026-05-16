@@ -285,17 +285,22 @@ export function syncAlignToolbar() {
 }
 
 /**
- * Align all currently-selected overlays along one edge.
- *
- * Per-page grouping: overlays on different pages are aligned within
- * their own page (each page's selection gets its own min/max), since
- * aligning across pages would yield a meaningless coordinate.
+ * Align all currently-selected overlays along one edge — or resize them
+ * to match a common width / height. Per-page grouping is preserved:
+ * overlays on different pages get their own min/max so cross-page
+ * alignment never yields meaningless coordinates.
  *
  * Emits one CompositeCommand so the whole alignment is a single undo
- * unit. Overlays already at the target coordinate are skipped (no-op
- * Update would still record an entry; cheaper to filter here).
+ * unit. Overlays already at the target coordinate / size are skipped
+ * (no-op Update would still record an entry; cheaper to filter here).
  *
- * @param {"left"|"top"|"right"|"bottom"} edge
+ * β.80: "width" / "height" sub-mode added — primary (last-clicked)
+ * overlay's dimension becomes the target, mirroring PowerPoint / Visio
+ * "match width/height" semantics. When the primary isn't on a given
+ * page (multi-page selection edge case), max dim within that page is
+ * used as fallback.
+ *
+ * @param {"left"|"top"|"right"|"bottom"|"width"|"height"} edge
  */
 export function alignSelectedOverlays(edge) {
   if (selectedOverlayIds.size < 2) return;
@@ -310,9 +315,24 @@ export function alignSelectedOverlays(edge) {
     arr.push(ov);
     byPage.set(ov.pageNo, arr);
   }
+  const primary = selectedOverlayId ? projectStore.get(selectedOverlayId) : null;
   const subs = [];
   for (const overlays of byPage.values()) {
     if (overlays.length < 2) continue; // single-on-page → nothing to align against
+    if (edge === "width" || edge === "height") {
+      const dim = edge === "width" ? "w" : "h";
+      // primary がこのページに居れば primary 基準、居なければ max を fallback
+      const primaryHere =
+        primary && overlays.some((o) => o.id === primary.id) ? primary : null;
+      const targetD = primaryHere
+        ? primaryHere[dim]
+        : Math.max(...overlays.map((o) => o[dim]));
+      for (const ov of overlays) {
+        if (Math.abs(targetD - ov[dim]) < 1e-6) continue;
+        subs.push(new UpdateOverlayCommand(projectStore, ov.id, { [dim]: targetD }));
+      }
+      continue;
+    }
     let target;
     let dim;
     if (edge === "left") {
@@ -351,7 +371,13 @@ export function alignSelectedOverlays(edge) {
     return;
   }
   history.execute(new CompositeCommand(subs, `Align ${edge} (${subs.length} overlays)`));
-  _wsStatus.textContent = `${subs.length} 個の overlay を${
-    edge === "left" ? "左" : edge === "top" ? "上" : edge === "right" ? "右" : "下"
-  }揃えしました`;
+  const verb =
+    edge === "left" ? "左揃え"
+    : edge === "top" ? "上揃え"
+    : edge === "right" ? "右揃え"
+    : edge === "bottom" ? "下揃え"
+    : edge === "width" ? "幅を揃え"
+    : edge === "height" ? "高さを揃え"
+    : "整列";
+  _wsStatus.textContent = `${subs.length} 個の overlay を${verb}ました`;
 }

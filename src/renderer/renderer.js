@@ -778,10 +778,19 @@ function dispatchOverlayCtx(target) {
   if (action === "delete") {
     history.execute(new RemoveOverlayCommand(projectStore, id));
   } else if (action === "copy") {
-    const ov = projectStore.get(id);
-    if (ov) {
-      _overlayClipboard = { ...ov, properties: { ...(ov.properties ?? {}) } };
-      wsStatus.textContent = `${ov.type} をコピーしました`;
+    // β.80: 右クリック「コピー」も multi-select 対応。コンテキスト
+    // メニューを開いた overlay が複数選択の一部なら全部コピー、
+    // 単一なら従来通り 1 つだけ。
+    const ids = getSelectedIds();
+    const targetIds = ids.includes(id) && ids.length > 1 ? ids : [id];
+    _overlayClipboard = targetIds
+      .map((tid) => projectStore.get(tid))
+      .filter(Boolean)
+      .map((ov) => ({ ...ov, properties: { ...(ov.properties ?? {}) } }));
+    if (_overlayClipboard.length > 0) {
+      wsStatus.textContent = _overlayClipboard.length === 1
+        ? `${_overlayClipboard[0].type} をコピーしました`
+        : `${_overlayClipboard.length} 個のオブジェクトをコピーしました`;
     }
   } else if (action === "paste") {
     // β76: 右クリック「貼り付け」も OS 画像を優先 (paste event は
@@ -790,32 +799,45 @@ function dispatchOverlayCtx(target) {
   }
 }
 
-/** Build and add a new overlay from `_overlayClipboard` onto the
- *  currently-visible page, offset slightly from the original position.
- *  Shared by Ctrl+V and the right-click「貼り付け」menu item. */
+/** Build and add new overlay(s) from `_overlayClipboard` onto the
+ *  currently-visible page, offset slightly from the original positions.
+ *  β.80: multi-select 対応。クリップボード配列を一括 paste する。
+ *  各 overlay は元の相対位置を維持して +12pt/+12pt 移動する。Shared by
+ *  Ctrl+V and the right-click「貼り付け」menu item. */
 function pasteOverlayFromClipboard() {
-  if (!_overlayClipboard) {
+  if (!_overlayClipboard || _overlayClipboard.length === 0) {
     wsStatus.textContent = "貼り付けるものがありません";
     return;
   }
-  const src = _overlayClipboard;
-  const pageNo = viewer.currentPage || src.pageNo || 1;
+  const pageNo = viewer.currentPage || _overlayClipboard[0]?.pageNo || 1;
   const dx = 12;
   const dy = 12;
-  const cmd = new AddOverlayCommand(projectStore, {
-    pageNo,
-    type: src.type,
-    x: (src.x ?? 0) + dx,
-    y: (src.y ?? 0) + dy,
-    w: src.w,
-    h: src.h,
-    zOrder: src.zOrder ?? 0,
-    properties: { ...(src.properties ?? {}) },
-    assetId: src.assetId ?? null,
-  });
-  history.execute(cmd);
-  if (cmd._snapshot) setSelectedOverlay(cmd._snapshot.id);
-  wsStatus.textContent = `${src.type} を貼り付けました`;
+  const newIds = [];
+  for (const src of _overlayClipboard) {
+    const cmd = new AddOverlayCommand(projectStore, {
+      pageNo,
+      type: src.type,
+      x: (src.x ?? 0) + dx,
+      y: (src.y ?? 0) + dy,
+      w: src.w,
+      h: src.h,
+      zOrder: src.zOrder ?? 0,
+      properties: { ...(src.properties ?? {}) },
+      assetId: src.assetId ?? null,
+    });
+    history.execute(cmd);
+    if (cmd._snapshot) newIds.push(cmd._snapshot.id);
+  }
+  if (newIds.length === 1) {
+    setSelectedOverlay(newIds[0]);
+    wsStatus.textContent = `${_overlayClipboard[0].type} を貼り付けました`;
+  } else if (newIds.length > 1) {
+    // multi-paste 直後はまとめて選択しておくと、貼った直後の移動が
+    // 一度で済む。clearSelectionState + 各 id を順次 add する。
+    clearSelectionState();
+    for (const id of newIds) selectOverlay(id, "add");
+    wsStatus.textContent = `${newIds.length} 個のオブジェクトを貼り付けました`;
+  }
 }
 
 // ---- OS clipboard image paste ----------------------------------------
@@ -1270,8 +1292,8 @@ document.addEventListener("keydown", (e) => {
 // editable element — so OS-level copy/paste of plain text continues to
 // work normally during those flows.
 
-/** @type {import("../domain/project-store.js").Overlay | null} */
-let _overlayClipboard = null;
+/** @type {Array<import("../domain/project-store.js").Overlay>} */
+let _overlayClipboard = [];
 
 document.addEventListener("keydown", (e) => {
   if (!isOpen) return;
@@ -1286,16 +1308,20 @@ document.addEventListener("keydown", (e) => {
     if (tag === "input" || tag === "textarea" || t.isContentEditable) return;
   }
   if (key === "c") {
-    const selId = getPrimarySelectedId();
-    if (!selId) return;
-    const ov = projectStore.get(selId);
-    if (!ov) return;
-    _overlayClipboard = {
-      ...ov,
-      properties: { ...(ov.properties ?? {}) },
-    };
+    // β.80: multi-select 全部をコピー。getSelectedIds は選択順を維持
+    // しないが、paste 側はオフセット +12 で一括配置するので順序は
+    // 重要ではない (相対位置はそのまま再現される)。
+    const ids = getSelectedIds();
+    if (ids.length === 0) return;
+    _overlayClipboard = ids
+      .map((id) => projectStore.get(id))
+      .filter(Boolean)
+      .map((ov) => ({ ...ov, properties: { ...(ov.properties ?? {}) } }));
+    if (_overlayClipboard.length === 0) return;
     e.preventDefault();
-    wsStatus.textContent = `${ov.type} をコピーしました`;
+    wsStatus.textContent = _overlayClipboard.length === 1
+      ? `${_overlayClipboard[0].type} をコピーしました`
+      : `${_overlayClipboard.length} 個のオブジェクトをコピーしました`;
   }
   // β76: Ctrl+V は preventDefault せず、ブラウザネイティブの paste event
   // に任せる (上の document.addEventListener("paste") が一括処理)。
@@ -5172,6 +5198,8 @@ document.getElementById("align-left")  ?.addEventListener("click", () => alignSe
 document.getElementById("align-top")   ?.addEventListener("click", () => alignSelectedOverlays("top"));
 document.getElementById("align-right") ?.addEventListener("click", () => alignSelectedOverlays("right"));
 document.getElementById("align-bottom")?.addEventListener("click", () => alignSelectedOverlays("bottom"));
+document.getElementById("align-width") ?.addEventListener("click", () => alignSelectedOverlays("width"));
+document.getElementById("align-height")?.addEventListener("click", () => alignSelectedOverlays("height"));
 
 // Restore last-used redaction color (§17.13). The select also auto-
 // switches the redaction mode on so a single click on the color drops
