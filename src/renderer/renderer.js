@@ -104,7 +104,7 @@ import {
   setBookmarkSnapshot,
   clearBookmarkState,
 } from "./bookmark-pane.js";
-import { initPrintFlow, actionPrint } from "./print-flow.js";
+import { initPrintFlow, actionPrint, actionPrintOverlayOnly } from "./print-flow.js";
 import {
   initFormFill,
   invalidateTabOrderCache,
@@ -156,6 +156,7 @@ const btnOpen = $("btn-open");
 const btnSave = $("btn-save");
 const btnExport = $("btn-export");
 const btnPrint = $("btn-print");
+const btnPrintOverlayOnly = $("btn-print-overlay-only");
 const zoomSelect = $("zoom-select");
 const btnModeText = $("btn-mode-text");
 const btnModeStamp = $("btn-mode-stamp");
@@ -1388,6 +1389,7 @@ function setOpen(open) {
   btnOpen.disabled = false;
   btnExport.disabled = !open;
   btnPrint.disabled = !open;
+  if (btnPrintOverlayOnly) btnPrintOverlayOnly.disabled = !open;
   zoomSelect.disabled = !open;
   btnModeText.disabled = !open;
   btnModeStamp.disabled = !open;
@@ -4896,6 +4898,9 @@ btnOpen.addEventListener("click", actionOpen);
 btnSave.addEventListener("click", actionSave);
 btnExport.addEventListener("click", actionExport);
 btnPrint.addEventListener("click", actionPrint);
+if (btnPrintOverlayOnly) {
+  btnPrintOverlayOnly.addEventListener("click", actionPrintOverlayOnly);
+}
 btnModeText.addEventListener("click", () =>
   setPlacementMode(placementMode === "text" ? "none" : "text"),
 );

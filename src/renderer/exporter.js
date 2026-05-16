@@ -277,6 +277,10 @@ export async function composePagesForExport({
   renderPage,
   renderSyntheticPage, // optional: (row, zoom) => {width,height,channels,pixels}
   onProgress,
+  // β.80 下敷き印刷: true なら全ページを overlay-only strategy で
+  // 組み立てる。背景 PDF は一切 copy せず、空白ページ + overlay PNG
+  // だけが main 側で組まれる (物理紙の不動文字に重ね印刷する用途)。
+  overlayOnly = false,
 }) {
   // Ensure custom @font-face faces (CrashNumberingSerif etc.) are loaded
   // before Canvas tries to use them — Canvas falls back to the next
@@ -322,7 +326,15 @@ export async function composePagesForExport({
     // place rotated vector content, so we keep crisp text on rotated pages
     // too (β4 fell back to full-rasterize which exploded file size).
     let strategy;
-    if (hasExternalSource) {
+    if (overlayOnly) {
+      // β.80 下敷き印刷: 背景は一切出力せず、overlay だけを空白ページに
+      // 描画する。元 PDF が source / external / synthetic のどれでも、
+      // 用紙サイズ (canonical w/h) は変わらないので main 側は一律に
+      // 空白ページを作って overlay PNG を貼るだけで済む。overlay が
+      // 0 個のページは完全に空白のまま出力される (= 物理紙の不動文字
+      // だけが印字結果として残る)。
+      strategy = "overlay-only";
+    } else if (hasExternalSource) {
       strategy = "external"; // copyPages from stored external PDF (vector)
     } else if (isSynthetic) {
       strategy = "full"; // no source page to keep — rasterize everything
@@ -338,7 +350,17 @@ export async function composePagesForExport({
      *  「full-page で描画」を意味する (overlay 戦略以外 or 設計上の fallback)。 */
     /** @type {{x:number,y:number,w:number,h:number}|null} */
     let overlayBBox = null;
-    if (strategy === "full") {
+    if (strategy === "overlay-only") {
+      // β.80: overlay があれば bbox-cropped PNG を生成し、無ければ
+      // 完全に空白ページとして main に渡す (imageBytes = undefined)。
+      if (overlayCount > 0) {
+        const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
+          row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM,
+        );
+        imageBytes = await canvasToPng(canvas);
+        overlayBBox = bb;
+      }
+    } else if (strategy === "full") {
       let result;
       if (isSynthetic) {
         if (typeof renderSyntheticPage !== "function") {

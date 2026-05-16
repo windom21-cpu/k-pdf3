@@ -21,6 +21,7 @@
 import { composePagesForExport, composeSinglePageCanvas } from "./exporter.js";
 import { renderSyntheticPagePixels } from "./viewer.js";
 import { showBusy, updateBusy, hideBusy } from "./busy-modal.js";
+import { customConfirm } from "./dialogs.js";
 
 const { kpdf3 } = window;
 const $ = (id) => document.getElementById(id);
@@ -636,5 +637,112 @@ export async function actionPrint() {
     if (printCancelled) return;
     console.error("[renderer] print failed:", err);
     _wsStatus.textContent = `印刷失敗: ${err.message ?? err}`;
+  }
+}
+
+/**
+ * β.80 下敷き印刷 (申請書テンプレ用)。
+ *
+ *   1. 注意ダイアログで「白紙の申請書をトレイにセット + Adobe で
+ *      『実際のサイズ』選択」を案内
+ *   2. 全ページを overlay-only strategy で composePagesForExport
+ *      (背景 PDF は出力しない、空白ページ + overlay PNG のみ)
+ *   3. 既存 print-via-reader-dialog で Adobe ダイアログを起動
+ *
+ * 物理紙の不動文字に重ね印刷する用途。Adobe ダイアログの「実際の
+ * サイズ」を CLI で強制する手段はないため (検証済)、ユーザーへの
+ * 注意書きで担保する。sidebar/split 選択時はその範囲のみ印刷する
+ * のは通常の actionPrint と同じ。
+ *
+ * Reader 不在環境 (Sumatra / Chromium のみ) はメッセージで断る。
+ */
+export async function actionPrintOverlayOnly() {
+  if (!_isOpen()) return;
+  const pages = await _fetchVisiblePages();
+  if (pages.length === 0) return;
+
+  // 1. 事前注意ダイアログ。 \n は .confirm-message の pre-line で
+  //    そのまま改行表示される。
+  const proceed = await customConfirm({
+    title: "下敷き印刷",
+    message:
+      "プリンタトレイに白紙の申請書をセットしてください。\n\n" +
+      "Adobe の印刷ダイアログで以下を確認してください:\n" +
+      "  ・「実際のサイズ」を選択\n" +
+      "  ・「ページの拡大/縮小」は OFF\n\n" +
+      "用紙の不動文字の上に、入力した内容だけを重ね印刷します。\n\n" +
+      "印刷を開始しますか?",
+    okLabel: "印刷",
+    cancelLabel: "キャンセル",
+  });
+  if (!proceed) {
+    _wsStatus.textContent = "下敷き印刷をキャンセルしました";
+    return;
+  }
+
+  let hasReader = false;
+  try {
+    hasReader = await kpdf3.hasPdfReader();
+  } catch (err) {
+    console.warn("[print-overlay-only] hasPdfReader failed:", err);
+  }
+  if (!hasReader) {
+    _wsStatus.textContent =
+      "下敷き印刷は Adobe / Foxit / PDF-XChange の印刷ダイアログ経由のみ対応です";
+    return;
+  }
+
+  // 通常 actionPrint と同じ preselected ロジック (split / sidebar 選択)
+  let preselected = null;
+  let preselectedSource = null;
+  const splitSel = _splitThumbSelection();
+  const sidebarSel = _sidebarThumbSelection();
+  if (splitSel.pageNos.size > 0) {
+    preselected = [...splitSel.pageNos];
+    preselectedSource = "split";
+  } else if (sidebarSel.pageNos.size >= 2) {
+    preselected = [...sidebarSel.pageNos];
+    preselectedSource = "sidebar";
+  }
+  const filteredPages = preselected
+    ? pages.filter((p) => preselected.includes(p.pageNo))
+    : pages;
+  if (filteredPages.length === 0) {
+    _wsStatus.textContent = "印刷対象ページがありません";
+    return;
+  }
+
+  const projectStore = _projectStore();
+  showBusy("下敷き印刷", "ページを描画中...", 0);
+  try {
+    const composed = await composePagesForExport({
+      pages: filteredPages,
+      projectStore,
+      renderPage: kpdf3.renderPage,
+      renderSyntheticPage: renderSyntheticPagePixels,
+      overlayOnly: true,
+      onProgress: ({ done, total }) => {
+        updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
+      },
+    });
+    updateBusy("PDF Reader を起動しています...", 90);
+    const result = await kpdf3.printViaReaderDialog({
+      source: "rasterized",
+      pages: composed,
+    });
+    hideBusy();
+    const summary = preselectedSource
+      ? `${filteredPages.length} ページ (${preselectedSource === "split" ? "分割画面選択" : "サイドバー選択"})`
+      : `${filteredPages.length} ページ`;
+    const reasonText =
+      result.reason === "job-detected" ? "印刷ジョブ投入を検出"
+      : result.reason === "reader-closed" ? "Reader を終了"
+      : result.reason === "timeout" ? "タイムアウト"
+      : "完了";
+    _wsStatus.textContent = `下敷き印刷: ${result.engine} (${reasonText}) — ${summary}`;
+  } catch (err) {
+    hideBusy();
+    console.error("[print-overlay-only] failed:", err);
+    _wsStatus.textContent = `下敷き印刷失敗: ${err.message ?? err}`;
   }
 }

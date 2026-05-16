@@ -1891,6 +1891,33 @@ async function assembleHybridPdf(pages, sourceBytes) {
         : await newPdf.embedPng(p.imageBytes);
       const page = newPdf.addPage([p.widthPt, p.heightPt]);
       page.drawImage(img, { x: 0, y: 0, width: p.widthPt, height: p.heightPt });
+    } else if (p.strategy === "overlay-only") {
+      // β.80 下敷き印刷: 背景の元 PDF は一切 copy せず、用紙サイズ
+      // (canonical w/h) の空白ページに overlay PNG だけを bbox 位置に
+      // 配置する。プリンタトレイにセットした白紙の申請書 (不動文字
+      // 入り) に物理的に重ね刷りされることが前提。overlay の無いペー
+      // ジは完全に空白のまま出る (= 何も書かれない = 用紙の不動文字
+      // だけが残る)。
+      const page = newPdf.addPage([p.widthPt, p.heightPt]);
+      if (p.imageBytes && p.imageBytes.length > 0) {
+        const overlayImg = await newPdf.embedPng(p.imageBytes);
+        const bb = p.overlayBBox;
+        if (bb && Number.isFinite(bb.x) && Number.isFinite(bb.y)
+            && Number.isFinite(bb.w) && Number.isFinite(bb.h)
+            && bb.w > 0 && bb.h > 0) {
+          page.drawImage(overlayImg, {
+            x: bb.x,
+            y: p.heightPt - bb.y - bb.h,
+            width: bb.w,
+            height: bb.h,
+          });
+        } else {
+          page.drawImage(overlayImg, {
+            x: 0, y: 0,
+            width: p.widthPt, height: p.heightPt,
+          });
+        }
+      }
     } else {
       throw new Error(`assembleHybridPdf: unknown strategy "${p.strategy}" on page ${p.pageNo}`);
     }
