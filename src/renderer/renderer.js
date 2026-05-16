@@ -3021,7 +3021,7 @@ function attachThumbDragHandlers(item, pageNo) {
   item.draggable = true;
   item.addEventListener("dragstart", (e) => {
     if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.effectAllowed = "copyMove";
       e.dataTransfer.setData(THUMB_DND_MIME, String(pageNo));
       e.dataTransfer.setData("text/plain", String(pageNo));
     }
@@ -3040,6 +3040,14 @@ function attachThumbDragHandlers(item, pageNo) {
     // while a thumb drag is in flight so only the active drop target
     // shows an indicator (avoids the "3 stacked blue lines" look).
     document.body.classList.add("thumb-dragging");
+    // β.79: notify main so a sibling window's sidebar can accept the
+    // drop and ingest the selected pages as synthetic copies. Sidebar
+    // visual order is the order we want at the destination.
+    const ordered = getOrderedThumbPageNos(thumbList, ".thumb-item");
+    const payloadKeys = selectionSet
+      ? ordered.filter((k) => selectionSet.has(k))
+      : [pageNo];
+    void window.kpdf3?.pageDragStart?.({ pageKeys: payloadKeys });
   });
   item.addEventListener("dragend", () => {
     _draggingThumbPN = null;
@@ -3050,13 +3058,27 @@ function attachThumbDragHandlers(item, pageNo) {
       el.classList.remove("is-dragging");
     }
     clearThumbDropIndicators();
+    void window.kpdf3?.pageDragEnd?.();
   });
   item.addEventListener("dragover", (e) => {
-    if (_draggingThumbPN === null) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    showBoundaryIndicator(item, e, isHorizontal);
+    // Same-window reorder.
+    if (_draggingThumbPN !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      showBoundaryIndicator(item, e, isHorizontal);
+      return;
+    }
+    // β.79: cross-window page drag — `_draggingThumbPN` is null in the
+    // target window, but Chromium exposes the MIME types list across the
+    // BrowserWindow boundary. Show the same blue boundary indicator so
+    // the user gets identical visual feedback to a local reorder.
+    if (e.dataTransfer && hasThumbPagePayload(e.dataTransfer)) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+      showBoundaryIndicator(item, e, isHorizontal);
+    }
   });
   item.addEventListener("dragleave", (e) => {
     if (!item.contains(e.relatedTarget)) {
@@ -3067,17 +3089,34 @@ function attachThumbDragHandlers(item, pageNo) {
     }
   });
   item.addEventListener("drop", async (e) => {
-    if (_draggingThumbPN === null) return;
+    // Same-window reorder.
+    if (_draggingThumbPN !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      const draggedPN = _draggingThumbPN;
+      clearThumbDropIndicators();
+      if (!Number.isFinite(draggedPN) || draggedPN === pageNo) return;
+      const r = item.getBoundingClientRect();
+      const before = isHorizontal
+        ? e.clientX < r.left + r.width / 2
+        : e.clientY < r.top + r.height / 2;
+      await applyThumbReorder(draggedPN, pageNo, before);
+      return;
+    }
+    // β.79: cross-window page drop on this thumb. Translate the visual
+    // position (this thumb's bounding rect, before/after midpoint) into
+    // the β77 (afterPageNo, afterKey) anchor pair and route through main.
+    if (!e.dataTransfer || !hasThumbPagePayload(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
-    const draggedPN = _draggingThumbPN;
     clearThumbDropIndicators();
-    if (!Number.isFinite(draggedPN) || draggedPN === pageNo) return;
     const r = item.getBoundingClientRect();
     const before = isHorizontal
       ? e.clientX < r.left + r.width / 2
       : e.clientY < r.top + r.height / 2;
-    await applyThumbReorder(draggedPN, pageNo, before);
+    const anchor = await resolveCrossWindowDropAnchor(pageNo, before);
+    if (!anchor) return;
+    await handleCrossWindowPageDrop(anchor);
   });
 }
 
@@ -3362,6 +3401,13 @@ function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
       e.stopPropagation();
       e.dataTransfer.dropEffect = "move";
       gap.classList.add("drop-target");
+    } else if (types.includes(THUMB_DND_MIME)) {
+      // β.79: cross-window page payload — same blue line as same-window
+      // reorder + +gap drop, but with copy semantics (source unchanged).
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+      gap.classList.add("drop-target");
     } else if (types.includes("Files")) {
       e.preventDefault();
       e.stopPropagation();
@@ -3380,6 +3426,14 @@ function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
       const draggedPN = _draggingThumbPN;
       if (!Number.isFinite(draggedPN) || draggedPN <= 0) return;
       await applyThumbReorderToGap(draggedPN, afterPageNo);
+      return;
+    }
+    // β.79: cross-window page drop — gap already knows its (afterPageNo,
+    // afterKey) anchor so we can route directly without re-resolving.
+    if (hasThumbPagePayload(e.dataTransfer)) {
+      e.preventDefault();
+      e.stopPropagation();
+      await handleCrossWindowPageDrop({ afterPageNo, afterKey });
       return;
     }
     // External file drop = insert-from-PDF (legacy behaviour).
@@ -3427,6 +3481,71 @@ function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
       wsStatus.textContent = `挿入失敗: ${err.message ?? err}`;
     }
   });
+}
+
+/** β.79: cross-window thumb drop — translate "before/after this thumb"
+ *  into the (afterPageNo, afterKey) anchor pair the main insertion path
+ *  expects. Resolved against the *current* visible page list so a
+ *  reorder that happened mid-drag in the source window doesn't matter:
+ *  what we see in the target sidebar is what we encode.
+ *
+ *  Returns null on lookup failure (thumb removed between dragover and
+ *  drop) so the caller can bail quietly. */
+async function resolveCrossWindowDropAnchor(thumbPageNo, before) {
+  const pages = await kpdf3.getPages();
+  const idx = pages.findIndex((p) => p.pageNo === thumbPageNo);
+  if (idx < 0) return null;
+  if (before) {
+    if (idx === 0) return { afterPageNo: 0, afterKey: 0 };
+    const prev = pages[idx - 1];
+    return {
+      afterPageNo: prev.isSynthetic ? (prev.syntheticAfterPageNo ?? 0) : prev.pageNo,
+      afterKey: prev.pageNo,
+    };
+  }
+  const here = pages[idx];
+  return {
+    afterPageNo: here.isSynthetic ? (here.syntheticAfterPageNo ?? 0) : here.pageNo,
+    afterKey: here.pageNo,
+  };
+}
+
+/** β.79: route a cross-window page drop through main. Reuses the same
+ *  busy modal + progress IPC the external PDF D&D uses so the user
+ *  sees identical feedback (N/M counter, navy bar). On success, refresh
+ *  the local sidebar so the new synth pages appear in-place. */
+async function handleCrossWindowPageDrop({ afterPageNo, afterKey }) {
+  showBusy("挿入", "別ウインドウからページを取り込み中...", 0);
+  const unsubProgress = kpdf3.onInsertPdfProgress?.((d) => {
+    const total = d?.total ?? 0;
+    const i = d?.i ?? 0;
+    const pct = total > 0 ? Math.round(((i + 1) / total) * 100) : 0;
+    updateBusy(
+      `別ウインドウからページを取り込み中... (${i + 1} / ${total})`,
+      pct,
+    );
+  });
+  try {
+    const r = await kpdf3.pageBarDrop({ afterPageNo, afterKey });
+    unsubProgress?.();
+    hideBusy();
+    if (!r?.ok) {
+      wsStatus.textContent = r?.reason
+        ? `挿入失敗: ${r.reason}`
+        : "挿入失敗";
+      return;
+    }
+    markWorkspaceMutated();
+    await refreshViewer();
+    if (isSplitMode) await refreshSplitView();
+    const n = r?.syntheticPageNos?.length ?? 0;
+    wsStatus.textContent = `別ウインドウから ${n} ページを挿入しました`;
+  } catch (err) {
+    unsubProgress?.();
+    hideBusy();
+    console.error("[cross-window-page-drop] failed", err);
+    wsStatus.textContent = `挿入失敗: ${err.message ?? err}`;
+  }
 }
 
 /** Reorder helper invoked when a thumb is dropped onto an insert

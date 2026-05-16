@@ -2963,64 +2963,94 @@ ipcMain.handle(
     if (!activeWorkspace) throw new Error("No active workspace");
     if (!externalPath) throw new Error("externalPath missing");
     const buf = readFileSync(externalPath);
-    // Store the entire external PDF once for vector-preserving export.
-    // Many pages from the same PDF share this row via SHA-256 dedup.
-    const sha256 = createHash("sha256").update(buf).digest("hex");
-    const sourcePdfId = activeWorkspace.getOrCreateInsertedSourcePdf({
-      sha256,
-      pdfBlob: buf,
-      byteSize: buf.length,
+    const out = await _insertPdfBytesIntoWorkspace({
+      workspace: activeWorkspace,
+      pdfBytes: buf,
+      afterPageNo,
+      afterKey,
+      sender: event?.sender,
     });
-    const doc = mupdf.Document.openDocument(
-      new Uint8Array(buf),
-      "application/pdf",
-    );
-    // β77: when `afterKey` is supplied we anchor on the *visible* page
-    // just before the drop target (positive = source pageNo, negative =
-    // synthetic key, 0 = before-everything). Reorder operations can move
-    // synth rows away from their slot anchor, so the legacy
-    // `MAX(order_in_slot)+1` strategy no longer matches the user's
-    // visual gap; we compute explicit display_orders in [lower, upper)
-    // around the visible neighbours instead.
-    let lower = null;
-    let upper = null;
-    let resolvedAfterPageNo = typeof afterPageNo === "number" ? afterPageNo : 0;
-    if (typeof afterKey === "number") {
-      const pages = activeWorkspace.getPages();
-      let idx;
-      if (afterKey === 0) {
-        idx = -1;
-      } else {
-        idx = pages.findIndex((p) => p.pageNo === afterKey);
-        if (idx < 0) {
-          throw new Error(
-            `add-inserted-pdf-pages: afterKey ${afterKey} not in visible pages`,
-          );
-        }
-      }
-      lower = idx >= 0 ? pages[idx].orderKey : 0;
-      upper =
-        idx + 1 < pages.length ? pages[idx + 1].orderKey : lower + 1;
-      // Derive the slot anchor (after_page_no column) from the visible
-      // neighbour. Even with explicit display_order set, after_page_no
-      // is kept consistent so listInsertedPages's secondary sort and any
-      // future legacy fallback stay sensible.
-      if (typeof afterPageNo !== "number") {
-        if (afterKey > 0) {
-          resolvedAfterPageNo = afterKey;
-        } else if (afterKey < 0) {
-          const synthRow = pages[idx];
-          resolvedAfterPageNo = synthRow.syntheticAfterPageNo ?? 0;
-        } else {
-          resolvedAfterPageNo = 0;
-        }
+    reopenActiveDoc();
+    return { syntheticPageNos: out };
+  },
+);
+
+/**
+ * Core: insert every page of a PDF (provided as raw bytes) into the given
+ * workspace as synthetic, image-backed pages. Shared between the file-drop
+ * IPC (`kpdf3:add-inserted-pdf-pages`) and the cross-window thumb D&D path
+ * (`kpdf3:page-bar-drop`, β.79) so vector dedup, display_order math, and
+ * the progress IPC stay identical.
+ *
+ * Caller is responsible for refreshing any mupdf doc / pages cache after
+ * this returns — `reopenActiveDoc()` or `_reopenDocForTab()`.
+ *
+ * @returns {Promise<number[]>} synthetic pageNos (negative) of the new rows
+ */
+async function _insertPdfBytesIntoWorkspace({
+  workspace,
+  pdfBytes,
+  afterPageNo,
+  afterKey,
+  sender,
+}) {
+  // Store the entire external PDF once for vector-preserving export.
+  // Many pages from the same PDF share this row via SHA-256 dedup.
+  const sha256 = createHash("sha256").update(pdfBytes).digest("hex");
+  const sourcePdfId = workspace.getOrCreateInsertedSourcePdf({
+    sha256,
+    pdfBlob: pdfBytes,
+    byteSize: pdfBytes.length,
+  });
+  const doc = mupdf.Document.openDocument(
+    new Uint8Array(pdfBytes),
+    "application/pdf",
+  );
+  // β77: when `afterKey` is supplied we anchor on the *visible* page
+  // just before the drop target (positive = source pageNo, negative =
+  // synthetic key, 0 = before-everything). Reorder operations can move
+  // synth rows away from their slot anchor, so the legacy
+  // `MAX(order_in_slot)+1` strategy no longer matches the user's
+  // visual gap; we compute explicit display_orders in [lower, upper)
+  // around the visible neighbours instead.
+  let lower = null;
+  let upper = null;
+  let resolvedAfterPageNo = typeof afterPageNo === "number" ? afterPageNo : 0;
+  if (typeof afterKey === "number") {
+    const pages = workspace.getPages();
+    let idx;
+    if (afterKey === 0) {
+      idx = -1;
+    } else {
+      idx = pages.findIndex((p) => p.pageNo === afterKey);
+      if (idx < 0) {
+        throw new Error(
+          `insert-pdf-bytes: afterKey ${afterKey} not in visible pages`,
+        );
       }
     }
-    const synthetic = [];
-    const sender = event?.sender;
-    try {
-      const count = doc.countPages();
-      for (let i = 0; i < count; i++) {
+    lower = idx >= 0 ? pages[idx].orderKey : 0;
+    upper =
+      idx + 1 < pages.length ? pages[idx + 1].orderKey : lower + 1;
+    // Derive the slot anchor (after_page_no column) from the visible
+    // neighbour. Even with explicit display_order set, after_page_no
+    // is kept consistent so listInsertedPages's secondary sort and any
+    // future legacy fallback stay sensible.
+    if (typeof afterPageNo !== "number") {
+      if (afterKey > 0) {
+        resolvedAfterPageNo = afterKey;
+      } else if (afterKey < 0) {
+        const synthRow = pages[idx];
+        resolvedAfterPageNo = synthRow.syntheticAfterPageNo ?? 0;
+      } else {
+        resolvedAfterPageNo = 0;
+      }
+    }
+  }
+  const synthetic = [];
+  try {
+    const count = doc.countPages();
+    for (let i = 0; i < count; i++) {
         // β78: yield to the event loop between pages so the UI thread
         // can answer renderer IPC pings / heartbeats. Without this the
         // 25-page external PDF case blocks main for ~20-30s and the OS
@@ -3070,7 +3100,7 @@ ipcMain.handle(
           if (lower != null && upper != null) {
             displayOrder = lower + ((i + 1) / (count + 1)) * (upper - lower);
           }
-          const syntheticPageNo = activeWorkspace.addInsertedImagePage({
+          const syntheticPageNo = workspace.addInsertedImagePage({
             afterPageNo: resolvedAfterPageNo,
             imageBlob: Buffer.from(pngBytes),
             imageW: imgW,
@@ -3086,19 +3116,222 @@ ipcMain.handle(
           page.destroy?.();
         }
       }
-    } finally {
-      doc.destroy?.();
+  } finally {
+    doc.destroy?.();
+  }
+  return synthetic;
+}
+
+// ---- Cross-window thumb D&D (β.79) -----------------------------------
+//
+// Mirrors B3-γ activeTabDrag but at page granularity. The source window's
+// sidebar fires `page-drag-start` on dragstart with the multi-selected
+// page keys (positive = source pageNo, negative = synthetic key). A
+// sibling window's sidebar / thumb / +gap consumes via `page-bar-drop`,
+// supplying the visual anchor (afterPageNo + β77 afterKey). Main extracts
+// the requested pages from the source workspace into a single mini-PDF
+// buffer, then feeds it into the same `_insertPdfBytesIntoWorkspace`
+// path the external file drop uses — vector dedup + 96 dpi fallback
+// thumbnail + progress IPC are shared automatically.
+
+/** @type {{ sourceWinId: number, sourceTabId: string, pageKeys: number[] } | null} */
+let activePageDrag = null;
+
+ipcMain.handle("kpdf3:page-drag-start", async (event, payload) => {
+  const ws = windowStateForEvent(event);
+  const sourceTabId = ws?.activeTabId ?? null;
+  const pageKeys = Array.isArray(payload?.pageKeys)
+    ? payload.pageKeys.filter((k) => Number.isInteger(k) && k !== 0)
+    : [];
+  if (!sourceTabId || pageKeys.length === 0) {
+    return { ok: false, reason: "no-payload" };
+  }
+  activePageDrag = {
+    sourceWinId: ws.win.id,
+    sourceTabId,
+    pageKeys,
+  };
+  return { ok: true };
+});
+
+ipcMain.handle("kpdf3:page-drag-end", async () => {
+  // Source's dragend often fires BEFORE the target's drop in
+  // cross-window scenarios on Linux/Electron, so clearing immediately
+  // races bar-drop and the user sees "no-active-drag". Defer the
+  // cleanup behind a 500ms grace so bar-drop wins. If another dragstart
+  // overwrites the slot in the meantime, the snapshot check leaves
+  // the new drag intact.
+  const snapshot = activePageDrag;
+  setTimeout(() => {
+    if (activePageDrag === snapshot) activePageDrag = null;
+  }, 500);
+  return { ok: true };
+});
+
+ipcMain.handle(
+  "kpdf3:page-bar-drop",
+  async (event, { afterPageNo, afterKey } = {}) => {
+    if (!activePageDrag) return { ok: false, reason: "no-active-drag" };
+    const tgtSt = windowStateForEvent(event);
+    if (!tgtSt) return { ok: false, reason: "no-target-window" };
+    if (tgtSt.win.id === activePageDrag.sourceWinId) {
+      // Same-window drop should have been caught by the local reorder
+      // path; bail without consuming so a later target window can still
+      // pick it up if the user drags again.
+      return { ok: false, reason: "same-window" };
     }
-    reopenActiveDoc();
-    return { syntheticPageNos: synthetic };
+    const targetTabId = tgtSt.activeTabId;
+    if (!targetTabId) return { ok: false, reason: "no-target-tab" };
+    const tgtH = tabHandles.get(targetTabId);
+    const srcH = tabHandles.get(activePageDrag.sourceTabId);
+    if (!tgtH?.workspace || !srcH?.workspace) {
+      return { ok: false, reason: "tab-handle-missing" };
+    }
+    const pageKeys = activePageDrag.pageKeys;
+    activePageDrag = null; // consume
+    let pdfBytes;
+    try {
+      pdfBytes = await _extractPagesAsPdfBuffer(srcH.workspace, pageKeys);
+    } catch (err) {
+      console.error("[page-bar-drop] extract failed", err);
+      return { ok: false, reason: `extract-failed: ${err.message ?? err}` };
+    }
+    let syntheticPageNos;
+    try {
+      syntheticPageNos = await _insertPdfBytesIntoWorkspace({
+        workspace: tgtH.workspace,
+        pdfBytes,
+        afterPageNo,
+        afterKey,
+        sender: event?.sender,
+      });
+    } catch (err) {
+      console.error("[page-bar-drop] insert failed", err);
+      return { ok: false, reason: `insert-failed: ${err.message ?? err}` };
+    }
+    // Refresh target tab's mupdf doc + pages cache so subsequent
+    // render-page calls (and renderer refreshViewer) see the new layout.
+    _reopenDocForTab(targetTabId);
+    return { ok: true, syntheticPageNos };
   },
 );
 
+/** Build a single in-memory PDF containing exactly the requested pages
+ *  from `srcWorkspace`, preserving sidebar order. Source pages copy
+ *  vector via pdf-lib; synth pages backed by `inserted_source_pdfs`
+ *  ditto; image-only synth pages embed their PNG into a fresh A4-sized
+ *  page. User-applied rotation is folded into each output page's
+ *  /Rotate so the receiving workspace records swapped dims naturally. */
+async function _extractPagesAsPdfBuffer(srcWorkspace, pageKeys) {
+  const newPdf = await PDFDocument.create();
+  const visible = srcWorkspace.getPages();
+  const byKey = new Map(visible.map((p) => [p.pageNo, p]));
+  let srcPdfDoc = null;
+  async function getSrcPdfDoc() {
+    if (srcPdfDoc) return srcPdfDoc;
+    const bytes = srcWorkspace.getSourceBytes();
+    if (!bytes) return null;
+    srcPdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    return srcPdfDoc;
+  }
+  const extCache = new Map();
+  async function getExtPdf(id) {
+    if (extCache.has(id)) return extCache.get(id);
+    const row = srcWorkspace.getInsertedSourcePdf(id);
+    if (!row?.pdfBlob) {
+      throw new Error(`inserted_source_pdfs id=${id} missing`);
+    }
+    const doc = await PDFDocument.load(row.pdfBlob, { ignoreEncryption: true });
+    extCache.set(id, doc);
+    return doc;
+  }
+  for (const key of pageKeys) {
+    const row = byKey.get(key);
+    if (!row) continue; // page removed / undeleted between dragstart and drop
+    const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
+    if (!row.isSynthetic && key > 0) {
+      const src = await getSrcPdfDoc();
+      if (!src) throw new Error("source PDF bytes missing");
+      const idx = key - 1; // 1-based pageNo → 0-based source PDF index
+      const [copied] = await newPdf.copyPages(src, [idx]);
+      if (userRot !== 0) {
+        const cur = copied.getRotation().angle ?? 0;
+        copied.setRotation(degrees(((cur + userRot) % 360 + 360) % 360));
+      }
+      newPdf.addPage(copied);
+    } else if (row.isSynthetic && row.syntheticSourcePdfId != null
+        && row.syntheticSourcePageIndex != null) {
+      // β34-vector path: synth references an `inserted_source_pdfs` blob.
+      const ext = await getExtPdf(row.syntheticSourcePdfId);
+      const [copied] = await newPdf.copyPages(
+        ext, [row.syntheticSourcePageIndex],
+      );
+      if (userRot !== 0) {
+        const cur = copied.getRotation().angle ?? 0;
+        copied.setRotation(degrees(((cur + userRot) % 360 + 360) % 360));
+      }
+      newPdf.addPage(copied);
+    } else if (row.isSynthetic && row.syntheticHasImage) {
+      // Image-only synth (β.78 fallback or legacy 300dpi rows). Fetch
+      // the PNG and embed it into a fresh page at canonical dims, then
+      // bake the user rotation into /Rotate.
+      const img = srcWorkspace.getInsertedPageImage(row.syntheticId);
+      if (!img?.imageBlob) continue;
+      const pngBytes = img.imageBlob instanceof Uint8Array
+        ? img.imageBlob
+        : new Uint8Array(img.imageBlob);
+      const embedded = await newPdf.embedPng(pngBytes);
+      const w = row.cropW ?? embedded.width;
+      const h = row.cropH ?? embedded.height;
+      const page = newPdf.addPage([w, h]);
+      page.drawImage(embedded, { x: 0, y: 0, width: w, height: h });
+      if (userRot !== 0) {
+        page.setRotation(degrees(((userRot) % 360 + 360) % 360));
+      }
+    } else {
+      // White / text-only synth pages aren't part of MVP scope; skip
+      // silently rather than throwing so a mixed selection still
+      // produces useful output for the other pages.
+      continue;
+    }
+  }
+  if (newPdf.getPageCount() === 0) {
+    throw new Error("no extractable pages in selection");
+  }
+  const bytes = await newPdf.save();
+  return Buffer.from(bytes);
+}
+
+/** Refresh a tab's mupdf doc + pages cache after a mutation. Mirrors
+ *  `reopenActiveDoc()` but addresses any tab (not just the focused
+ *  window's active one), so cross-window inserts can refresh the target
+ *  tab without touching globals when the source window is focused. */
+function _reopenDocForTab(tabId) {
+  const h = tabHandles.get(tabId);
+  if (!h?.workspace) return;
+  if (h.doc) {
+    try { h.doc.destroy(); } catch { /* ignore */ }
+  }
+  const bytes = h.workspace.getSourceBytes();
+  h.doc = bytes ? openPdfDocument(bytes) : null;
+  h.pages = h.workspace.getPages({ includeDeleted: true });
+  // Keep the legacy globals in sync if the refreshed tab is the active
+  // one — render-page IPC reads them for the focused window's render path.
+  if (activeTabId === tabId) {
+    activeDoc = h.doc;
+    activePages = h.pages;
+  }
+}
+
 /** β31: fetch the vector-source PDF bytes for an inserted page so the
- *  exporter/print path can copyPages it instead of using image_blob. */
-ipcMain.handle("kpdf3:get-inserted-source-pdf", async (_, id) => {
-  if (!activeWorkspace) throw new Error("No active workspace");
-  const row = activeWorkspace.getInsertedSourcePdf(id);
+ *  exporter/print path can copyPages it instead of using image_blob.
+ *  β.79: resolve per-event so a cross-window page insert (which puts
+ *  the new synth row into target's workspace while source is focused)
+ *  fetches from the *calling* window's tab, not the global active. */
+ipcMain.handle("kpdf3:get-inserted-source-pdf", async (event, id) => {
+  const ws = activeForEvent(event).workspace ?? activeWorkspace;
+  if (!ws) throw new Error("No active workspace");
+  const row = ws.getInsertedSourcePdf(id);
   if (!row) return null;
   const u8 = row.pdfBlob instanceof Uint8Array
     ? row.pdfBlob
@@ -3106,9 +3339,10 @@ ipcMain.handle("kpdf3:get-inserted-source-pdf", async (_, id) => {
   return { pdfBlob: u8, byteSize: row.byteSize };
 });
 
-ipcMain.handle("kpdf3:get-inserted-page-image", async (_, id) => {
-  if (!activeWorkspace) throw new Error("No active workspace");
-  const row = activeWorkspace.getInsertedPageImage(id);
+ipcMain.handle("kpdf3:get-inserted-page-image", async (event, id) => {
+  const ws = activeForEvent(event).workspace ?? activeWorkspace;
+  if (!ws) throw new Error("No active workspace");
+  const row = ws.getInsertedPageImage(id);
   if (!row) return null;
   // imageBlob comes back as a Buffer from better-sqlite3; convert to
   // a Uint8Array so the IPC serializer doesn't lose typing.

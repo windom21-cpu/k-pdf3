@@ -106,6 +106,11 @@ contextBridge.exposeInMainWorld("kpdf3", {
   reorderAllPages:    (orderedKeys) => ipcRenderer.invoke("kpdf3:reorder-all-pages", orderedKeys),
   addInsertedPage:    (opts)    => ipcRenderer.invoke("kpdf3:add-inserted-page", opts),
   addInsertedPdfPages:(opts)    => ipcRenderer.invoke("kpdf3:add-inserted-pdf-pages", opts),
+  // β.79: cross-window thumb D&D — source 側の dragstart で payload を main に置き、
+  // target 側の sidebar drop で同 payload を消費して synthetic page 挿入。
+  pageDragStart:      (payload) => ipcRenderer.invoke("kpdf3:page-drag-start", payload),
+  pageDragEnd:        ()        => ipcRenderer.invoke("kpdf3:page-drag-end"),
+  pageBarDrop:        (payload) => ipcRenderer.invoke("kpdf3:page-bar-drop", payload),
   onInsertPdfProgress:(cb)      => {
     const h = (_, d) => cb(d);
     ipcRenderer.on("kpdf3:insert-pdf-progress", h);
