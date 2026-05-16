@@ -1,7 +1,7 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-05-16
-現在のバージョン: **v2.0.0-beta.79** (autoUpdater 経由で配布中)
+最終更新: 2026-05-17
+現在のバージョン: **v2.0.0-beta.81** (autoUpdater 経由で配布中)
 リポジトリ: 開発リポ [windom21-cpu/k-pdf3](https://github.com/windom21-cpu/k-pdf3) (Public) / 配布フィード [windom21-cpu/k-pdf3-releases](https://github.com/windom21-cpu/k-pdf3-releases) (Public)
 
 このドキュメントは、K-PDF3 の開発を引き継ぐ次の AI アシスタント（または別環境の自分）が会話履歴なしで作業継続できるよう書かれている。**着手前に §0 → §1 → §2 → §3 → §6 → §8 → §17 の順で必ず読むこと**。
@@ -14,7 +14,7 @@
 
 **フェーズ**: M5 + M6 大半完了、**β テスト継続中** (法律実務家本人 + スタッフ数名で実利用)。M6 残: annotation read-only proxy / qpdf sanitize / 「後で」仮説恒久対応 / 診断ロガー撤去。
 
-**直近完了 (β71〜β79、2026-05-14〜16)**:
+**直近完了 (β71〜β81、2026-05-14〜17)**:
 - **β71** — B2 renderer.js モジュール分離完結 (8631→4472 行 / -48.2% / 12 モジュール) + B3 タブ別ウインドウ完成 (右クリック / ツールバー / File menu / drag tearout / drag dock-back の 5 経路)
 - **β72** — 印刷経路を**案 D に再々設計**: K-PDF3 自前ダイアログを skip して Adobe `/p` でネイティブ印刷ダイアログ直接起動。**FAX freeze バグ根治** (β54-β70 の構造的問題、Adobe `/t` silent flag が driver UI 抑止する仕様 + β70 SW_HIDE 併発が原因)。案 X 印刷キュー監視 (`Win32_PrintJob` PowerShell) で Pro DC を 3 秒バッファ後 auto-kill
 - **β73** — テキスト太字化バグ修正 (β34 の 0.03×fontSize overstroke を bold OFF 時 skip)。Adobe spawn の preamble を `Promise.all` で並列化 (~1 秒短縮)
@@ -24,17 +24,36 @@
 - **β77** — **外部 PDF D&D 挿入位置を視覚位置で確定**: 並び替えで synth ページが元のスロットアンカーから離れた状態で青線にドロップすると新規ページが「数ページ手前」にズレていた問題を根治。drop 時に gap 直前ページのキー (`afterKey`: source=pageNo / synth=-id / 先頭=0) を main に渡し、`getPages` の `orderKey` から `(lower, upper)` 算出 → ε 等分布で `display_order` 直接書込みに切替。`afterPageNo + order_in_slot` ベースの旧経路は `afterKey` 無し呼出向けに残置 (後方互換)。`addInsertedImagePage` に `displayOrder` 引数追加 (workspace + sqlite-store)
 - **β78** — **外部 PDF 挿入の OOM + 応答停止を解消**: 30 MB × 25 ページ級の外部 PDF を青線にドロップすると main が同期で全ページ raster + SQLite BLOB 書込を回し、(1) wasm heap 累積 + ピーク 26 MB pixmap で OOM SIGKILL、(2) イベントループ 20-30 秒占有で OS の「応答がありません」検出が出る、の 2 段不具合があった。修正: (a) `image_blob` 生成 zoom を 300 → 96 dpi に下げ。ピーク pixmap 26 → 2.7 MB、workspace 増分 25 MB → 5 MB、raster 時間 ~7x 短縮。(b) 各ページループ先頭で `setImmediate` yield 1 tick → OS「応答監視」をパス。(c) `kpdf3:insert-pdf-progress` IPC 新設、busy modal で「外部 PDF を取り込み中... (N / M)」+ navy バーが進む。**※** β78 の commit メッセージは「image_blob はフォールバック専用、vector path で鮮明さ担保」と書いたが、これは β.79 で発覚した通り誤認 — `kpdf3:render-inserted-source-page` が β34 以来ずっと throw していて image_blob fallback が常用されていた (詳細は §15.1 / memory `[[kpdf3-inserted-source-vector-bug]]`)
 - **β79** — **サムネ→別ウインドウへページ挿入** (cross-window thumb D&D)。B3-γ `activeTabDrag` のページ版を main に新設 (`activePageDrag` + `page-drag-start` / `page-drag-end` / `page-bar-drop` IPC)。サイドバー / 分割画面のサムネを別ウインドウの +gap / サムネ / 分割画面にドロップ → 選択ページを synthetic page (COPY 動作、ソース不変) として挿入。多選択は sidebar 順を維持、userRotation は /Rotate に baking、image-only synth (β78 fallback / 旧 workspace) も 1 ページ PDF にして対応。`kpdf3:add-inserted-pdf-pages` 本体を `_insertPdfBytesIntoWorkspace({workspace, pdfBytes, ...})` に切り出して再利用、`_extractPagesAsPdfBuffer` + `_reopenDocForTab` 新設。**修正したクロス窓特有バグ**: (a) Linux Electron で dragend が drop より先に走る race → `page-drag-end` の clear を 500ms 延期 (snapshot 比較で次の dragstart 来ていれば no-op)、(b) `kpdf3:get-inserted-page-image` / `get-inserted-source-pdf` がグローバル `activeWorkspace` を使っていてクロス窓直後にターゲット renderer の画像取得が失敗 → サムネ白紙化 → `activeForEvent(event)` per-window 化
+- **β80** (2026-05-16): **申請書テンプレ機能一式 (ADR-0020 案件、未起草) を Phase A〜E で投入** + β34〜β79 の既存バグ 2 件まとめて修正:
+  - **新 overlay 種別 `form_field`** + 4 サブタイプ (text/check/circle/radio)。schema migration + project-store typedef + sqlite-store の CHECK 制約拡張 (Phase A)
+  - **ツールバー「フォーム」1 ボタン + popup** (スタンプ palette と同流儀、draggable + 位置永続化)。popup に 4 サブタイプボタン + 「記入モード」トグル
+  - **記入モード**: Tab/Shift+Tab で次/前のフィールドへ自動順 (ページ順 → Y 昇順 → X 昇順、6pt ε で行バケット)、Enter は commit + 次へ、Space は focused check/circle/radio をトグル、Esc で記入モード解除。新規 `form-fill.js` モジュール (Phase C)
+  - **下敷き印刷**: 「下敷き印刷」ボタン + 注意ダイアログ → 全ページを overlay-only strategy で組み立て → Adobe `/p` 経路。背景 PDF を出さず空白ページ + overlay PNG だけが用紙にのる。assembleHybridPdf に新 strategy 追加、composePagesForExport に `overlayOnly` フラグ (Phase D)
+  - **システムフォント選択** (form field 限定): main で `kpdf3:list-system-fonts` (Linux=fc-list / Win=PowerShell + InstalledFontCollection、cache あり)、renderer 起動時に form-text-font select を <optgroup プリセット + システム> で再構築、`getTextFontStack` を system font 名 fallback 対応 (Phase E)
+  - **multi-select コピー/ペースト** (Ctrl+C/Ctrl+V、右クリック「コピー」「貼り付け」): `_overlayClipboard` を Array 化、相対位置を維持して +12pt/+12pt で群一括 paste
+  - **幅揃え/高さ揃え**: align-bar に「幅揃え」「高さ揃え」ボタン追加。primary (= 最後 click 選択) 基準で揃える (PowerPoint 流)
+  - **テキスト枠の上下左右揃え**: form-text に `alignH` (left/center/right) + `alignV` (top/middle/bottom) プロパティ。viewer は flex justify/align で、印刷経路は drawOverlay の手描き計算で対応
+  - **既存バグ 2 件根治**:
+    1. `kpdf3:render-inserted-source-page` の vector path が β34 以来常に throw (`Workspace.listInsertedPages` が export 漏れ) → thin wrap で復活、image_blob fallback の出番が無くなる
+    2. drawOverlay (exporter.js) に form_field 分岐が無く、下敷き印刷で値が一切印字されない状態だった (Phase D で初発見、Phase B-3 commit cf1eff5 の漏れ) → 4 サブタイプの実描画を追加
+- **β81** (2026-05-17): β.80 配布直後のユーザー要望に対応する小マイナー
+  - 丸囲み: click で真円配置 (旧 drag → click)、options bar に「サイズ」select (14/18/24/32/48pt)、四隅ハンドルで楕円に変形可
+  - フォーム枠 (form-text) のフォント/サイズ/色/横/縦 を **後付け変更**: 配置済みのフィールドを選択 (or 編集中) → form-text-* select 変更で即反映。`applyFormTextStyleToEditingOrSelected` を新設
+  - 記入モードで **Shift+Enter 改行**: Enter 単独は従来通り「commit + 次へ」、Shift+Enter は browser default に任せて `<br>` 挿入
 
 **当面の残課題 / 未解決事項** (優先順):
 
 1. **D&D「開かない」根因確定 → β.N+1 修正** (進行中) — β75 で診断ログ仕込み済。ユーザの 1 日使用後 crash.log を集計 → 仮説確定 → 修正。最有力仮説は J5 zombie-kill。修正候補: (a) taskkill 前に他 K-PDF3 の最近 session-start を確認、(b) `second-instance` で mainWindow 死亡 + B3 子ウインドウ alive 時の routing 改善、(c) renderer の getPathForFile fallback (OneDrive / 添付 placeholder)
-2. **`kpdf3:render-inserted-source-page` ハンドラの既存バグ** (β34 以来) — main ハンドラが存在しない `activeWorkspace.listInsertedPages()` を呼んで常に throw → renderer (`viewer.js:173`) の try/catch が握り潰して image_blob fallback に縮退している。β34 以降「外部 PDF 挿入の viewer プレビューは vector で鮮明」と HANDOVER に書いていたが事実上 image_blob のみ動作。β78 で 96 dpi に下げた image_blob が常用されているため、ズーム時の鮮明さが劣化している可能性。修正候補: (a) `Workspace.listInsertedPages()` を thin wrap で追加、(b) ハンドラを `getPages().find(...)` 経由に変える、(c) sqlite-store に `getInsertedPageById(id)` 新設
-3. **C3 Adobe で押した annotation が viewer 表示されない** (印刷では出る) — annotation read-only proxy。マーカーアイコン + ツールチップ案で確定済
-4. **「後で」仮説の恒久対応** — autoUpdater 「ダウンロードしますか?」で「後で」を選ぶと中間ダウンロード残留 → 後続バージョン取得時に整合性破壊の仮説。対応案: (a) ダイアログから「後で」撤去、(b) キャンセル時の差分ファイル cleanup
-5. **CI release matrix race** — β タグでは案 B-2 (Win 単独) で構造的に解消、stable v2.0.0 リリース時に手動シーケンシャル trigger or `needs:` 化を検討
-6. **stable リリース時の cleanup**: β51 で追加したクラッシュ診断ロガー一式 + β75 D&D 診断ログを撤去 (`crashLogPath()` / `logCrash()` / `kpdf3:log-diag` IPC 等)。**β78 の `addpdf-*` 系 + β.79 の `page-bar-drop` 系診断は撤去済**、`kpdf3:insert-pdf-progress` は実用 UI なので残置
-7. **Wayland ショートカット** — F5 / Ctrl+R / F12 が Ubuntu Wayland で発火しない。バージョン情報ダイアログのリロード / 開発者ツールボタンで代替可
-8. **既存 workspace の leftover synth (300 dpi image_blob) 削減** (低優先) — β78 以前に挿入された synth は 300 dpi の image_blob を持つ。新規挿入分は 96 dpi。混在は問題ないが、storage 圧縮目的で migration を打つなら考慮余地
+2. **下敷き印刷の精度キャリブレーション** (β.80 で本体実装済、未検証) — 用紙送り誤差で X/Y 数 mm ズレる可能性。スキャン取込が傾きなければ実用範囲という D1 仮説を立てて MVP では精度補正なし。実機で「申請書原本を下敷きに、白紙申請書をプリンタにセットして印刷」検証 → ズレ量から (a) プリンタ別 X/Y オフセットだけで十分か (b) 倍率補正 / トレイ別 / 申請書別まで要るかを判断
+3. **Phase B-5 フィールドプロパティ後付け編集 UI 強化** (β.81 で options bar 経由は実装済) — 現状は「枠」モードに入って options bar が出てから選択して値を変更する流れ。右クリックメニューや「常に options bar を見せる」UX 改善余地あり (form_field 選択中なら placementMode と無関係に options を出す等)
+4. **Phase B-6 Tab 順手動編集 UI** (未実装) — 現状は Y → X の自動順のみ。複雑な申請書では「番号バッジ + ドラッグで順序入れ替え」UI が欲しい
+5. **C3 Adobe で押した annotation が viewer 表示されない** (印刷では出る) — annotation read-only proxy。マーカーアイコン + ツールチップ案で確定済
+6. **「後で」仮説の恒久対応** — autoUpdater 「ダウンロードしますか?」で「後で」を選ぶと中間ダウンロード残留 → 後続バージョン取得時に整合性破壊の仮説。対応案: (a) ダイアログから「後で」撤去、(b) キャンセル時の差分ファイル cleanup
+7. **CI release matrix race** — β タグでは案 B-2 (Win 単独) で構造的に解消、stable v2.0.0 リリース時に手動シーケンシャル trigger or `needs:` 化を検討
+8. **stable リリース時の cleanup**: β51 で追加したクラッシュ診断ロガー一式 + β75 D&D 診断ログを撤去 (`crashLogPath()` / `logCrash()` / `kpdf3:log-diag` IPC 等)。**β78 の `addpdf-*` 系 + β.79 の `page-bar-drop` 系診断は撤去済**、`kpdf3:insert-pdf-progress` は実用 UI なので残置
+9. **Wayland ショートカット + renderer auto-reload** — F5 / Ctrl+R / F12 が Ubuntu Wayland で発火しない (β.74 で記録)。加えて β.81 dev で electronmon の renderer auto-reload が反映されないケースを確認 (完全 kill + 再起動で解消)。バージョン情報ダイアログのリロード / 開発者ツールボタンで代替可
+10. **既存 workspace の leftover synth (300 dpi image_blob) 削減** (低優先) — β78 以前に挿入された synth は 300 dpi の image_blob を持つ。新規挿入分は 96 dpi。混在は問題ないが、storage 圧縮目的で migration を打つなら考慮余地
+11. **既存 text overlay の system font 選択拡張** (β.81 form field 限定で先行実装) — 実利用で問題なければ通常の text overlay にも展開する方針 (UI 統合 + getTextFontStack は既に system font 名対応済なので、UI ロジックだけ拡張で済む)
 
 **HANDOVER 更新ルール**: HANDOVER.md は **ユーザーが明示的に依頼した時だけ** 書き換える。β タグを切る毎に勝手に refresh しない (2026-05-12 にユーザーから明示)。
 
@@ -601,9 +620,9 @@ npm run test:m1          # m1 + m3-overlay-persistence (electron-runner 経由)
 cd ~/デスクトップ/k-pdf3
 git fetch --all --tags --force
 git pull --ff-only origin main
-git log --oneline | head -20       # 最新は β79
-npm test                           # 380/380 pass
-npm run dev                        # electronmon (推奨、自動 reload)
+git log --oneline | head -20       # 最新は β81
+npm test                           # 395/395 pass
+npm run dev                        # electronmon (推奨、自動 reload。Wayland では reload が効かない時あり、その場合 dev を完全 kill + 再起動)
 # または npm start                 # 単発起動
 ```
 
@@ -612,16 +631,18 @@ npm run dev                        # electronmon (推奨、自動 reload)
 #### 🔴 着手検討が必要なオープン項目
 
 1. **D&D「開かない」根因確定 → β.N+1 修正** (進行中) — crash.log 集計後、最有力仮説 (J5 zombie-kill) を裏付けて修正。修正候補は冒頭「現状サマリ」参照
-2. **`kpdf3:render-inserted-source-page` の既存バグ修正** (β.80 候補) — β34 以来 throw しっぱなしで image_blob fallback が常用されていた。修正後は viewer ズーム時の鮮明さが本来公約通り改善する見込み。修正候補は冒頭「現状サマリ」参照
-3. **C3 annotation read-only proxy** (実装) — Adobe で押した annotation を viewer 表示。マーカーアイコン + ツールチップ案で確定済
-4. **qpdf sanitize** (実装) — secure export pipeline (metadata strip / xref rebuild)。`extraResources` 同梱で各 OS バイナリ spawn
-5. **「後で」仮説の恒久対応** — autoUpdater UX 改修 (「後で」撤去 or キャンセル時の差分 cleanup)
+2. **下敷き印刷の精度キャリブレーション** (β.80 で本体実装済) — 用紙送り誤差で X/Y 数 mm ズレる可能性。実機テストでズレ量を測定 → 必要なら (a) プリンタ別 X/Y オフセット (b) 倍率補正 (c) トレイ別 (d) 申請書別キャリブ を段階追加。D1 仮説 (スキャン取込が傾きなければ実用範囲) を実機検証
+3. **Phase B-5 / B-6 (申請書テンプレ UX 強化)** — (B-5) フィールド選択中なら placementMode と無関係に options bar を出す UX 改善、右クリックメニュー経由のプロパティ編集。(B-6) Tab 順手動編集 UI (番号バッジ + ドラッグ入れ替え)
+4. **C3 annotation read-only proxy** (実装) — Adobe で押した annotation を viewer 表示。マーカーアイコン + ツールチップ案で確定済
+5. **qpdf sanitize** (実装) — secure export pipeline (metadata strip / xref rebuild)。`extraResources` 同梱で各 OS バイナリ spawn
+6. **「後で」仮説の恒久対応** — autoUpdater UX 改修 (「後で」撤去 or キャンセル時の差分 cleanup)
 
 #### 🟡 確認待ち項目（実機テスター側）
 
 - **β71 B3 タブ別ウインドウ**: 5 経路の業務での体感。tearout / dock-back 中に画面の見え方や残留ウインドウがおかしくないか
 - **β72-β76 印刷経路 + 編集機能**: 案 D で Adobe ダイアログの体感、太字化バグ解消、クリップボード paste、明朝の濃さ、混在サイズの中央寄せ
 - **β79 クロス窓ページ挿入**: 多窓並列で他の案件のページを引き込む業務シナリオでの体感、回転 + 多選択 + 分割画面ドロップが期待通りか
+- **β80/β81 申請書テンプレ + 下敷き印刷**: 業務で実際の申請書 (公的書類等) を雛形化して下敷き印刷した時の精度・操作性。Tab nav の Y→X 自動順が複雑な申請書で違和感ないか、フォントの後付け変更で十分か、丸囲みの click 配置 → 楕円変形が直感的か
 - **β14/β15 4K DPI**: プリンタプロパティダイアログ + NSIS installer のシャープさ
 
 #### 🟠 繰越項目 (β 卒業前の検討候補)
@@ -1006,7 +1027,7 @@ ADR ファイル名：`docs/adr/00NN-{slug}.md`、連番。
 - **空の `fonts/` ディレクトリ**: IPAex は M6 で同梱予定
 - **userData 集中保管の副作用**: kpdf3 が `~/.config/K-PDF3/workspaces/` に置かれる (ADR-0007)。machine 間移植は手動コピーが必要。M6 で「workspace export package」UI 検討余地あり
 - **書き出しはラスタライズ + ハイブリッド組立**: 編集なしページは元 PDF を vector 維持で copyPages、編集ありは元 vector + 600dpi overlay PNG、回転は embedPdf + drawPage で vector 維持 (β8)
-- **外部 PDF 挿入 synth の viewer プレビューが image_blob fallback で動作している**: β34 で導入された `kpdf3:render-inserted-source-page` (vector 経路) ハンドラが、存在しない `activeWorkspace.listInsertedPages()` を呼んで常に throw → `viewer.js:173` の try/catch が握り潰し、`getInsertedPageImage` 経由 image_blob を描画する fallback が β34 以来常用されている (β79 のクロス窓挿入 dev 起動時 stderr 観察で 2026-05-16 に発覚)。書き出し / 印刷経路は `getInsertedSourcePdf` を直接読むので影響なし、viewer ズーム時の鮮明さだけが想定より劣化している可能性。修正は §8.2 #2 / memory `[[kpdf3-inserted-source-vector-bug]]` 参照
+- ~~**外部 PDF 挿入 synth の viewer プレビューが image_blob fallback で動作している**~~ **(β.80 commit a1678ce で根治済)**: β34〜β79 全期間、`kpdf3:render-inserted-source-page` (vector 経路) が存在しない `Workspace.listInsertedPages` を呼んで常に throw → viewer の try/catch が握り潰し image_blob fallback に縮退していたバグ。`Workspace` に sqlite-store の関数を thin wrap する method を追加して復活
 
 ### 15.2 将来の判断ポイント
 
@@ -1039,6 +1060,7 @@ ADR ファイル名：`docs/adr/00NN-{slug}.md`、連番。
 | 0017 | image stamps / asset library | ⏳ 起草待ち (実装は MVP 済) |
 | 0018 | asset DB / source_pdf BLOB 共有 | ⏳ 容量肥大が現実化したら起草 |
 | 0019 | stamp preset management (全角/半角フォント別 + image PDF プレ押印) | 🚧 起草中 (実装は完了) |
+| 0020 | 申請書テンプレ機能 (form_field 4 サブタイプ + 記入モード + 下敷き印刷 + システムフォント + 後付け編集) | ⏳ 起草待ち (実装は β.80/β.81 で完了) |
 
 ### 15.4 architecture decision 待ち（未確定）
 
@@ -1111,6 +1133,8 @@ ADR ファイル名：`docs/adr/00NN-{slug}.md`、連番。
 | 17.15 | 自動アップデート組込み | ✅ β5 (electron-updater + 98 風 confirm/busy + 公開 feed リポ) |
 | 17.16 | β3→β4 テスター指摘 14 件 | ✅ β4-β8 (詳細は §6.4 表) |
 | 17.17 | サムネ D&D で別ウインドウへ選択ページ挿入 | ✅ β79 (B3-γ activeTabDrag のページ版、4 ドロップ経路 + COPY 動作 + 多選択 + 回転 + image-only synth 対応) |
+| 17.18 | 申請書テンプレ機能 (フォーム枠 + 記入モード + 下敷き印刷) | ✅ β80/β81 (form_field 4 サブタイプ + popup + Tab nav + 下敷き印刷 + システムフォント + 後付け編集 + Shift+Enter 改行 + 上下左右揃え) |
+| 17.19 | overlay の multi-select コピー/ペースト + 幅/高さ揃え | ✅ β80 (_overlayClipboard を Array 化、align-bar に「幅揃え」「高さ揃え」追加) |
 
 ### 未完了
 
