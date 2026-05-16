@@ -170,12 +170,19 @@ const textBoldChk = $("text-bold");
 const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
 const btnModeCallout = $("btn-mode-callout");
-// β.80: form-field tools (申請書テンプレ)
+// β.80: form-field tools (申請書テンプレ) — toolbar の「フォーム」
+// 1 ボタンを押すと form-palette-popup が出て、その中で 4 サブタイプ
+// + 記入モードを切り替える。サブタイプボタンは popup の中にある
+// が DOM 上にあるので document.getElementById で参照可能。
+const btnFormPalette = $("btn-form-palette");
 const btnModeFormText = $("btn-mode-form-text");
 const btnModeFormCheck = $("btn-mode-form-check");
 const btnModeFormCircle = $("btn-mode-form-circle");
 const btnModeFormRadio = $("btn-mode-form-radio");
 const btnToggleFillMode = $("btn-toggle-fill-mode");
+const formPalettePopup = $("form-palette-popup");
+const formPaletteTitlebar = $("form-palette-titlebar");
+const btnFormPaletteClose = $("form-palette-close");
 const wsStatus = $("ws-status");
 const viewerContainer = $("viewer-container");
 const sidebar = $("sidebar");
@@ -1403,7 +1410,10 @@ function setOpen(open) {
   if (btnModeMarker) btnModeMarker.disabled = !open;
   if (markerColorSel) markerColorSel.disabled = !open;
   if (btnModeCallout) btnModeCallout.disabled = !open;
-  // β.80: form-field tools
+  // β.80: form-field — popup と中身のボタンは toolbar の「フォーム」
+  // ボタンの開閉で扱う。中ボタンの disabled は影響しない (popup 自体
+  // が hidden だとクリック不能だが、保険として open 連動で disable)
+  if (btnFormPalette) btnFormPalette.disabled = !open;
   if (btnModeFormText) btnModeFormText.disabled = !open;
   if (btnModeFormCheck) btnModeFormCheck.disabled = !open;
   if (btnModeFormCircle) btnModeFormCircle.disabled = !open;
@@ -1420,6 +1430,8 @@ function setOpen(open) {
   if (!open) {
     setPlacementMode("none");
     if (formFillMode) setFormFillMode(false);
+    if (formPalettePopup) formPalettePopup.hidden = true;
+    if (btnFormPalette) btnFormPalette.classList.remove("toggled");
     setSplitMode(false);
     // Clear sidebar artifacts that survive across close paths. Some
     // close routes (tab × button when no other tabs remain, switching
@@ -5072,6 +5084,88 @@ const STAMP_POPUP_POS_KEY = "kpdf3.stampPopupPos";
 
 btnRotateLeft.addEventListener("click", actionRotateLeft);
 btnRotateRight.addEventListener("click", actionRotateRight);
+
+// β.80: フォーム palette popup の開閉 + ドラッグ + 位置永続化。
+// スタンプ palette と同じ流儀。toolbar 「フォーム」ボタン押下で
+// toggle、close ボタン or PDF クローズで非表示。popup を閉じる時は
+// 進行中の placementMode / formFillMode を解除する (混乱回避)。
+const FORM_POPUP_POS_KEY = "kpdf3.formPopupPos";
+if (btnFormPalette && formPalettePopup) {
+  btnFormPalette.addEventListener("click", () => {
+    const willShow = formPalettePopup.hidden;
+    formPalettePopup.hidden = !willShow;
+    btnFormPalette.classList.toggle("toggled", willShow);
+    if (!willShow) {
+      // popup を閉じた → 関連モードも解除
+      if (placementMode?.startsWith("form-")) setPlacementMode("none");
+      if (formFillMode) setFormFillMode(false);
+    }
+  });
+}
+if (btnFormPaletteClose && formPalettePopup) {
+  btnFormPaletteClose.addEventListener("click", () => {
+    formPalettePopup.hidden = true;
+    btnFormPalette?.classList.remove("toggled");
+    if (placementMode?.startsWith("form-")) setPlacementMode("none");
+    if (formFillMode) setFormFillMode(false);
+  });
+}
+if (formPalettePopup && formPaletteTitlebar) {
+  const restoreFormPopupPos = () => {
+    try {
+      const saved = localStorage.getItem(FORM_POPUP_POS_KEY);
+      if (!saved) return;
+      const { left, top } = JSON.parse(saved);
+      if (typeof left !== "number" || typeof top !== "number") return;
+      const w = formPalettePopup.offsetWidth || 240;
+      const h = formPalettePopup.offsetHeight || 200;
+      const clampedLeft = Math.max(0, Math.min(window.innerWidth - w, left));
+      const clampedTop = Math.max(0, Math.min(window.innerHeight - h, top));
+      formPalettePopup.style.left = `${clampedLeft}px`;
+      formPalettePopup.style.top = `${clampedTop}px`;
+      formPalettePopup.style.right = "auto";
+    } catch { /* ignore */ }
+  };
+  restoreFormPopupPos();
+  const obs = new MutationObserver(() => {
+    if (!formPalettePopup.hidden) restoreFormPopupPos();
+  });
+  obs.observe(formPalettePopup, { attributes: true, attributeFilter: ["hidden"] });
+
+  let drag = null;
+  formPaletteTitlebar.addEventListener("pointerdown", (e) => {
+    if (e.target instanceof HTMLElement && e.target.id === "form-palette-close") return;
+    const rect = formPalettePopup.getBoundingClientRect();
+    drag = {
+      pointerId: e.pointerId,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+    };
+    try { formPaletteTitlebar.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  });
+  formPaletteTitlebar.addEventListener("pointermove", (e) => {
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const x = e.clientX - drag.offsetX;
+    const y = e.clientY - drag.offsetY;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const w = formPalettePopup.offsetWidth;
+    const h = formPalettePopup.offsetHeight;
+    formPalettePopup.style.left = `${Math.max(0, Math.min(vw - w, x))}px`;
+    formPalettePopup.style.top = `${Math.max(0, Math.min(vh - h, y))}px`;
+    formPalettePopup.style.right = "auto";
+  });
+  formPaletteTitlebar.addEventListener("pointerup", (e) => {
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    try { formPaletteTitlebar.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    drag = null;
+    try {
+      const left = parseFloat(formPalettePopup.style.left) || 0;
+      const top = parseFloat(formPalettePopup.style.top) || 0;
+      localStorage.setItem(FORM_POPUP_POS_KEY, JSON.stringify({ left, top }));
+    } catch { /* ignore */ }
+  });
+}
 
 // Align toolbar (β5 §17.13/§17.14) — visible only with 2+ selected.
 document.getElementById("align-left")  ?.addEventListener("click", () => alignSelectedOverlays("left"));

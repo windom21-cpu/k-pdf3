@@ -962,6 +962,54 @@ body.form-fill-mode .overlay-form_field.form-focused {
   background: rgba(0, 120, 212, 0.05);
 }
 
+/* β.80: フォーム palette popup — スタンプ palette と同じ流儀の
+ * 98 風 floating window。draggable は titlebar pointerdown ハンドラ
+ * (renderer.js 内) で DOM 位置を移動。 */
+.form-palette-popup {
+  position: fixed;
+  top: 120px;
+  right: 24px;
+  z-index: 5000;
+  min-width: 200px;
+  max-width: 280px;
+  user-select: none;
+}
+.form-palette-popup .title-bar {
+  cursor: move;
+  -webkit-app-region: no-drag;
+}
+.form-palette-popup[hidden] {
+  display: none !important;
+}
+.form-palette-tools {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.form-palette-tools button {
+  text-align: left;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.form-palette-tools button.toggled {
+  background: #316ac5;
+  color: white;
+}
+.form-palette-sep {
+  margin: 8px 0;
+  border: 0;
+  border-top: 1px solid #c0c0c0;
+}
+.form-palette-fill {
+  width: 100%;
+  padding: 4px;
+  font-size: 12px;
+}
+.form-palette-fill.toggled {
+  background: #316ac5;
+  color: white;
+}
+
 /* Drag previews for form-text / form-circle */
 .form-text-preview {
   position: absolute;

@@ -457,12 +457,16 @@ function _readFormTextDefaults() {
   const sizeSel = document.getElementById("form-text-size");
   const colorSel = document.getElementById("form-text-color");
   const frameChk = document.getElementById("form-text-frame");
+  const alignHSel = document.getElementById("form-text-align-h");
+  const alignVSel = document.getElementById("form-text-align-v");
   const fontSize = Math.max(6, parseInt(sizeSel?.value ?? "12", 10) || 12);
   return {
     fontFace: fontSel?.value || "mincho",
     fontSize,
     color: colorSel?.value || "#000000",
     showFrame: frameChk ? !!frameChk.checked : true,
+    alignH: alignHSel?.value || "left",
+    alignV: alignVSel?.value || "middle",
   };
 }
 function _readFormCheckDefaults() {
@@ -607,7 +611,7 @@ function _formDragRect(pageNo, startX, startY, downEvt, div, klass, onCommit) {
 
 /** β.80: drag → form_field (text sub-type) rectangle. */
 export function startFormTextDrag(pageNo, startX, startY, downEvt, div) {
-  const { fontFace, fontSize, color } = _readFormTextDefaults();
+  const { fontFace, fontSize, color, alignH, alignV } = _readFormTextDefaults();
   _formDragRect(
     pageNo, startX, startY, downEvt, div,
     "form-text-preview",
@@ -623,6 +627,8 @@ export function startFormTextDrag(pageNo, startX, startY, downEvt, div) {
           fontFace,
           fontSize,
           color,
+          alignH,
+          alignV,
         },
       });
       _history().execute(cmd);

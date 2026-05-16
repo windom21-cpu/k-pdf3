@@ -207,6 +207,28 @@
     </div>
   </div>
 
+  <!-- β.80: フォーム palette popup — 申請書テンプレ用フィールド配置
+       + 記入モード切替。スタンプ palette と同じ流儀で、ツールバー
+       「フォーム」ボタン押下時に表示。座標は localStorage で永続化。 -->
+  <div id="form-palette-popup" class="window form-palette-popup" hidden>
+    <div class="title-bar" id="form-palette-titlebar">
+      <div class="title-bar-text">フォーム</div>
+      <div class="title-bar-controls">
+        <button id="form-palette-close" aria-label="Close" title="閉じる"></button>
+      </div>
+    </div>
+    <div class="window-body">
+      <div class="form-palette-tools">
+        <button id="btn-mode-form-text" data-form-tool="form-text" title="申請書テンプレ用テキスト枠を配置">枠</button>
+        <button id="btn-mode-form-check" data-form-tool="form-check" title="チェック欄を配置 (✓/✗/☑/■)">☑ チェック</button>
+        <button id="btn-mode-form-circle" data-form-tool="form-circle" title="既存印字を囲む丸を配置">〇 丸囲み</button>
+        <button id="btn-mode-form-radio" data-form-tool="form-radio" title="ラジオ欄を配置 (グループ内で排他)">◉ ラジオ</button>
+      </div>
+      <hr class="form-palette-sep">
+      <button id="btn-toggle-fill-mode" class="form-palette-fill" title="記入モード ↔ 作成モードを切替">記入モード</button>
+    </div>
+  </div>
+
   <!-- フォント設定 dialog (stamp-wide defaults, ADR-0019 後半 MVP) -->
   <div class="busy-modal" id="stamp-font-dialog" hidden>
     <div class="window stamp-reg-window" style="min-width:340px">
@@ -617,11 +639,7 @@
     <button id="btn-mode-marker" disabled title="ドラッグで半透明マーカーを引きます">マーカー</button>
     <button id="btn-mode-callout" disabled title="クリック→ドラッグで矢印付き吹き出しテキストを配置します">吹き出し</button>
     <span class="toolbar-sep"></span>
-    <button id="btn-mode-form-text" disabled title="申請書テンプレ用テキスト枠を配置 (記入モードで Tab 移動)">枠</button>
-    <button id="btn-mode-form-check" disabled title="チェック欄を配置 (✓/✗/☑/■)">☑</button>
-    <button id="btn-mode-form-circle" disabled title="既存印字を囲む丸 (○) を配置 (記入時にトグル)">〇</button>
-    <button id="btn-mode-form-radio" disabled title="ラジオ欄を配置 (同一グループ内で排他)">◉</button>
-    <button id="btn-toggle-fill-mode" disabled title="記入モード ↔ 作成モードを切替 (Tab で次のフィールドへ)">記入</button>
+    <button id="btn-form-palette" disabled title="申請書テンプレ用フォームフィールド (枠/チェック/丸囲み/ラジオ + 記入モード)">フォーム</button>
     <span class="toolbar-sep"></span>
     <button id="btn-page-numbers" disabled title="全ページのフッターにページ番号を一括追加">＋ページ番号</button>
     <button id="btn-page-popup" disabled title="現在のページを別ウインドウで表示（比較用）">別窓</button>
@@ -755,6 +773,18 @@
       </select>
       <span class="mode-options-label" style="margin-left:12px">枠線:</span>
       <input type="checkbox" id="form-text-frame" title="作成時に薄いガイド枠を表示 (印刷時は出ません)" checked>
+      <span class="mode-options-label" style="margin-left:12px">横:</span>
+      <select id="form-text-align-h" class="toolbar-inline-select" title="水平方向の揃え">
+        <option value="left" selected>左寄せ</option>
+        <option value="center">中央</option>
+        <option value="right">右寄せ</option>
+      </select>
+      <span class="mode-options-label">縦:</span>
+      <select id="form-text-align-v" class="toolbar-inline-select" title="垂直方向の揃え">
+        <option value="top">上</option>
+        <option value="middle" selected>中央</option>
+        <option value="bottom">下</option>
+      </select>
     </div>
     <div class="mode-options" data-mode="form-check" hidden>
       <span class="mode-options-label">記号:</span>

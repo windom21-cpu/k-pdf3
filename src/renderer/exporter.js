@@ -917,6 +917,86 @@ async function drawOverlay(ctx, ov, zoom) {
     return;
   }
 
+  // β.80 — Form fields (申請書テンプレ用)。4 sub-types share the
+  // overlay type 'form_field' and are discriminated by props.fieldKind.
+  // 印刷経路では「ガイド枠」は出さず、value がある (= filled な) もの
+  // だけ実印字する。text サブタイプは alignH / alignV で揃え制御。
+  if (ov.type === "form_field") {
+    const fieldKind = props.fieldKind ?? "text";
+    const color = props.color ?? "#000000";
+    const value = String(props.value ?? "");
+    const filled = value !== "" && value !== "off";
+
+    if (fieldKind === "text") {
+      const fontSize = (props.fontSize ?? 12) * zoom;
+      const fontStack = getTextFontStack(props.fontFace);
+      ctx.font = `${fontSize}px ${fontStack}`;
+      ctx.fillStyle = color;
+      const padX = Math.max(1, zoom);   // 1pt の内枠 padding
+      const innerW = Math.max(0, w - 2 * padX);
+      const lines = value === "" ? [] : wrapCanvasText(ctx, value, innerW);
+      if (lines.length === 0) return;
+      const lineHeight = fontSize * 1.2;
+      const totalH = lines.length * lineHeight;
+      const alignH = props.alignH ?? "left";
+      const alignV = props.alignV ?? "middle";
+
+      let baseY;
+      if (alignV === "top") baseY = y;
+      else if (alignV === "bottom") baseY = y + h - totalH;
+      else baseY = y + (h - totalH) / 2;
+
+      ctx.textBaseline = "top";
+      for (let i = 0; i < lines.length; i++) {
+        const lineW = ctx.measureText(lines[i]).width;
+        let lineX;
+        if (alignH === "right") lineX = x + w - padX - lineW;
+        else if (alignH === "center") lineX = x + (w - lineW) / 2;
+        else lineX = x + padX;
+        ctx.fillText(lines[i], lineX, baseY + i * lineHeight);
+      }
+      return;
+    }
+
+    if (fieldKind === "check" || fieldKind === "radio") {
+      if (!filled) return;
+      const checkStyle =
+        props.checkStyle ?? (fieldKind === "radio" ? "●" : "✓");
+      // 記号サイズは bbox 高さに比例。フォントは sans (記号は CJK 等幅
+      // が綺麗に出る) を使う。中央寄せで描く。
+      const fontSize = h * 0.9;
+      ctx.font = `${fontSize}px ${getTextFontStack("gothic")}`;
+      ctx.fillStyle = color;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.fillText(checkStyle, x + w / 2, y + h / 2);
+      // textAlign / textBaseline はその後の overlay 描画に影響しない
+      // よう即時に戻す (drawOverlay は毎 overlay 独立に呼ばれるが、念
+      // のため state を normalise しておく)。
+      ctx.textBaseline = "alphabetic";
+      ctx.textAlign = "start";
+      return;
+    }
+
+    if (fieldKind === "circle") {
+      if (!filled) return;
+      const strokeWidth = (props.strokeWidth ?? 1.2) * zoom;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = strokeWidth;
+      ctx.beginPath();
+      const rx = Math.max(0, w / 2 - strokeWidth / 2);
+      const ry = Math.max(0, h / 2 - strokeWidth / 2);
+      ctx.ellipse(x + w / 2, y + h / 2, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+    // 不明 fieldKind は何も描画しない (printout で目立つガイド枠は
+    // 出さない方針)。
+    return;
+  }
+
   // Other types render as a stroked rect placeholder.
   ctx.strokeStyle = "#888";
   ctx.strokeRect(x, y, w, h);
