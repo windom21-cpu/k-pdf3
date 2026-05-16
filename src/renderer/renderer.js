@@ -65,8 +65,8 @@ import {
   placeText,
   placeFormCheck,
   placeFormRadio,
+  placeFormCircle,
   startFormTextDrag,
-  startFormCircleDrag,
   // (form-fill imports below)
   currentRedactionColor,
   currentMarkerColor,
@@ -592,7 +592,7 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
   } else if (placementMode === "form-check") {
     placeFormCheck(pageNo, x, y);
   } else if (placementMode === "form-circle") {
-    startFormCircleDrag(pageNo, x, y, evt, div);
+    placeFormCircle(pageNo, x, y);
   } else if (placementMode === "form-radio") {
     placeFormRadio(pageNo, x, y);
   }
@@ -5239,6 +5239,38 @@ function applyFontSizeToEditingOverlay() {
   viewer.applyEditingTextStyle({ fontId, fontSize, color, digitsHanko, bold });
 }
 
+/** β.81: form_field (text サブタイプ) の編集中 overlay にフォント /
+ *  サイズ / 色 / 揃え をライブ反映する。form-text-* select の change
+ *  ハンドラから呼ばれる。テキスト inline edit 中で無くても、選択中の
+ *  form-text フィールドにもフォント変更を効かせる (作成モードで配置
+ *  済みのフィールドの体裁を後から整える用途)。 */
+function applyFormTextStyleToEditingOrSelected() {
+  const editId = viewer._editingId;
+  const selId = !editId ? getPrimarySelectedId() : null;
+  const targetId = editId || selId;
+  if (!targetId) return;
+  const ov = projectStore.get(targetId);
+  if (!ov || ov.type !== "form_field" || ov.properties?.fieldKind !== "text") {
+    return;
+  }
+  const fontFace = document.getElementById("form-text-font")?.value || "mincho";
+  const fontSize =
+    Math.max(6, parseInt(document.getElementById("form-text-size")?.value ?? "12", 10) || 12);
+  const color = document.getElementById("form-text-color")?.value || "#000000";
+  const alignH = document.getElementById("form-text-align-h")?.value || "left";
+  const alignV = document.getElementById("form-text-align-v")?.value || "middle";
+  projectStore.update(targetId, {
+    properties: { ...ov.properties, fontFace, fontSize, color, alignH, alignV },
+  });
+  // 編集中なら inline-edit 要素の見た目もすぐ追従させる (text overlay
+  // と同じ仕組みを流用、digitsHanko/bold は form_field では未使用)。
+  if (editId) {
+    viewer.applyEditingTextStyle?.({
+      fontId: fontFace, fontSize, color, digitsHanko: false, bold: false,
+    });
+  }
+}
+
 if (textFontSel) {
   const saved = localStorage.getItem(TEXT_FONT_STORAGE_KEY);
   if (saved && saved !== "default") textFontSel.value = saved;
@@ -5318,6 +5350,21 @@ if (markerColorSel) {
   markerColorSel.addEventListener("change", () => {
     localStorage.setItem(MARKER_COLOR_STORAGE_KEY, currentMarkerColor());
     if (isOpen && placementMode !== "marker") setPlacementMode("marker");
+  });
+}
+
+// β.81: form-text-* select の change で、編集中 or 選択中の form_field
+// (text サブタイプ) にライブ反映する。配置時のデフォルトとしても効く
+// (placement では _readFormTextDefaults が同じ select 値を読む)。
+for (const id of [
+  "form-text-font",
+  "form-text-size",
+  "form-text-color",
+  "form-text-align-h",
+  "form-text-align-v",
+]) {
+  document.getElementById(id)?.addEventListener("change", () => {
+    applyFormTextStyleToEditingOrSelected();
   });
 }
 

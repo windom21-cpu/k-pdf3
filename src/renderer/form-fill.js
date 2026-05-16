@@ -300,10 +300,15 @@ export function handleFillModeKeydown(e) {
     }
   }
   if (e.key === "Enter") {
-    // In text fields: commit and advance to next field (matches Tab,
-    // matches the「次の欄に進む」expectation from filling out paper
-    // forms).
+    // β.81: Shift+Enter は改行 (browser default の <br> 挿入に任せる)。
+    // 申請書テンプレで「住所欄に都道府県 + 改行 + 市町村」のような
+    // 多行記入があるため。Enter 単独は従来通り commit + 次のフィールド。
     if (inEditable) {
+      if (e.shiftKey) {
+        // 改行は contentEditable の default 動作 (Shift+Enter で <br>)
+        // に任せる。preventDefault しない = 何もしない。
+        return false;
+      }
       e.preventDefault();
       _viewer?._exitEdit?.(true);
       focusNext();

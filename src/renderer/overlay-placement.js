@@ -481,9 +481,12 @@ function _readFormCheckDefaults() {
 function _readFormCircleDefaults() {
   const strokeSel = document.getElementById("form-circle-stroke");
   const colorSel = document.getElementById("form-circle-color");
+  const sizeSel = document.getElementById("form-circle-size");
+  const size = Math.max(6, parseInt(sizeSel?.value ?? "24", 10) || 24);
   return {
     strokeWidth: parseFloat(strokeSel?.value ?? "1.2") || 1.2,
     color: colorSel?.value || "#000000",
+    size,
   };
 }
 function _readFormRadioDefaults() {
@@ -636,26 +639,27 @@ export function startFormTextDrag(pageNo, startX, startY, downEvt, div) {
   );
 }
 
-/** β.80: drag → form_field (circle sub-type), bbox of the ellipse. */
-export function startFormCircleDrag(pageNo, startX, startY, downEvt, div) {
-  const { strokeWidth, color } = _readFormCircleDefaults();
-  _formDragRect(
-    pageNo, startX, startY, downEvt, div,
-    "form-circle-preview",
-    (pno, x, y, w, h) => {
-      const cmd = new AddOverlayCommand(_projectStore(), {
-        pageNo: pno,
-        type: "form_field",
-        x, y, w, h,
-        zOrder: 0,
-        properties: {
-          fieldKind: "circle",
-          value: "on",          // 丸囲みは常に「表示する」が初期値
-          strokeWidth,
-          color,
-        },
-      });
-      _history().execute(cmd);
+/** β.81: click → 固定サイズの真円配置。配置後は四隅のハンドルで自由に
+ *  楕円へ変形できる (W ≠ H の bbox にすると border-radius: 50% で楕円
+ *  描画、印刷経路の drawOverlay も ellipse でストロークする)。β.80 の
+ *  ドラッグ配置は「初手でサイズを決める必要がある」のが面倒という
+ *  フィードバックを受け、check / radio と同じ click 配置に統一。 */
+export function placeFormCircle(pageNo, x, y) {
+  const { strokeWidth, color, size } = _readFormCircleDefaults();
+  const cmd = new AddOverlayCommand(_projectStore(), {
+    pageNo,
+    type: "form_field",
+    x: x - size / 2,
+    y: y - size / 2,
+    w: size,
+    h: size,
+    zOrder: 0,
+    properties: {
+      fieldKind: "circle",
+      value: "on",          // 丸囲みは常に「表示する」が初期値
+      strokeWidth,
+      color,
     },
-  );
+  });
+  _history().execute(cmd);
 }
