@@ -9,8 +9,10 @@
 //   - circle: Space or click でトグル (value: "" ↔ "on")
 //   - radio:  Space or click で同 group の他を OFF にして自分を ON
 //
-// Tab 順は自動: ページ順 (display order) → Y 昇順 → X 昇順。
-// Tab 順手動編集 (Phase B-6) は未実装。
+// Tab 順は基本自動: ページ順 (display order) → Y 昇順 → X 昇順。
+// β.82 (B-6) 以降は properties.tabOrder (整数) を持つフィールドが優先
+// される。explicit/auto が混在しているときは「explicit を tabOrder 昇順
+// で先頭、auto を従来順で末尾に追加」の合成順を採用する。
 //
 // 依存は init() で注入。直接 import は project-store の Command と
 // fonts.getTextFontStack のみ (循環避け)。
@@ -49,10 +51,13 @@ export function invalidateTabOrderCache() {
 
 /** Build the global Tab order from the current store snapshot.
  *
- *  Sort key:
- *    1. pageNo display position (ascending — page 1 fields first)
- *    2. Y (canonical, ascending — top of page first)
- *    3. X (canonical, ascending — left first)
+ *  Sort key (β.82 mixed semantics):
+ *    1. explicit tabOrder ascending (properties.tabOrder, integer) — フィー
+ *       ルドのうち tabOrder を持つものを「明示順」として先頭に並べる
+ *    2. 残りは自動順 (auto):
+ *       a. pageNo display position (ascending — page 1 fields first)
+ *       b. Y (canonical, ascending — top of page first)
+ *       c. X (canonical, ascending — left first)
  *
  *  Y ε bucketing: fields whose Y differs by less than ROW_EPSILON are
  *  treated as the same row (left-to-right). ROW_EPSILON defaults to
@@ -67,15 +72,20 @@ function _computeTabOrder() {
     return _tabOrderCache;
   }
   // Collect every form_field overlay across all pages.
-  const all = [];
+  const explicit = [];
+  const auto = [];
   for (const ov of store.snapshot()) {
     if (ov.type !== "form_field") continue;
-    all.push({
+    const t = ov.properties?.tabOrder;
+    const rec = {
       id: ov.id,
       pageNo: ov.pageNo,
       x: ov.x,
       y: ov.y,
-    });
+      tabOrder: typeof t === "number" && Number.isFinite(t) ? t : null,
+    };
+    if (rec.tabOrder != null) explicit.push(rec);
+    else auto.push(rec);
   }
   // Map pageNo → display position via the registry so reordered pages
   // sort correctly. Inserted pages (negative pageNo) and source pages
@@ -90,15 +100,23 @@ function _computeTabOrder() {
     }
     return pn;
   };
-  all.sort((a, b) => {
+  explicit.sort((a, b) => a.tabOrder - b.tabOrder);
+  auto.sort((a, b) => {
     const pa = posOf(a.pageNo);
     const pb = posOf(b.pageNo);
     if (pa !== pb) return pa - pb;
     if (Math.abs(a.y - b.y) >= ROW_EPSILON) return a.y - b.y;
     return a.x - b.x;
   });
-  _tabOrderCache = all;
+  _tabOrderCache = explicit.concat(auto);
   return _tabOrderCache;
+}
+
+/** β.82 (B-6): renderer 側 (バッジ表示 / ドラッグ並べ替え) から現在の
+ *  Tab 順を読むための公開関数。配列はコピーを返すので呼出側で並べ替え
+ *  ても _tabOrderCache を破壊しない。 */
+export function getCurrentTabOrder() {
+  return _computeTabOrder().slice();
 }
 
 export function getFocusedFieldId() {

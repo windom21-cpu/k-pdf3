@@ -226,6 +226,24 @@
       </div>
       <hr class="form-palette-sep">
       <button id="btn-toggle-fill-mode" class="form-palette-fill" title="記入モード ↔ 作成モードを切替">記入モード</button>
+      <button id="btn-toggle-tab-order" class="form-palette-fill" title="Tab で巡る順番を並べ替える。番号バッジ / 横に出る一覧ポップアップで操作">Tab 順を編集</button>
+    </div>
+  </div>
+
+  <!-- β.82 (B-6): Tab 順リスト popup — Tab 順編集モード ON で表示。
+       form_field を縦に並べて、ドラッグで上下入れ替え。各行クリックで
+       本文中の対応 overlay を強調 + 中央スクロール。 -->
+  <div id="tab-order-list-popup" class="window tab-order-list-popup" hidden>
+    <div class="title-bar" id="tab-order-list-titlebar">
+      <div class="title-bar-text">Tab 順</div>
+      <div class="title-bar-controls">
+        <button id="tab-order-list-close" aria-label="Close" title="閉じる"></button>
+      </div>
+    </div>
+    <div class="window-body">
+      <p class="tab-order-list-hint">行を上下にドラッグで順序変更。クリックで本文の該当枠を強調表示。</p>
+      <div id="tab-order-list-body" class="tab-order-list-body"></div>
+      <div id="tab-order-list-empty" class="tab-order-list-empty" hidden>フォーム枠がありません</div>
     </div>
   </div>
 

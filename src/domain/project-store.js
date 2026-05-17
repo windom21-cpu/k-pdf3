@@ -25,8 +25,12 @@ const randomUUID = () => globalThis.crypto.randomUUID();
  *     fontFace?: string,          // text のみ
  *     fontSize?: number,          // text のみ (pt)
  *     color?: string,             // 既定 '#000000'
- *     checkStyle?: '✓' | '✗' | '☑' | '■',  // check のみ
- *     tabIndex?: number,          // null/undefined = 自動 (Y → X)
+ *     checkStyle?: '✓' | '✗' | '☑' | '■',  // check / radio で記号
+ *     strokeWidth?: number,       // circle のみ
+ *     alignH?: 'left' | 'center' | 'right',     // text のみ
+ *     alignV?: 'top'  | 'middle' | 'bottom',    // text のみ
+ *     tabOrder?: number,          // β.82+: null/undefined = 自動 (Y → X)
+ *                                 // 整数で明示順を保存 (B-6 Tab 順手動編集)
  *     radioGroupId?: string,      // radio のみ (同 group 排他)
  *   }
  * を持つ。下敷き印刷時は背景 PDF を除外し overlay のみを出力する。

@@ -21,13 +21,15 @@ let _projectStore = () => null;
 let _history = () => null;
 let _viewer = null;
 let _wsStatus = null;
+let _onSelectionChanged = () => {};
 
-export function initOverlaySelection({ isOpen, projectStore, history, viewer, wsStatus }) {
+export function initOverlaySelection({ isOpen, projectStore, history, viewer, wsStatus, onSelectionChanged }) {
   _isOpen = isOpen;
   _projectStore = projectStore;
   _history = history;
   _viewer = viewer;
   _wsStatus = wsStatus;
+  if (typeof onSelectionChanged === "function") _onSelectionChanged = onSelectionChanged;
 }
 
 /** @type {Set<string>} */
@@ -271,6 +273,12 @@ export function reapplySelectionDom() {
     el.appendChild(btn);
   }
   syncAlignToolbar();
+  // β.82: selection が変わるたびに renderer 側の options bar 同期を促す
+  // (placementMode === "none" でも form_field 選択中なら専用パネルを出す
+  // ため。populate も同時に走らせて select 値を overlay の現在値に合わ
+  // せる)。reapplySelectionDom は selection 変更経路すべての最終呼出点
+  // なので、ここで callback を 1 回呼べばどの経路でも反映される。
+  try { _onSelectionChanged(); } catch { /* defensive */ }
 }
 
 /** Toolbar align-buttons (左/上/右/下揃え) enable/disable + counter
