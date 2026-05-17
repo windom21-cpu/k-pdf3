@@ -2234,6 +2234,9 @@ async function refreshViewer() {
   }
   activeSourceName = meta.fileName ?? "";
   wsStatus.textContent = `${pages.length} ページ`;
+  // Drop any prior annotations so load() doesn't briefly paint the old PDF's
+  // annotations on the new PDF's pages — setAnnotations re-fires below.
+  viewer.setAnnotations(null);
   viewer.load(pages);
   // Apply the active fit mode so a fresh PDF lands at the user's
   // chosen sizing instead of the viewer's intrinsic default zoom.
@@ -2244,6 +2247,16 @@ async function refreshViewer() {
   refreshStampPresetCacheAndSelect();
   refreshDirtyIndicator();
   refreshZoomSelect();
+  // C3 annotation read-only proxy. Fetch in parallel with the user's first
+  // interactions — markers fade in once data arrives. Main caches per tab so
+  // refreshViewer re-entries during this session are cheap.
+  try {
+    const annots = await kpdf3.getAllAnnotations();
+    viewer.setAnnotations(annots && Object.keys(annots).length > 0 ? annots : null);
+  } catch (err) {
+    console.warn("[annotations] fetch failed", err);
+    viewer.setAnnotations(null);
+  }
 }
 
 async function confirmDiscardIfDirty() {

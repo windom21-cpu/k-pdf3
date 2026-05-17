@@ -171,6 +171,33 @@ export function canonicalRectToPdf(r, page) {
 }
 
 /**
+ * Convert a PDF native rect ([x0, y0, x1, y1], bottom-left origin) to
+ * canonical (top-left origin, post-rotation user view).
+ *
+ * Used by annotation read-only proxy: mupdf returns annotation /Rect in
+ * PDF native coords; viewer needs canonical to position the marker.
+ *
+ * @param {[number, number, number, number]} pdfRect  [x0, y0, x1, y1]
+ * @param {PageBox} page
+ * @returns {Rect}  canonical { x, y, w, h }
+ */
+export function pdfRectToCanonical(pdfRect, page) {
+  const [x0, y0, x1, y1] = pdfRect;
+  const corners = [
+    { x: x0, y: y0 },
+    { x: x1, y: y0 },
+    { x: x0, y: y1 },
+    { x: x1, y: y1 },
+  ];
+  const c = corners.map((p) => pdfToCanonical(p, page));
+  const xs = c.map((p) => p.x);
+  const ys = c.map((p) => p.y);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+}
+
+/**
  * Page dimension after effective rotation, with rotation transform that maps
  * canonical (top-left) to PDF native (bottom-left).
  *

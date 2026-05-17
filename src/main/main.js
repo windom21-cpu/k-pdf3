@@ -21,6 +21,7 @@ import { openPdfDocument } from "../backend/mupdf-render.js";
 import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
 import { computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
+import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
   closeRegistry,
@@ -2919,6 +2920,27 @@ ipcMain.handle("kpdf3:get-pages", async (event) => {
   const ws = activeForEvent(event).workspace ?? activeWorkspace;
   if (!ws) return [];
   return ws.getPages();
+});
+
+// C3 annotation read-only proxy. Extract annotations from the active tab's
+// source PDF on first request, cache on the tab handle. Returns a plain
+// object keyed by 1-based pageNo so the renderer can hold a Map cheaply.
+// Caller may pre-fetch once on workspace open or fetch lazily per page.
+ipcMain.handle("kpdf3:get-all-annotations", async (event) => {
+  const { doc, tabId } = activeForEvent(event);
+  if (!doc || !tabId) return {};
+  const h = tabHandles.get(tabId);
+  if (!h) return {};
+  if (h.annotations) return h.annotations;
+  /** @type {Record<number, ReturnType<typeof extractPageAnnotationsFromDoc>>} */
+  const map = {};
+  const pageCount = doc.countPages();
+  for (let i = 0; i < pageCount; i++) {
+    const annots = extractPageAnnotationsFromDoc(doc, i);
+    if (annots.length > 0) map[i + 1] = annots;
+  }
+  h.annotations = map;
+  return map;
 });
 
 ipcMain.handle("kpdf3:set-page-deleted", async (_, pageNo, deleted) => {

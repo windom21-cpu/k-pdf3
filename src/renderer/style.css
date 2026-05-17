@@ -785,6 +785,91 @@ button.toggled {
   inset: 0;
   pointer-events: none; /* selection/drag come in M3-6 */
 }
+
+/* C3 annotation read-only proxy. Sits BELOW the editable overlay layer
+ * (DOM order: canvas → annotation-layer → overlay-layer) so user-placed
+ * overlays always cover external annotations. Layer itself is non-interactive;
+ * marker annotations re-enable pointer-events for their native title tooltip.
+ */
+.annotation-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.annot {
+  position: absolute;
+  box-sizing: border-box;
+}
+/* Marker-style annotations (Text / Caret / FileAttachment) — small fixed-size
+ * glyph anchored at the rect top-left. Yellow sticky-note feel, retro flat. */
+.annot-marker {
+  width: 14px;
+  height: 14px;
+  background: #fff299;
+  border: 1px solid #806b00;
+  font-family: "MS UI Gothic", "Pixelated MS Sans Serif", sans-serif;
+  font-size: 10px;
+  font-weight: bold;
+  color: #604c00;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  pointer-events: auto;
+  box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.4);
+}
+.annot-caret           { background: #d8f0ff; border-color: #00568a; color: #00568a; }
+.annot-fileattachment  { background: #e0e0ff; border-color: #4040a0; color: #2a2a80; }
+/* Highlight family — per-quad colored overlays. */
+.annot-quad {
+  position: absolute;
+  box-sizing: border-box;
+}
+.annot-quad-highlight  { background: rgba(255, 235, 59, 0.35); }
+.annot-quad-underline  { border-bottom: 2px solid #2e7d32; }
+.annot-quad-squiggly   { border-bottom: 2px dotted #c62828; }
+.annot-quad-strikeout::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  top: 50%;
+  height: 1.5px;
+  background: #c62828;
+}
+.annot-quad-strikeout  { position: absolute; }
+/* Free-text — dashed border around the annotation rect, with content rendered
+ * inside (no font metrics: this is a proxy, not a faithful render). */
+.annot-freetext {
+  border: 1px dashed #1565c0;
+  background: rgba(33, 150, 243, 0.05);
+  overflow: hidden;
+  font-family: "MS UI Gothic", "Pixelated MS Sans Serif", sans-serif;
+  font-size: 10px;
+  color: #0d47a1;
+  padding: 2px;
+}
+.annot-freetext-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Stamps and geometric shapes — thin outline only. Color cue picks out type
+ * without claiming to render the original appearance. */
+.annot-stamp     { border: 2px solid #d84315; background: rgba(216, 67, 21, 0.04); }
+.annot-square    { border: 1.5px solid #6d4c41; }
+.annot-circle    { border: 1.5px solid #6d4c41; border-radius: 50%; }
+.annot-line      { border: 1.5px solid #424242; }
+.annot-polygon,
+.annot-polyline  { border: 1.5px dashed #424242; }
+.annot-redact    { border: 2px dashed #b71c1c; background: rgba(183, 28, 28, 0.06); }
+/* Ink — render per-stroke bbox as a faint dot/line cluster. */
+.annot-ink {
+  border: 1px dotted #455a64;
+}
+.annot-stroke {
+  position: absolute;
+  background: rgba(69, 90, 100, 0.22);
+}
 .overlay {
   position: absolute;
   box-sizing: border-box;

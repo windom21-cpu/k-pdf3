@@ -43,6 +43,9 @@ contextBridge.exposeInMainWorld("kpdf3", {
   // queries
   getSourceMeta:      ()        => ipcRenderer.invoke("kpdf3:get-source-meta"),
   getPages:           ()        => ipcRenderer.invoke("kpdf3:get-pages"),
+  // C3 annotation read-only proxy. Returns a plain object keyed by 1-based
+  // pageNo (source PDF) → AnnotationRecord[]. Empty pages are omitted.
+  getAllAnnotations:  ()        => ipcRenderer.invoke("kpdf3:get-all-annotations"),
   getOutline:         ()        => ipcRenderer.invoke("kpdf3:get-outline"),
   listBookmarks:      ()        => ipcRenderer.invoke("kpdf3:list-bookmarks"),
   addBookmark:        (opts)    => ipcRenderer.invoke("kpdf3:add-bookmark", opts),
