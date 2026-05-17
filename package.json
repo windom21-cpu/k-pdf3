@@ -125,6 +125,10 @@
         {
           "from": "vendor/sumatrapdf/COPYING",
           "to": "sumatrapdf/COPYING.txt"
+        },
+        {
+          "from": "vendor/qpdf/win",
+          "to": "qpdf"
         }
       ]
     },

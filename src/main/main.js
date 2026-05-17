@@ -22,6 +22,7 @@ import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
 import { computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
+import { findQpdfBinary, sanitizePdfBytes } from "./qpdf-sanitize.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
   closeRegistry,
@@ -2544,12 +2545,18 @@ ipcMain.handle("kpdf3:cancel-print", async () => {
  * Limitations to address in later M4 sub-steps:
  *   - File size: PNG is lossless and large. M4 polish: switch to
  *     JPEG / DCT for source pages when no overlays touch them.
- *   - No metadata strip / no xref rebuild — qpdf integration M4-3.
  *   - Revision id / exports BLOB history — M4-2.
+ *
+ * Secure export (β.84+): when payload.secureExport is true the assembled
+ * PDF is passed through qpdf with --remove-info --remove-metadata (xref is
+ * also rebuilt as a side effect). If the qpdf binary isn't available the
+ * non-sanitised bytes are written and the response carries qpdfMissing:true
+ * so the renderer can warn the user; sanitize-time errors surface as
+ * thrown rejections so the user knows the file is NOT secure.
  */
 ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
   if (!activeWorkspace) throw new Error("No active workspace");
-  const { savePath, pages } = payload;
+  const { savePath, pages, secureExport = false } = payload;
   if (!savePath || !Array.isArray(pages) || pages.length === 0) {
     throw new Error("export-pdf-rasterized: invalid payload");
   }
@@ -2569,10 +2576,22 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
   } catch (err) {
     console.error("[export] /Outlines write-back failed (continuing without):", err);
   }
+  let secureExportApplied = false;
+  let qpdfMissing = false;
+  if (secureExport) {
+    const qpdfPath = findQpdfBinary();
+    if (!qpdfPath) {
+      qpdfMissing = true;
+      console.warn("[export] secureExport requested but qpdf not found — writing raw");
+    } else {
+      pdfBytes = await sanitizePdfBytes(pdfBytes, { qpdfPath });
+      secureExportApplied = true;
+    }
+  }
   writeFileSync(savePath, pdfBytes);
   const rev = activeWorkspace.recordExport(pdfBytes, {
     note: payload.note ?? null,
-    isSecure: false,
+    isSecure: secureExportApplied,
   });
   return {
     savedAt: rev.timestamp,
@@ -2581,6 +2600,8 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
     revisionId: rev.revisionId,
     outputHash: rev.outputHash,
     outputSize: rev.outputSize,
+    secureExportApplied,
+    qpdfMissing,
   };
 });
 

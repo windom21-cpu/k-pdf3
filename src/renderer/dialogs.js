@@ -26,7 +26,14 @@ export function customConfirm({
   confirmTitle.textContent = title;
   confirmMessageEl.textContent = message ?? "";
   confirmOkBtn.textContent = okLabel;
-  confirmCancelBtn.textContent = cancelLabel;
+  // cancelLabel === null hides the cancel button — useful for purely-
+  // informational warnings where OK is the only choice.
+  if (cancelLabel === null) {
+    confirmCancelBtn.hidden = true;
+  } else {
+    confirmCancelBtn.hidden = false;
+    confirmCancelBtn.textContent = cancelLabel;
+  }
   confirmDialog.hidden = false;
   setTimeout(() => confirmOkBtn.focus(), 0);
   return new Promise((resolve) => {

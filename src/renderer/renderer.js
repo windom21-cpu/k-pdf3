@@ -1248,7 +1248,7 @@ async function actionSavePagesAsPdf(pageNos) {
       : `${rows.length}pages`;
   }
   const initialName = `${baseName}_${tag}.pdf`;
-  const savePath = await showFileBrowser({
+  const choice = await showFileBrowser({
     mode: "save",
     title:
       rows.length === 1
@@ -1256,8 +1256,10 @@ async function actionSavePagesAsPdf(pageNos) {
         : `${rows.length} ページを PDF として保存`,
     initialName,
     defaultDir: defaults.sourceDir,
+    secureExportToggle: true,
   });
-  if (!savePath) return;
+  if (!choice) return;
+  const { path: savePath, secureExport } = choice;
   showBusy("保存", `${rows.length} ページを書き出し中...`, 0);
   try {
     const composed = await composePagesForExport({
@@ -1270,9 +1272,23 @@ async function actionSavePagesAsPdf(pageNos) {
       },
     });
     updateBusy("PDF を組み立て中...", 90);
-    const result = await kpdf3.exportPdfRasterized({ savePath, pages: composed });
+    const result = await kpdf3.exportPdfRasterized({
+      savePath,
+      pages: composed,
+      secureExport,
+    });
     hideBusy();
     wsStatus.textContent = `${savePath} に保存しました（${rows.length} ページ, rev ${(result?.revisionId ?? "").slice(0, 8)}）`;
+    if (secureExport && result?.qpdfMissing) {
+      await customConfirm({
+        title: "セキュア書き出し: qpdf 未検出",
+        message:
+          "qpdf バイナリが見つからなかったため、個人情報の消去をスキップして\n"
+          + "通常の書き出しを行いました。",
+        okLabel: "閉じる",
+        cancelLabel: null,
+      });
+    }
   } catch (err) {
     hideBusy();
     console.error("[save-pages] failed", err);
@@ -2942,13 +2958,15 @@ async function actionExportRange() {
     return;
   }
   const defaults = await kpdf3.getExportDefaults();
-  const savePath = await showFileBrowser({
+  const choice = await showFileBrowser({
     mode: "save",
     title: "範囲書き出し",
     initialName: defaults.defaultName ?? "export.pdf",
     defaultDir: defaults.sourceDir,
+    secureExportToggle: true,
   });
-  if (!savePath) return;
+  if (!choice) return;
+  const { path: savePath, secureExport } = choice;
 
   const filteredPages = pages.slice(range.start - 1, range.end);
   showBusy("書き出し準備", `ページ ${range.start}-${range.end} を描画しています...`, 0);
@@ -2966,10 +2984,21 @@ async function actionExportRange() {
     const result = await kpdf3.exportPdfRasterized({
       savePath,
       pages: composed,
+      secureExport,
     });
     hideBusy();
     wsStatus.textContent =
       `書き出し完了 (p.${range.start}-${range.end}, rev ${result.revisionId.slice(0, 8)} → ${savePath})`;
+    if (secureExport && result?.qpdfMissing) {
+      await customConfirm({
+        title: "セキュア書き出し: qpdf 未検出",
+        message:
+          "qpdf バイナリが見つからなかったため、個人情報の消去をスキップして\n"
+          + "通常の書き出しを行いました。",
+        okLabel: "閉じる",
+        cancelLabel: null,
+      });
+    }
   } catch (err) {
     hideBusy();
     console.error("[renderer] export-range failed:", err);
@@ -2981,14 +3010,15 @@ async function actionExportRange() {
 async function actionExport() {
   if (!isOpen) return;
   const defaults = await kpdf3.getExportDefaults();
-  const savePath = await showFileBrowser({
+  const choice = await showFileBrowser({
     mode: "save",
     title: "PDF として書き出し",
     initialName: defaults.defaultName ?? "export.pdf",
     defaultDir: defaults.sourceDir,
+    secureExportToggle: true,
   });
-  if (!savePath) return;
-  await actionExportToPath(savePath);
+  if (!choice) return;
+  await actionExportToPath(choice.path, { secureExport: choice.secureExport });
 }
 
 /**
@@ -3092,9 +3122,16 @@ async function actionSave() {
  * just wrote to.
  *
  * @param {string} savePath - absolute target PDF path
- * @param {{ verb?: string }} [opts] - status-message verb (default "書き出し")
+ * @param {{ verb?: string, secureExport?: boolean }} [opts]
+ *   - verb: status-message verb (default "書き出し")
+ *   - secureExport: run the assembled PDF through qpdf to strip metadata +
+ *     rebuild xref. Ignored on the byte-copy path (no overlays / deletions
+ *     / insertions — we're just byte-copying the source).
  */
-async function actionExportToPath(savePath, { verb: verbOverride } = {}) {
+async function actionExportToPath(
+  savePath,
+  { verb: verbOverride, secureExport = false } = {},
+) {
   if (!isOpen) return;
   const pages = await fetchVisiblePages();
   if (pages.length === 0) return;
@@ -3124,7 +3161,11 @@ async function actionExportToPath(savePath, { verb: verbOverride } = {}) {
         },
       });
       updateBusy("PDF を組み立て中...", 90);
-      result = await kpdf3.exportPdfRasterized({ savePath, pages: composed });
+      result = await kpdf3.exportPdfRasterized({
+        savePath,
+        pages: composed,
+        secureExport,
+      });
     }
     updateBusy("新しいファイルに切り替え中...", 95);
     try {
@@ -3141,6 +3182,19 @@ async function actionExportToPath(savePath, { verb: verbOverride } = {}) {
     }
     hideBusy();
     wsStatus.textContent = `${verb}しました（rev ${result.revisionId.slice(0, 8)}）`;
+    if (secureExport && result?.qpdfMissing) {
+      // User asked for sanitize but the qpdf binary wasn't found. Warn
+      // post-hoc so they know the file went out un-scrubbed.
+      await customConfirm({
+        title: "セキュア書き出し: qpdf 未検出",
+        message:
+          "qpdf バイナリが見つからなかったため、個人情報の消去をスキップして\n"
+          + "通常の書き出しを行いました。\n\n"
+          + "通常版がパッケージから外れている可能性があります。",
+        okLabel: "閉じる",
+        cancelLabel: null,
+      });
+    }
   } catch (err) {
     hideBusy();
     console.error(`[renderer] ${verb} failed:`, err);

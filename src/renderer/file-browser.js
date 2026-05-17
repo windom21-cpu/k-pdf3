@@ -27,6 +27,8 @@ const openFilterRow = document.getElementById("open-row-filter");
 const openConfirmBtn = document.getElementById("open-confirm");
 const openCancelBtn = document.getElementById("open-cancel");
 const openTitlebarCloseBtn = document.getElementById("open-titlebar-close");
+const openSecureExportRow = document.getElementById("open-row-secure-export");
+const openSecureExportCheckbox = document.getElementById("open-secure-export");
 
 const fileBrowserState = {
   mode: "open", // "open" | "save" | "folder"
@@ -36,6 +38,10 @@ const fileBrowserState = {
   selectedName: null,
   defaultPaths: null,
   resolve: null, // Promise resolver for the current invocation
+  // When true (set per-invocation by showFileBrowser), save mode shows a
+  // "セキュア書き出し" checkbox row and resolves to { path, secureExport }
+  // instead of just a path string.
+  secureExportToggle: false,
 };
 
 function isPdfName(name) {
@@ -201,6 +207,10 @@ function fileBrowserConfirm(value) {
   if (fileBrowserState.currentPath) {
     localStorage.setItem("kpdf3.lastBrowseDir", fileBrowserState.currentPath);
   }
+  // Persist the user's secure-export choice across invocations.
+  if (fileBrowserState.secureExportToggle && openSecureExportCheckbox) {
+    localStorage.setItem("kpdf3.secureExport", openSecureExportCheckbox.checked ? "1" : "0");
+  }
   openDialog.hidden = true;
   if (fileBrowserState.resolve) {
     const r = fileBrowserState.resolve;
@@ -241,7 +251,14 @@ async function handleFileBrowserConfirm() {
       });
       if (!ok) return;
     }
-    fileBrowserConfirm(target);
+    if (fileBrowserState.secureExportToggle) {
+      fileBrowserConfirm({
+        path: target,
+        secureExport: !!openSecureExportCheckbox?.checked,
+      });
+    } else {
+      fileBrowserConfirm(target);
+    }
     return;
   }
 
@@ -271,8 +288,19 @@ export async function showFileBrowser({
   defaultDir = null,
   filterDefault = "pdf",
   confirmLabel,
+  secureExportToggle = false,
 } = {}) {
   fileBrowserState.mode = mode;
+  fileBrowserState.secureExportToggle = !!secureExportToggle && mode === "save";
+  if (openSecureExportRow) {
+    openSecureExportRow.hidden = !fileBrowserState.secureExportToggle;
+  }
+  // Default checked when the row first appears; persist across invocations
+  // via localStorage so a tester who switched it off stays off.
+  if (fileBrowserState.secureExportToggle && openSecureExportCheckbox) {
+    const stored = localStorage.getItem("kpdf3.secureExport");
+    openSecureExportCheckbox.checked = stored == null ? true : stored === "1";
+  }
   await populateQuickSelector();
 
   // Resolve initial directory
