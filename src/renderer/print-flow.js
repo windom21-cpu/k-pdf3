@@ -470,6 +470,7 @@ async function actionPrintViaReader(pages, preselected, preselectedSource) {
         projectStore,
         renderPage: kpdf3.renderPage,
         renderSyntheticPage: renderSyntheticPagePixels,
+        rasterRedactionPages: true,
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
@@ -597,6 +598,7 @@ export async function actionPrint() {
         projectStore,
         renderPage: kpdf3.renderPage,
         renderSyntheticPage: renderSyntheticPagePixels,
+        rasterRedactionPages: true,
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
@@ -721,6 +723,7 @@ export async function actionPrintOverlayOnly() {
       renderPage: kpdf3.renderPage,
       renderSyntheticPage: renderSyntheticPagePixels,
       overlayOnly: true,
+      rasterRedactionPages: true,
       onProgress: ({ done, total }) => {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },

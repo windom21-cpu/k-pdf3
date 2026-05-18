@@ -96,13 +96,44 @@ async function populateStampMgrList() {
     stampMgrList.appendChild(li);
     return;
   }
-  for (const p of iterStampPresets()) {
+  // β.85: 並び順変更用に id 配列を確定。▲ ▼ で隣と入れ替えて
+  // setStampPresetsOrder に流し、再描画。
+  const orderedIds = [];
+  for (const p of iterStampPresets()) orderedIds.push(p.id);
+  const presets = [...iterStampPresets()];
+  const last = presets.length - 1;
+
+  const moveTo = async (from, to) => {
+    if (to < 0 || to > last) return;
+    const [moved] = orderedIds.splice(from, 1);
+    orderedIds.splice(to, 0, moved);
+    await kpdf3.setStampPresetsOrder(orderedIds);
+    await populateStampMgrList();
+  };
+
+  for (let i = 0; i < presets.length; i++) {
+    const p = presets[i];
     const li = document.createElement("li");
     const lab = document.createElement("span");
     lab.className = "stamp-mgr-label";
     const kindLabel = p.kind === "date" ? "日付" : p.kind === "text" ? "文字" : "画像";
     lab.textContent = `${kindLabel}: ${p.label}`;
     li.appendChild(lab);
+
+    const upBtn = document.createElement("button");
+    upBtn.textContent = "▲";
+    upBtn.title = "上へ移動";
+    upBtn.disabled = i === 0;
+    upBtn.addEventListener("click", () => moveTo(i, i - 1));
+    li.appendChild(upBtn);
+
+    const downBtn = document.createElement("button");
+    downBtn.textContent = "▼";
+    downBtn.title = "下へ移動";
+    downBtn.disabled = i === last;
+    downBtn.addEventListener("click", () => moveTo(i, i + 1));
+    li.appendChild(downBtn);
+
     const useBtn = document.createElement("button");
     useBtn.textContent = "使う";
     useBtn.addEventListener("click", () => {

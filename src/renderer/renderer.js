@@ -1267,6 +1267,7 @@ async function actionSavePagesAsPdf(pageNos) {
       projectStore,
       renderPage: kpdf3.renderPage,
       renderSyntheticPage: renderSyntheticPagePixels,
+      rasterRedactionPages: true,
       onProgress: ({ done, total }) => {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
@@ -2920,6 +2921,7 @@ splitConfirmBtn.addEventListener("click", async () => {
         projectStore,
         renderPage: kpdf3.renderPage,
         renderSyntheticPage: renderSyntheticPagePixels,
+        rasterRedactionPages: true,
         onProgress: ({ done, total }) => {
           const partProgress = done / total;
           updateBusy(
@@ -2976,6 +2978,7 @@ async function actionExportRange() {
       projectStore,
       renderPage: kpdf3.renderPage,
       renderSyntheticPage: renderSyntheticPagePixels,
+      rasterRedactionPages: true,
       onProgress: ({ done, total: t }) => {
         updateBusy(`${done} / ${t} ページを描画中...`, (done / t) * 80);
       },
@@ -3156,6 +3159,7 @@ async function actionExportToPath(
         projectStore,
         renderPage: kpdf3.renderPage,
         renderSyntheticPage: renderSyntheticPagePixels,
+        rasterRedactionPages: true,
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
@@ -4200,7 +4204,16 @@ function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
       // refreshViewer() above rebuilds the sidebar thumbs but the split
       // view has its own thumb list that needs an explicit refresh.
       if (isSplitMode) await refreshSplitView();
-      const n = r?.syntheticPageNos?.length ?? 0;
+      // β.85: refreshViewer 後は viewer が先頭ページに戻る (load 時の
+      // scrollTop リセット) ので、挿入したページの先頭まで明示的に
+      // スクロール。「追加した書類がどこに行ったか分からない」を解消
+      // (β.84 までの UX 指摘)。syntheticPageNos は挿入順、負の値で
+      // 並び替えにも追従する。
+      const insertedNos = r?.syntheticPageNos ?? [];
+      if (insertedNos.length > 0) {
+        viewer.scrollToPage(insertedNos[0]);
+      }
+      const n = insertedNos.length;
       wsStatus.textContent = `${n} ページを挿入しました`;
     } catch (err) {
       unsubProgress?.();

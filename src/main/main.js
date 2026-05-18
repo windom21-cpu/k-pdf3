@@ -35,6 +35,7 @@ import {
 } from "./workspace-registry.js";
 import {
   listStampPresetsGlobal,
+  setStampPresetsOrderGlobal,
   addStampPresetGlobal,
   removeStampPresetGlobal,
   getStampAssetGlobal,
@@ -1649,6 +1650,11 @@ ipcMain.handle("kpdf3:remove-stamp-preset", async (_, id) => {
   return { ok: true };
 });
 
+ipcMain.handle("kpdf3:set-stamp-presets-order", async (_, ids) => {
+  setStampPresetsOrderGlobal(Array.isArray(ids) ? ids : []);
+  return { ok: true };
+});
+
 /**
  * Read a local file (PNG/JPG) and register it as a stamp asset in the
  * global store. Used by the image-stamp registration UI which only
@@ -2268,29 +2274,75 @@ const PDF_READER_HELPER_EXES = {
  */
 async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
   const killedCounts = {};
+  /** β.85: per-PID outcome trace for diagnostics. taskkill exit code (0 =
+   *  成功 / 128 = 既に終了 / 1 = アクセス拒否 / その他は OS message)。 */
+  const killDetails = {};
+  const newPidsByExe = {};
   for (const [exeName, beforePids] of Object.entries(beforePidsByExe)) {
     try {
       const afterPids = await getProcessPidsByName(exeName);
       const newPids = afterPids.filter((pid) => !beforePids.includes(pid));
       killedCounts[exeName] = newPids.length;
+      newPidsByExe[exeName] = newPids;
+      const details = [];
       for (const pid of newPids) {
-        try {
-          spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
-            windowsHide: true,
-            detached: false,
-          });
-        } catch {
-          // ignore — best-effort cleanup
-        }
+        // β.85: spawn を await 化して exit code を回収。これまで fire-and-
+        // forget で「kill 投げたが実は failed」が見えなかった。
+        const outcome = await new Promise((resolveKill) => {
+          try {
+            const tk = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+              windowsHide: true,
+              detached: false,
+            });
+            let stderr = "";
+            tk.stderr?.on("data", (d) => { stderr += d.toString(); });
+            tk.on("error", (err) => {
+              resolveKill({ pid, exitCode: -1, error: err?.message ?? String(err) });
+            });
+            tk.on("close", (code) => {
+              resolveKill({ pid, exitCode: code, stderr: stderr.trim() || undefined });
+            });
+          } catch (err) {
+            resolveKill({ pid, exitCode: -2, error: err?.message ?? String(err) });
+          }
+        });
+        details.push(outcome);
       }
-    } catch {
+      killDetails[exeName] = details;
+    } catch (err) {
       killedCounts[exeName] = -1; // 取得失敗
+      killDetails[exeName] = [{ error: err?.message ?? String(err) }];
     }
   }
+  // β.85: 500ms 後に再 snapshot して taskkill /T で消えなかった生存
+  // プロセスを記録する。ユーザ報告「印刷後 Adobe が消えない」の
+  // 根因切り分け用 (Pro DC が helpers を遅延 spawn して /T 漏れ /
+  // 別 exe 名で spawn / アクセス拒否 のいずれかを特定する)。
+  //
+  // 待ち時間が長いとユーザが「Adobe 消えないから手動 × する」操作と
+  // 競合して survivors が空に見える誤判定が起きる。500ms なら taskkill
+  // /F の完了に十分かつ手動 × より十分早い。survivors に PID がいる
+  // 時点で「自動消去失敗」が確定するので、後続のユーザー × による
+  // 死亡は判定に影響しない (audit はスナップショット記録)。
+  let survivors = {};
+  try {
+    await new Promise((r) => setTimeout(r, 500));
+    for (const [exeName, beforePids] of Object.entries(beforePidsByExe)) {
+      const stillAlive = await getProcessPidsByName(exeName);
+      const stillNew = stillAlive.filter((pid) => !beforePids.includes(pid));
+      if (stillNew.length > 0) {
+        survivors[exeName] = stillNew;
+      }
+    }
+  } catch { /* ignore */ }
   try {
     logCrash("pdfreader-cleanup", {
       engine: readerInfo.engine,
       killed: killedCounts,
+      killDetails,
+      newPidsByExe,
+      survivors,
+      survivorsCount: Object.keys(survivors).length,
     });
   } catch { /* ignore */ }
 }
@@ -2417,9 +2469,21 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
       _activePdfReaderProcess = null;
       reject(err);
     });
-    sp.on("close", () => {
+    sp.on("close", (code, signal) => {
       // Reader 自身が exit (主に Reader DC の自然 exit / ユーザ × 閉じ)
-      // → 印刷せずに終了したと判断、即 finish (helpers cleanup のみ)
+      // → 印刷せずに終了したと判断、即 finish (helpers cleanup のみ)。
+      // β.85: settled 済 (= 既に job-detected で finish 済) でも close イベ
+      // ントはログに残す。ユーザー × を kill の前 / 後で時系列判別する
+      // ための裏付け (詳細は pdfreader-cleanup の survivors と合わせ読み)。
+      try {
+        logCrash("pdfreader-process-closed", {
+          engine: readerInfo.engine,
+          code,
+          signal,
+          settled,
+          elapsedMs: Date.now() - startMs,
+        });
+      } catch { /* ignore */ }
       if (settled) return;
       finish("reader-closed");
     });

@@ -24,6 +24,7 @@ import {
   addStampPreset,
   removeStampPreset,
   listStampPresets,
+  setStampPresetsOrder,
 } from "../backend/sqlite-store.js";
 
 /** @type {import("better-sqlite3").Database | null} */
@@ -85,6 +86,10 @@ export function addStampPresetGlobal(preset) {
 
 export function removeStampPresetGlobal(id) {
   removeStampPreset(getDb(), id);
+}
+
+export function setStampPresetsOrderGlobal(ids) {
+  setStampPresetsOrder(getDb(), ids);
 }
 
 export function addStampAssetGlobal(opts) {

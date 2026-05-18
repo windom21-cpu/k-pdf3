@@ -804,6 +804,22 @@ export function removeStampPreset(db, id) {
   db.prepare("DELETE FROM stamp_presets WHERE id = ?").run(id);
 }
 
+/** β.85: write `sort_order = index` for each id in `ids`. Run in a
+ *  single transaction so the スタンプ管理 reorder UI atomically commits
+ *  even if mid-list ids are duplicates of existing rows. Ids not in the
+ *  list keep their sort_order (= they sink to the end against listStamp-
+ *  Presets's `ORDER BY sort_order, created_at, rowid`). */
+export function setStampPresetsOrder(db, ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const stmt = db.prepare("UPDATE stamp_presets SET sort_order = ? WHERE id = ?");
+  const tx = db.transaction((arr) => {
+    for (let i = 0; i < arr.length; i++) {
+      stmt.run(i, arr[i]);
+    }
+  });
+  tx(ids);
+}
+
 // ---- Bookmarks (workspace-side editable, ADR-0014 + nested children) ----
 
 export function listBookmarks(db) {

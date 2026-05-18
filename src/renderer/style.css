@@ -2059,14 +2059,24 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   max-width: none;
   max-height: 320px;
   overflow-y: auto;
+  /* 横スクロールは出さない。長いラベル等が popup 幅を越えた場合
+   * は ellipsis で省略する (label 側の overflow / text-overflow 指定)。 */
+  overflow-x: hidden;
 }
 .stamp-palette-popup .stamp-preset-btn {
   justify-content: flex-start;
   width: 100%;
   height: 30px;
+  /* 子要素の自然幅がボタン幅を押し広げて popup から横にはみ出すのを
+   * 防ぐ。min-width:0 は flex item の暗黙 min-content 制約を解除 */
+  min-width: 0;
+  overflow: hidden;
 }
 .stamp-palette-popup .stamp-preset-label {
   max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* Stamp preset palette — used both in the popup window (column layout)
  * and elsewhere if needed. Each registered stamp is a clickable button

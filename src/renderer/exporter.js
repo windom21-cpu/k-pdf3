@@ -206,10 +206,16 @@ function drawSpacedTokensOnCanvas(ctx, tokens, cx, cy, width, fontSize, color, h
 
 function drawStampMixedTextOnCanvas(ctx, text, cx, cy, fontSize, color, fullStack, halfStack, opts = {}) {
   const runs = splitStampRuns(text);
+  // β.85: opts.bold で font の weight prefix を切替。date stamp / 印影
+  // 系は bold で 印影 風の濃さを出すが、テキストスタンプ (認印・備考用)
+  // は normal で印刷するようにユーザー要望で変更。bold omitted は legacy
+  // compat で true (date stamp 経路はそのまま太字)。
+  const useBold = opts.bold !== false;
+  const weightPrefix = useBold ? "bold " : "";
   const widths = [];
   let total = 0;
   for (const run of runs) {
-    ctx.font = `bold ${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
+    ctx.font = `${weightPrefix}${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
     const m = ctx.measureText(run.text);
     widths.push(m.width);
     total += m.width;
@@ -219,7 +225,7 @@ function drawStampMixedTextOnCanvas(ctx, text, cx, cy, fontSize, color, fullStac
   let pen = cx - total / 2;
   for (let i = 0; i < runs.length; i++) {
     const run = runs[i];
-    ctx.font = `bold ${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
+    ctx.font = `${weightPrefix}${fontSize}px ${run.cls === "half" ? halfStack : fullStack}`;
     paintGlyphRun(ctx, run.text, pen, cy, color, fontSize, opts);
     pen += widths[i];
   }
@@ -281,6 +287,15 @@ export async function composePagesForExport({
   // 組み立てる。背景 PDF は一切 copy せず、空白ページ + overlay PNG
   // だけが main 側で組まれる (物理紙の不動文字に重ね印刷する用途)。
   overlayOnly = false,
+  // β.85 真の墨消し: true のとき redaction overlay を持つページは
+  // strategy を "full" に強制し、ソース PDF 内の vector text 層ごと
+  // 900dpi ラスタに焼く (overlay PNG は本来の通り上に乗る)。これに
+  // より「黒い四角の下にテキストが残る」状態を構造的に解消する
+  // (β.84 までは strategy=overlay/external で vector ソースをそのまま
+  // copy していたため、Adobe で墨消し下を選択・検索すると裏のテキ
+  // ストが抜き出せた)。書き出し / 分割保存 / 印刷の全 8 経路で true
+  // を渡す方針 (法律実務での安全側デフォルト)。
+  rasterRedactionPages = false,
 }) {
   // Ensure custom @font-face faces (CrashNumberingSerif etc.) are loaded
   // before Canvas tries to use them — Canvas falls back to the next
@@ -325,6 +340,14 @@ export async function composePagesForExport({
     // the hybrid path. main-side assembler uses embedPage + drawPage to
     // place rotated vector content, so we keep crisp text on rotated pages
     // too (β4 fell back to full-rasterize which exploded file size).
+    // β.85 真の墨消し: redaction overlay があれば後段で strategy を
+    // "full" に格上げするので、ここで先に検出しておく。判定は
+    // projectStore から取得 (overlayCount と同じソース)。
+    const hasRedactionOverlay =
+      rasterRedactionPages
+      && projectStore.getPageOverlays(row.pageNo)
+        .some((ov) => ov.type === "redaction");
+
     let strategy;
     if (overlayOnly) {
       // β.80 下敷き印刷: 背景は一切出力せず、overlay だけを空白ページに
@@ -334,6 +357,12 @@ export async function composePagesForExport({
       // 0 個のページは完全に空白のまま出力される (= 物理紙の不動文字
       // だけが印字結果として残る)。
       strategy = "overlay-only";
+    } else if (hasRedactionOverlay) {
+      // β.85: redaction を含むページは source / external / overlay の
+      // どれでも "full" (900dpi raster) に強制。synthetic は元々 full
+      // 経路なのでそのまま。これでソース PDF の vector text 層が
+      // ピクセルに焼かれ、墨消し下のテキスト抽出が構造的に不可能になる。
+      strategy = "full";
     } else if (hasExternalSource) {
       strategy = "external"; // copyPages from stored external PDF (vector)
     } else if (isSynthetic) {
@@ -798,7 +827,16 @@ async function drawOverlay(ctx, ov, zoom) {
     // continue to print bold via drawStampMixedTextOnCanvas; user can
     // re-place if needed.
     const isDateStamp = props.stampKind === "date";
-    const stampTextOpts = isDateStamp ? { stroke: false } : {};
+    const isTextStamp = props.stampKind === "text";
+    // β.85: テキストスタンプ (認印・備考用) は normal weight で印刷。
+    // overstroke も skip して β73 のテキスト overlay と同等の細字に揃え
+    // る。date stamp は引き続き 印影 (bold + no overstroke)。stampKind
+    // 不明 (pre-β41) は legacy 通り bold + overstroke で維持。
+    const stampTextOpts = isDateStamp
+      ? { stroke: false }
+      : isTextStamp
+        ? { stroke: false, bold: false }
+        : {};
     const drawAt = (cx, cy) => {
       drawStampMixedTextOnCanvas(
         ctx, props.text ?? "", cx, cy, fontSize, color, fullStack, halfStack, stampTextOpts,
