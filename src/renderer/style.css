@@ -2208,6 +2208,21 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
 .open-row label {
   min-width: 80px;
 }
+/* β.85: セキュア書き出しチェックボックス行。98.css のチェックボックスは
+ * <input> と <label> を並列に置く前提なので、共通 .open-row label の
+ * min-width: 80px が当たると label の左に空白が空いて見栄えが崩れる。
+ * 専用クラスで min-width をリセットし、薄い区切り線で「ファイル設定」
+ * 行群から視覚分離する (ユーザが β.84/β.85 で「気付かなかった」と
+ * 指摘した UX 改善)。 */
+.open-row-secure {
+  border-top: 1px dotted #808080;
+  padding-top: 6px;
+  margin-top: 2px;
+}
+.open-row-secure label {
+  min-width: 0;
+  font-weight: bold;
+}
 .open-row-toolbar select {
   flex: 1;
   min-width: 0;
