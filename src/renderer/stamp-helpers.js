@@ -34,13 +34,27 @@ export function canvasLogicalSize(canvas) {
   return { W: canvas.width, H: canvas.height };
 }
 
+// β.87: 線形 lum → alpha 変換だとカラー印影 (赤 lum≈0.32 / 青 lum≈0.27)
+// が alpha 60-70% で薄く出てしまい、業務上「カラー画像と白黒画像の
+// 2 重登録」を強いていた。閾値 ramp で印影部分は完全不透明 / 紙白
+// 部分は完全透明 / 境界のみ AA 用にソフト接続することで、1 つの登録
+// で押印と印刷の濃度を担保する。
+//   - lum <= 0.5  → alpha factor 1.0 (印影とみなして完全不透明)
+//   - lum >= 0.85 → alpha factor 0.0 (紙白とみなして完全透明)
+//   - 中間        → 線形 ramp (AA エッジを残す)
+function rampLumToAlpha(lum) {
+  if (lum <= 0.5) return 1.0;
+  if (lum >= 0.85) return 0.0;
+  return 1 - (lum - 0.5) / 0.35;
+}
+
 // `color` controls how the source image bytes are post-processed:
 //   - ""               → as-is (white background visible)
-//   - "bg-transparent" → luminance → alpha, keep original RGB
+//   - "bg-transparent" → luminance → alpha (ramp), keep original RGB
 //                        (so scanned 印影 lose their white paper without
 //                        being recolored)
-//   - "#rrggbb"        → luminance → alpha, RGB replaced with the colour
-//                        (the existing tint path)
+//   - "#rrggbb"        → luminance → alpha (ramp), RGB replaced with the
+//                        colour (the existing tint path)
 export function tintCanvasInPlace(ctx, color) {
   const w = ctx.canvas.width, h = ctx.canvas.height;
   const img = ctx.getImageData(0, 0, w, h);
@@ -48,7 +62,7 @@ export function tintCanvasInPlace(ctx, color) {
   if (color === "bg-transparent") {
     for (let i = 0; i < d.length; i += 4) {
       const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
-      d[i + 3] = Math.round(d[i + 3] * (1 - lum));
+      d[i + 3] = Math.round(d[i + 3] * rampLumToAlpha(lum));
     }
     ctx.putImageData(img, 0, 0);
     return;
@@ -61,7 +75,7 @@ export function tintCanvasInPlace(ctx, color) {
   const tb = parseInt(v.slice(4, 6), 16);
   for (let i = 0; i < d.length; i += 4) {
     const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
-    d[i + 3] = Math.round(d[i + 3] * (1 - lum));
+    d[i + 3] = Math.round(d[i + 3] * rampLumToAlpha(lum));
     d[i] = tr;
     d[i + 1] = tg;
     d[i + 2] = tb;

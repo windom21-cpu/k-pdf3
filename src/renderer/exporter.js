@@ -80,19 +80,22 @@ async function getTintedAssetCanvas(assetId, color) {
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const d = img.data;
   if (color === "bg-transparent") {
-    // luminance → alpha only; keep original RGB so the scanned 印影's
-    // ink colour shines through.
+    // β.87: 閾値 ramp (詳細は stamp-helpers.js rampLumToAlpha 参照)。
+    // 線形 lum → alpha だとカラー印影が 60-70% 透過で薄く印刷される
+    // 問題を解消し、カラー / 白黒の 1 登録で両用できるようにした。
     for (let i = 0; i < d.length; i += 4) {
       const r = d[i], g = d[i + 1], b = d[i + 2];
       const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-      d[i + 3] = Math.round(d[i + 3] * (1 - lum));
+      const factor = lum <= 0.5 ? 1.0 : lum >= 0.85 ? 0.0 : 1 - (lum - 0.5) / 0.35;
+      d[i + 3] = Math.round(d[i + 3] * factor);
     }
   } else {
     const [tr, tg, tb] = parseHexColor(color);
     for (let i = 0; i < d.length; i += 4) {
       const r = d[i], g = d[i + 1], b = d[i + 2];
       const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-      d[i + 3] = Math.round(d[i + 3] * (1 - lum));
+      const factor = lum <= 0.5 ? 1.0 : lum >= 0.85 ? 0.0 : 1 - (lum - 0.5) / 0.35;
+      d[i + 3] = Math.round(d[i + 3] * factor);
       d[i] = tr;
       d[i + 1] = tg;
       d[i + 2] = tb;
