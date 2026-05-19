@@ -2872,6 +2872,22 @@ ipcMain.handle("kpdf3:print-via-reader-dialog", async (_, payload) => {
       console.warn("[print] applyFaxAsDefaultPrinter (reader path) failed:", err?.message ?? err);
     }
   }
+  // β.93: hint された送信先が FAX デバイスのときは β.61 で導入した
+  // applyCleanFaxDevmode を呼んで dmDriverExtra (driver-private bytes) を
+  // 0 埋めしておく。FUJIFILM Apeos C2360 などが「最後の宛先」を driver-
+  // private 領域に残す挙動への対策。Adobe `/p` 経路でも per-user DEVMODE
+  // は同じ仕組みで読まれるため、β.61 の Chromium silent 経路と同じ処理が
+  // 必要 (β.92 で経路を Adobe `/p` に切替えた際、これを移植し忘れていた)。
+  let devmodeToken = null;
+  if (defaultPrinterHint
+      && process.platform === "win32"
+      && isFaxDevice(defaultPrinterHint)) {
+    try {
+      devmodeToken = await applyCleanFaxDevmode(defaultPrinterHint);
+    } catch (err) {
+      console.warn("[print] applyCleanFaxDevmode (reader path) failed:", err?.message ?? err);
+    }
+  }
   _printInFlight = true;
   try {
     const result = await printPdfViaReaderDialog(reader, tempPath);
@@ -2879,6 +2895,7 @@ ipcMain.handle("kpdf3:print-via-reader-dialog", async (_, payload) => {
   } finally {
     _printInFlight = false;
     if (defaultToken) restoreDefaultPrinter(defaultToken).catch(() => {});
+    if (devmodeToken) await restoreUserPrinterDevmode(devmodeToken).catch(() => {});
   }
 });
 
