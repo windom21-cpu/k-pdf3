@@ -167,6 +167,161 @@ function _needsHairlineStroke(fontId) {
   return fontId === "mincho" || fontId === "serif";
 }
 
+// ---- β.100 オートシェイプ helpers --------------------------------------
+//
+// arrowDir で 4 方向 (right/left/down/up) の中央線の始点・終点を返す。
+// 直線・矢印・ブロック矢印は共通でこの 2 点を起点に描く。stroke 太さ分
+// だけ pad して、bbox の縁に線がはみ出さないようにする。
+//
+// ── shape spec (overlay.properties) ──
+//   kind:        "line" | "arrow" | "block-arrow" | "ellipse"
+//   arrowDir:    "right" | "left" | "down" | "up"  (ellipse は無視)
+//   strokeColor: "#000000" 等
+//   strokeWidth: pt (default 2)
+//   fillColor:   null (中空) or "#xxxxxx"
+//   thickness:   block-arrow の shaft 太さ比率 (0..1, default 0.5)
+function _shapeEndpoints(dir, x, y, w, h, strokeWidth) {
+  const pad = strokeWidth / 2 + 0.5;
+  if (dir === "left") return {
+    p1: { x: x + w - pad, y: y + h / 2 },
+    p2: { x: x + pad,     y: y + h / 2 },
+  };
+  if (dir === "down") return {
+    p1: { x: x + w / 2, y: y + pad },
+    p2: { x: x + w / 2, y: y + h - pad },
+  };
+  if (dir === "up") return {
+    p1: { x: x + w / 2, y: y + h - pad },
+    p2: { x: x + w / 2, y: y + pad },
+  };
+  // default "right"
+  return {
+    p1: { x: x + pad,     y: y + h / 2 },
+    p2: { x: x + w - pad, y: y + h / 2 },
+  };
+}
+
+/** ブロック矢印の 7 頂点ポリゴンを返す。bbox 短辺を矢印の headWidth、
+ *  shaftWidth = headWidth × thickness。head の長さは min(短辺×1.0, 全長×0.4) */
+function _blockArrowPolygon(p1, p2, bboxW, bboxH, dir, thickness) {
+  const horizontal = (dir === "right" || dir === "left");
+  const shortSide = horizontal ? bboxH : bboxW;
+  const totalLen = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+  const headWidth = shortSide;                  // arrowhead 三角の幅 (= 短辺)
+  const shaftWidth = shortSide * thickness;     // shaft の太さ
+  const headLen = Math.min(shortSide * 1.0, totalLen * 0.4);
+  const ux = (p2.x - p1.x) / totalLen;
+  const uy = (p2.y - p1.y) / totalLen;
+  const vx = -uy, vy = ux;
+  const sh = shaftWidth / 2;
+  const hh = headWidth / 2;
+  const bx = p2.x - ux * headLen;
+  const by = p2.y - uy * headLen;
+  return [
+    { x: p1.x + vx * sh, y: p1.y + vy * sh },   // T1
+    { x: bx   + vx * sh, y: by   + vy * sh },   // T2
+    { x: bx   + vx * hh, y: by   + vy * hh },   // T3
+    { x: p2.x,           y: p2.y           },   // T4 (tip)
+    { x: bx   - vx * hh, y: by   - vy * hh },   // T5
+    { x: bx   - vx * sh, y: by   - vy * sh },   // T6
+    { x: p1.x - vx * sh, y: p1.y - vy * sh },   // T7
+  ];
+}
+
+/**
+ * Draw an autoshape (line / arrow / block-arrow / ellipse) onto `ctx`.
+ * Coordinates are already in pixel space (canonical pt × zoom).
+ * Shared between exporter (writes overlay PNG layer) and viewer
+ * (canvas inside an overlay-shape div).
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {{x:number,y:number,w:number,h:number, properties?: object}} ov
+ * @param {number} zoom
+ * @param {boolean} monoOverlays
+ */
+export function drawShape(ctx, ov, zoom, monoOverlays = false) {
+  const props = ov.properties ?? {};
+  const x = ov.x * zoom, y = ov.y * zoom;
+  const w = ov.w * zoom, h = ov.h * zoom;
+  const monoize = (c) => (monoOverlays ? "#000000" : c);
+  const kind = props.kind ?? "line";
+  const strokeColor = monoize(props.strokeColor ?? "#000000");
+  const fillColor = props.fillColor ? monoize(props.fillColor) : null;
+  const strokeWidth = Math.max(1, (props.strokeWidth ?? 2) * zoom);
+  const dir = props.arrowDir ?? "right";
+  const thickness = Math.min(0.9, Math.max(0.1, props.thickness ?? 0.5));
+
+  ctx.save();
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = strokeWidth;
+  ctx.lineJoin = "miter";
+  ctx.lineCap = "round";
+  if (fillColor) ctx.fillStyle = fillColor;
+
+  if (kind === "ellipse") {
+    const rx = Math.max(w / 2 - strokeWidth / 2, 1);
+    const ry = Math.max(h / 2 - strokeWidth / 2, 1);
+    ctx.beginPath();
+    ctx.ellipse(x + w / 2, y + h / 2, rx, ry, 0, 0, Math.PI * 2);
+    if (fillColor) ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  const { p1, p2 } = _shapeEndpoints(dir, x, y, w, h, strokeWidth);
+
+  if (kind === "line") {
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  if (kind === "arrow") {
+    // 線 + 終点に塗りつぶし三角の矢じり (普通の片端矢印)。
+    const ah = Math.max(strokeWidth * 4, 10 * zoom * (props.strokeWidth ?? 2) / 2);
+    const aw = ah * 0.6;
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    const vx = -uy, vy = ux;
+    // 線を引く (head の根元まで)。head 内まで線を伸ばすと太い線で head が
+    // つぶれるので、shaft endpoint を head 根元 (= p2 - ah*u) に短縮。
+    const shaftEnd = { x: p2.x - ux * ah * 0.85, y: p2.y - uy * ah * 0.85 };
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(shaftEnd.x, shaftEnd.y);
+    ctx.stroke();
+    // arrowhead 三角を塗りで描画 (枠は同色なので fill だけで OK)。
+    const base = { x: p2.x - ux * ah, y: p2.y - uy * ah };
+    ctx.beginPath();
+    ctx.moveTo(p2.x, p2.y);
+    ctx.lineTo(base.x + vx * aw, base.y + vy * aw);
+    ctx.lineTo(base.x - vx * aw, base.y - vy * aw);
+    ctx.closePath();
+    ctx.fillStyle = strokeColor;
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+
+  if (kind === "block-arrow") {
+    const poly = _blockArrowPolygon(p1, p2, w, h, dir, thickness);
+    ctx.beginPath();
+    ctx.moveTo(poly[0].x, poly[0].y);
+    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
+    ctx.closePath();
+    if (fillColor) ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+  ctx.restore();
+}
+
 /**
  * Draw stamp text centred on (cx, cy) with per-run fonts. Mirrors
  * `splitStampRuns` so 全角/半角 alternation lines up exactly between
@@ -1088,6 +1243,16 @@ async function drawOverlay(ctx, ov, zoom, monoOverlays = false) {
     for (let i = 0; i < lines.length; i++) {
       paintGlyphRun(ctx, lines[i], x + padX, y + padY + i * lineHeight, color, fontSize, boldOpt);
     }
+    return;
+  }
+
+  // β.100: オートシェイプ — 直線 / 矢印 / ブロック矢印 / 楕円。
+  // bbox + arrowDir ("right"/"left"/"down"/"up") の組合せで描画方向を
+  // 表現。fillColor は中空 (枠線のみ) を null で表す。ブロック矢印は
+  // 7 頂点ポリゴン (shaft + head 三角)、楕円は bbox 内接、線/矢印は
+  // bbox の中央線の両端を始終点に。
+  if (ov.type === "shape") {
+    drawShape(ctx, ov, zoom, monoOverlays);
     return;
   }
 

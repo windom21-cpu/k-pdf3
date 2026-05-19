@@ -547,6 +547,130 @@ export function placeFormRadio(pageNo, x, y) {
   _history().execute(cmd);
 }
 
+// ---- β.100 オートシェイプ (直線 / 矢印 / ブロック矢印 / 楕円) ----------
+//
+// Shape palette popup (toolbar 「図形」ボタン → form palette と同じ流儀)
+// で kind を選択 → ページ上のドラッグで配置。bbox + arrowDir を保持。
+// 方向は 4 方向 (right/left/down/up) に量子化、ドラッグの主軸方向 +
+// 符号で決まる。楕円は方向情報を持たない (kind 判定で skip)。
+
+function _readShapeDefaults() {
+  const kindEl = document.querySelector('input[name="shape-kind"]:checked');
+  const colorEl = document.getElementById("shape-color");
+  const widthEl = document.getElementById("shape-stroke-width");
+  const fillEl = document.getElementById("shape-fill-mode");
+  const kind = kindEl?.value || "arrow";
+  const strokeColor = colorEl?.value || "#cc0000";
+  const strokeWidth = Number(widthEl?.value) || 2;
+  const fillMode = fillEl?.value || "hollow"; // "hollow" | "solid"
+  return { kind, strokeColor, strokeWidth, fillMode };
+}
+
+function _dragDir4(dx, dy) {
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? "right" : "left";
+  return dy >= 0 ? "down" : "up";
+}
+
+/**
+ * Drag-to-place a shape. The drag rect's bbox is the overlay bbox;
+ * the drag direction picks arrowDir (4-way). On a too-small drag we
+ * drop a default 80×20 (horizontal) shape so a quick click still
+ * produces something usable.
+ */
+export function startShapeDrag(pageNo, startX, startY, downEvt, div) {
+  const defs = _readShapeDefaults();
+  if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
+    _placeShape(pageNo, startX - 40, startY - 10, 80, 20, "right", defs);
+    return;
+  }
+  const pointerId = downEvt.pointerId;
+  const z = _viewer.zoom;
+  const preview = document.createElement("div");
+  preview.className = "shape-placement-preview";
+  preview.style.left = `${startX * z}px`;
+  preview.style.top = `${startY * z}px`;
+  preview.style.width = "0px";
+  preview.style.height = "0px";
+  div.appendChild(preview);
+
+  let curX = startX, curY = startY;
+  try { div.setPointerCapture(pointerId); } catch { /* ignore */ }
+
+  function onMove(e) {
+    if (e.pointerId !== pointerId) return;
+    const rect = div.getBoundingClientRect();
+    curX = (e.clientX - rect.left) / z;
+    curY = (e.clientY - rect.top) / z;
+    const left = Math.min(startX, curX);
+    const top = Math.min(startY, curY);
+    const width = Math.abs(curX - startX);
+    const height = Math.abs(curY - startY);
+    preview.style.left = `${left * z}px`;
+    preview.style.top = `${top * z}px`;
+    preview.style.width = `${width * z}px`;
+    preview.style.height = `${height * z}px`;
+  }
+  function cleanup() {
+    try { div.releasePointerCapture(pointerId); } catch { /* ignore */ }
+    div.removeEventListener("pointermove", onMove);
+    div.removeEventListener("pointerup", onUp);
+    div.removeEventListener("pointercancel", onCancel);
+    preview.remove();
+  }
+  function onUp(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+    const dx = curX - startX;
+    const dy = curY - startY;
+    const left = Math.min(startX, curX);
+    const top = Math.min(startY, curY);
+    const width = Math.abs(dx);
+    const height = Math.abs(dy);
+    if (width < 5 && height < 5) {
+      _placeShape(pageNo, startX - 40, startY - 10, 80, 20, "right", defs);
+      return;
+    }
+    // 楕円・block-arrow は最小 bbox を確保 (細い縦線等を弾く)。
+    let bw = width, bh = height;
+    const minDim = 20;
+    if (defs.kind === "ellipse" || defs.kind === "block-arrow") {
+      bw = Math.max(width, minDim);
+      bh = Math.max(height, minDim);
+    } else {
+      bw = Math.max(width, 4);
+      bh = Math.max(height, 4);
+    }
+    const dir = _dragDir4(dx, dy);
+    _placeShape(pageNo, left, top, bw, bh, dir, defs);
+  }
+  function onCancel(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+  }
+  div.addEventListener("pointermove", onMove);
+  div.addEventListener("pointerup", onUp);
+  div.addEventListener("pointercancel", onCancel);
+}
+
+function _placeShape(pageNo, x, y, w, h, arrowDir, defs) {
+  const props = {
+    kind: defs.kind,
+    strokeColor: defs.strokeColor,
+    strokeWidth: defs.strokeWidth,
+  };
+  if (defs.kind !== "ellipse") props.arrowDir = arrowDir;
+  if (defs.kind === "block-arrow") props.thickness = 0.5;
+  if (defs.fillMode === "solid") props.fillColor = defs.strokeColor;
+  const cmd = new AddOverlayCommand(_projectStore(), {
+    pageNo,
+    type: "shape",
+    x, y, w, h,
+    zOrder: 40,
+    properties: props,
+  });
+  _history().execute(cmd);
+}
+
 /** Helper: shared drag-rect handler used by form-text and form-circle.
  *  onCommit receives (pageNo, x, y, w, h) for the final bbox; a tiny
  *  drag (<5pt in either dim) falls back to a default 80×20 rect. */

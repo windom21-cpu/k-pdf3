@@ -116,7 +116,7 @@ CREATE TABLE overlays (
     type        TEXT NOT NULL CHECK(type IN (
                     'text', 'stamp', 'image', 'redaction',
                     'line', 'rect', 'signature', 'page_number',
-                    'form_field'
+                    'form_field', 'shape'
                 )),
     -- canonical bbox（top-left origin）
     x           REAL NOT NULL,

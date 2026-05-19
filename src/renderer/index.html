@@ -300,6 +300,62 @@
     </div>
   </div>
 
+  <!-- β.100: 図形 (オートシェイプ) palette popup。
+       4 sub-types (直線/矢印/ブロック矢印/楕円) + 線色 + 太さ + 中空/塗り。
+       選択した kind に対して placementMode="shape" でドラッグ配置。 -->
+  <div id="shape-palette-popup" class="window shape-palette-popup" hidden>
+    <div class="title-bar" id="shape-palette-titlebar">
+      <div class="title-bar-text">図形</div>
+      <div class="title-bar-controls">
+        <button id="shape-palette-close" aria-label="Close" title="閉じる"></button>
+      </div>
+    </div>
+    <div class="window-body">
+      <div class="shape-palette-row">
+        <input type="radio" id="shape-kind-line" name="shape-kind" value="line">
+        <label for="shape-kind-line" title="直線 (矢じりなし)">／ 直線</label>
+        <input type="radio" id="shape-kind-arrow" name="shape-kind" value="arrow" checked>
+        <label for="shape-kind-arrow" title="細線矢印 (片端に塗り三角)">↗ 矢印</label>
+      </div>
+      <div class="shape-palette-row">
+        <input type="radio" id="shape-kind-block-arrow" name="shape-kind" value="block-arrow">
+        <label for="shape-kind-block-arrow" title="中空ブロック矢印 (枠線で縁取られた幅広矢印)">⇨ ブロック矢印</label>
+      </div>
+      <div class="shape-palette-row">
+        <input type="radio" id="shape-kind-ellipse" name="shape-kind" value="ellipse">
+        <label for="shape-kind-ellipse" title="楕円 (枠線、中は透過)">◯ 楕円</label>
+      </div>
+      <hr class="shape-palette-sep">
+      <div class="shape-palette-row">
+        <label class="shape-palette-label">線の色:</label>
+        <select id="shape-color" class="shape-palette-select" title="線 (枠) の色">
+          <option value="#000000">黒</option>
+          <option value="#cc0000" selected>赤</option>
+          <option value="#1f4ea1">青</option>
+          <option value="#2e7d32">緑</option>
+          <option value="#e65100">橙</option>
+        </select>
+      </div>
+      <div class="shape-palette-row">
+        <label class="shape-palette-label">線の太さ:</label>
+        <select id="shape-stroke-width" class="shape-palette-select" title="線 / 枠の太さ (pt)">
+          <option value="1">細 (1pt)</option>
+          <option value="2" selected>中 (2pt)</option>
+          <option value="3">太 (3pt)</option>
+          <option value="5">極太 (5pt)</option>
+        </select>
+      </div>
+      <div class="shape-palette-row">
+        <label class="shape-palette-label">塗り:</label>
+        <select id="shape-fill-mode" class="shape-palette-select" title="中空 = 枠線のみ / 塗り = 線色で塗りつぶし (ブロック矢印・楕円のみ有効)">
+          <option value="hollow" selected>中空 (枠線のみ)</option>
+          <option value="solid">塗りつぶし</option>
+        </select>
+      </div>
+      <p class="shape-palette-hint">配置: 紙の上でドラッグ → 離した位置までの矩形に配置されます。<br>線・矢印・ブロック矢印は ドラッグ方向 (水平/垂直) で向きが決まります。</p>
+    </div>
+  </div>
+
   <!-- β.82 (B-6): Tab 順リスト popup — Tab 順編集モード ON で表示。
        form_field を縦に並べて、ドラッグで上下入れ替え。各行クリックで
        本文中の対応 overlay を強調 + 中央スクロール。 -->
@@ -780,6 +836,7 @@
     <button id="btn-mode-callout" disabled title="クリック→ドラッグで矢印付き吹き出しテキストを配置します">吹き出し</button>
     <span class="toolbar-sep"></span>
     <button id="btn-form-palette" disabled title="申請書テンプレ用フォームフィールド (枠/チェック/丸囲み/ラジオ + 記入モード)">フォーム</button>
+    <button id="btn-shape-palette" disabled title="図形 (直線・矢印・ブロック矢印・楕円)">図形</button>
     <span class="toolbar-sep"></span>
     <button id="btn-page-numbers" disabled title="全ページのフッターにページ番号を一括追加">＋ページ番号</button>
     <button id="btn-page-popup" disabled title="現在のページを別ウインドウで表示（比較用）">別窓</button>

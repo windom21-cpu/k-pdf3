@@ -1261,6 +1261,80 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   color: white;
 }
 
+/* ----- β.100 図形 (オートシェイプ) palette popup ----- */
+.shape-palette-popup {
+  position: fixed;
+  top: 160px;
+  right: 24px;
+  z-index: 5000;
+  min-width: 240px;
+  max-width: 320px;
+  user-select: none;
+}
+.shape-palette-popup .title-bar {
+  cursor: move;
+  -webkit-app-region: no-drag;
+}
+.shape-palette-popup[hidden] {
+  display: none !important;
+}
+.shape-palette-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.shape-palette-row input[type="radio"] {
+  margin: 0 0 0 0;
+  vertical-align: middle;
+}
+.shape-palette-row input[type="radio"] + label {
+  cursor: pointer;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+.shape-palette-label {
+  min-width: 64px;
+  font-weight: bold;
+}
+.shape-palette-select {
+  flex: 1;
+  min-width: 0;
+  font-family: "MS UI Gothic", sans-serif;
+  font-size: 12px;
+}
+.shape-palette-sep {
+  margin: 6px 0;
+  border: 0;
+  border-top: 1px solid #c0c0c0;
+}
+.shape-palette-hint {
+  margin: 6px 0 0 0;
+  font-size: 11px;
+  color: #444;
+  line-height: 1.5;
+}
+
+/* shape の placement 中 preview rect (dashed bbox) */
+.shape-placement-preview {
+  position: absolute;
+  border: 2px dashed #cc0000;
+  background: rgba(204, 0, 0, 0.06);
+  pointer-events: none;
+  z-index: 9000;
+}
+
+/* shape overlay: canvas を覆う透明ボックスでドラッグ・選択を受ける */
+.overlay-shape {
+  background: transparent;
+  outline: none;
+}
+.overlay-shape canvas {
+  display: block;
+}
+
 /* Drag previews for form-text / form-circle */
 .form-text-preview {
   position: absolute;

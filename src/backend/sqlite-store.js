@@ -64,6 +64,7 @@ export function openWorkspace(filePath, opts = {}) {
     migrateInsertedPagesTable(db);
     migrateOverlaysDropPageFk(db);
     migrateOverlaysAddFormField(db);
+    migrateOverlaysAddShape(db);
     migrateBookmarksDropPageFk(db);
     migrateStampPresetsTable(db);
   }
@@ -213,6 +214,60 @@ function migrateOverlaysAddFormField(db) {
                         'text', 'stamp', 'image', 'redaction',
                         'line', 'rect', 'signature', 'page_number',
                         'form_field'
+                    )),
+        x           REAL NOT NULL,
+        y           REAL NOT NULL,
+        w           REAL NOT NULL,
+        h           REAL NOT NULL,
+        z_order     INTEGER NOT NULL DEFAULT 0,
+        properties  TEXT NOT NULL,
+        asset_id    TEXT REFERENCES assets(id),
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO overlays_new
+        (id, page_no, type, x, y, w, h, z_order,
+         properties, asset_id, created_at, updated_at)
+        SELECT id, page_no, type, x, y, w, h, z_order,
+               properties, asset_id, created_at, updated_at
+          FROM overlays;
+      DROP TABLE overlays;
+      ALTER TABLE overlays_new RENAME TO overlays;
+      CREATE INDEX idx_overlays_page ON overlays(page_no, z_order);
+      CREATE INDEX idx_overlays_type ON overlays(type);
+      DELETE FROM overlays_spatial;
+      COMMIT;
+    `);
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+}
+
+/**
+ * β.100: extend overlays.type CHECK constraint to include 'shape'
+ * (オートシェイプ — 直線・矢印・ブロック矢印・楕円のラッパー型).
+ * Idempotent and mirrors migrateOverlaysAddFormField in structure.
+ */
+function migrateOverlaysAddShape(db) {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='overlays'")
+    .get();
+  if (!row || !row.sql) return;
+  if (row.sql.includes("'shape'")) return; // already migrated
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE overlays_new (
+        id          TEXT PRIMARY KEY,
+        page_no     INTEGER NOT NULL,
+        type        TEXT NOT NULL CHECK(type IN (
+                        'text', 'stamp', 'image', 'redaction',
+                        'line', 'rect', 'signature', 'page_number',
+                        'form_field', 'shape'
                     )),
         x           REAL NOT NULL,
         y           REAL NOT NULL,

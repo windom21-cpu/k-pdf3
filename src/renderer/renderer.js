@@ -69,6 +69,7 @@ import {
   placeFormRadio,
   placeFormCircle,
   startFormTextDrag,
+  startShapeDrag,
   // (form-fill imports below)
   currentRedactionColor,
   currentMarkerColor,
@@ -191,6 +192,11 @@ const btnToggleTabOrder = $("btn-toggle-tab-order");
 const formPalettePopup = $("form-palette-popup");
 const formPaletteTitlebar = $("form-palette-titlebar");
 const btnFormPaletteClose = $("form-palette-close");
+// β.100 オートシェイプ palette
+const btnShapePalette = $("btn-shape-palette");
+const shapePalettePopup = $("shape-palette-popup");
+const shapePaletteTitlebar = $("shape-palette-titlebar");
+const btnShapePaletteClose = $("shape-palette-close");
 const wsStatus = $("ws-status");
 const viewerContainer = $("viewer-container");
 const sidebar = $("sidebar");
@@ -640,6 +646,8 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
     placeFormRadio(pageNo, x, y);
   } else if (placementMode === "region-image") {
     startRegionImageDrag(pageNo, x, y, evt, div);
+  } else if (placementMode === "shape") {
+    startShapeDrag(pageNo, x, y, evt, div);
   }
   // Clicks on empty page area no longer deselect — that fired even
   // when the user "exited" inline edit by clicking outside, leaving
@@ -1438,6 +1446,12 @@ function setPlacementMode(mode) {
   btnModeMarker.classList.toggle("toggled", mode === "marker");
   if (btnModeCallout) btnModeCallout.classList.toggle("toggled", mode === "callout");
   if (btnModeRegionImage) btnModeRegionImage.classList.toggle("toggled", mode === "region-image");
+  if (btnShapePalette) btnShapePalette.classList.toggle("toggled", mode === "shape");
+  if (shapePalettePopup) {
+    // shape popup は shape mode と同期: mode ON で popup 表示、OFF で隠す。
+    if (mode === "shape") shapePalettePopup.hidden = false;
+    else shapePalettePopup.hidden = true;
+  }
   // β.80: form-* tool toggle highlights
   if (btnModeFormText) btnModeFormText.classList.toggle("toggled", mode === "form-text");
   if (btnModeFormCheck) btnModeFormCheck.classList.toggle("toggled", mode === "form-check");
@@ -2015,6 +2029,7 @@ function setOpen(open) {
   // ボタンの開閉で扱う。中ボタンの disabled は影響しない (popup 自体
   // が hidden だとクリック不能だが、保険として open 連動で disable)
   if (btnFormPalette) btnFormPalette.disabled = !open;
+  if (btnShapePalette) btnShapePalette.disabled = !open;
   if (btnModeFormText) btnModeFormText.disabled = !open;
   if (btnModeFormCheck) btnModeFormCheck.disabled = !open;
   if (btnModeFormCircle) btnModeFormCircle.disabled = !open;
@@ -2035,6 +2050,8 @@ function setOpen(open) {
     if (tabOrderEditMode) setTabOrderEditMode(false);
     if (formPalettePopup) formPalettePopup.hidden = true;
     if (btnFormPalette) btnFormPalette.classList.remove("toggled");
+    if (shapePalettePopup) shapePalettePopup.hidden = true;
+    if (btnShapePalette) btnShapePalette.classList.remove("toggled");
     setSplitMode(false);
     // Clear sidebar artifacts that survive across close paths. Some
     // close routes (tab × button when no other tabs remain, switching
@@ -6278,6 +6295,79 @@ if (formPalettePopup && formPaletteTitlebar) {
       const left = parseFloat(formPalettePopup.style.left) || 0;
       const top = parseFloat(formPalettePopup.style.top) || 0;
       localStorage.setItem(FORM_POPUP_POS_KEY, JSON.stringify({ left, top }));
+    } catch { /* ignore */ }
+  });
+}
+
+// β.100 オートシェイプ palette popup wiring. form palette と同じパターン:
+//   - btn click で placementMode を toggle (= popup 開閉と連動)
+//   - close ボタン or PDF close で placementMode("none")
+//   - titlebar ドラッグで position 変更 + localStorage 永続化
+const SHAPE_POPUP_POS_KEY = "kpdf3.shapePopupPos";
+if (btnShapePalette && shapePalettePopup) {
+  btnShapePalette.addEventListener("click", () => {
+    setPlacementMode(placementMode === "shape" ? "none" : "shape");
+  });
+}
+if (btnShapePaletteClose && shapePalettePopup) {
+  btnShapePaletteClose.addEventListener("click", () => {
+    if (placementMode === "shape") setPlacementMode("none");
+    else shapePalettePopup.hidden = true;
+  });
+}
+if (shapePalettePopup && shapePaletteTitlebar) {
+  const restoreShapePopupPos = () => {
+    try {
+      const saved = localStorage.getItem(SHAPE_POPUP_POS_KEY);
+      if (!saved) return;
+      const { left, top } = JSON.parse(saved);
+      if (typeof left !== "number" || typeof top !== "number") return;
+      const w = shapePalettePopup.offsetWidth || 260;
+      const h = shapePalettePopup.offsetHeight || 240;
+      const clampedLeft = Math.max(0, Math.min(window.innerWidth - w, left));
+      const clampedTop = Math.max(0, Math.min(window.innerHeight - h, top));
+      shapePalettePopup.style.left = `${clampedLeft}px`;
+      shapePalettePopup.style.top = `${clampedTop}px`;
+      shapePalettePopup.style.right = "auto";
+    } catch { /* ignore */ }
+  };
+  restoreShapePopupPos();
+  const obs = new MutationObserver(() => {
+    if (!shapePalettePopup.hidden) restoreShapePopupPos();
+  });
+  obs.observe(shapePalettePopup, { attributes: true, attributeFilter: ["hidden"] });
+
+  let drag = null;
+  shapePaletteTitlebar.addEventListener("pointerdown", (e) => {
+    if (e.target instanceof HTMLElement && e.target.id === "shape-palette-close") return;
+    const rect = shapePalettePopup.getBoundingClientRect();
+    drag = {
+      pointerId: e.pointerId,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+    };
+    try { shapePaletteTitlebar.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  });
+  shapePaletteTitlebar.addEventListener("pointermove", (e) => {
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const x = e.clientX - drag.offsetX;
+    const y = e.clientY - drag.offsetY;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const w = shapePalettePopup.offsetWidth;
+    const h = shapePalettePopup.offsetHeight;
+    shapePalettePopup.style.left = `${Math.max(0, Math.min(vw - w, x))}px`;
+    shapePalettePopup.style.top = `${Math.max(0, Math.min(vh - h, y))}px`;
+    shapePalettePopup.style.right = "auto";
+  });
+  shapePaletteTitlebar.addEventListener("pointerup", (e) => {
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    try { shapePaletteTitlebar.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    drag = null;
+    try {
+      const left = parseFloat(shapePalettePopup.style.left) || 0;
+      const top = parseFloat(shapePalettePopup.style.top) || 0;
+      localStorage.setItem(SHAPE_POPUP_POS_KEY, JSON.stringify({ left, top }));
     } catch { /* ignore */ }
   });
 }
