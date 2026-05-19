@@ -34,6 +34,10 @@ let _splitThumbSelection = () => ({ pageNos: new Set() });
 let _sidebarThumbSelection = () => ({ pageNos: new Set() });
 let _isSplitMode = () => false;
 let _fetchVisiblePages = async () => [];
+// Phase 1: 白黒印刷モード getter。ツールバートグルの状態を読み取り、
+// composePagesForExport に monoOverlays として渡す。書き出し経路では
+// 使わない (印刷のみ適用、Phase 1 スコープ)。
+let _isMonoPrintMode = () => false;
 
 export function initPrintFlow({
   projectStore,
@@ -44,6 +48,7 @@ export function initPrintFlow({
   sidebarThumbSelection,
   isSplitMode,
   fetchVisiblePages,
+  isMonoPrintMode,
 }) {
   _projectStore = projectStore;
   _viewer = viewer;
@@ -53,6 +58,7 @@ export function initPrintFlow({
   _sidebarThumbSelection = sidebarThumbSelection;
   _isSplitMode = isSplitMode;
   _fetchVisiblePages = fetchVisiblePages;
+  if (typeof isMonoPrintMode === "function") _isMonoPrintMode = isMonoPrintMode;
 }
 
 const printDialog = $("print-dialog");
@@ -447,21 +453,27 @@ printPropertiesBtn.addEventListener("click", async () => {
  * 範囲はサイドバー / split-view 選択をそのまま filteredPages に反映して
  * temp PDF を生成 → Reader はその PDF を「全ページ」のつもりで開く。
  */
-async function actionPrintViaReader(pages, preselected, preselectedSource) {
+async function actionPrintViaReader(pages, preselected, preselectedSource, opts = {}) {
+  // Phase 2: FAX 送信ボタンの「Adobe 経由」 escape hatch から呼ばれた
+  // ときは forceMono=true で monoOverlays を強制 ON にする。通常の印刷
+  // ボタン経路はトグルの状態に従う。
+  const forceMono = !!opts.forceMono;
+  const labelPrefix = opts.labelPrefix ?? "印刷";
   const filteredPages = preselected
     ? pages.filter((p) => preselected.includes(p.pageNo))
     : pages;
   if (filteredPages.length === 0) {
-    _wsStatus.textContent = "印刷対象ページがありません";
+    _wsStatus.textContent = `${labelPrefix}対象ページがありません`;
     return;
   }
   const projectStore = _projectStore();
   const overlayCount = projectStore.count();
   const allPagesSelected = filteredPages.length === pages.length;
-  const isCopy = overlayCount === 0 && allPagesSelected;
+  // FAX 経路では byte-copy は使わない (mono 化のため必ず再合成が必要)
+  const isCopy = !forceMono && overlayCount === 0 && allPagesSelected;
 
   // 中止ボタンは出さない (Adobe ダイアログを × で閉じれば中止)
-  showBusy("印刷準備", "ページを描画中...", 0);
+  showBusy(`${labelPrefix}準備`, "ページを描画中...", 0);
   let composed = null;
   try {
     if (!isCopy) {
@@ -471,6 +483,12 @@ async function actionPrintViaReader(pages, preselected, preselectedSource) {
         renderPage: kpdf3.renderPage,
         renderSyntheticPage: renderSyntheticPagePixels,
         rasterRedactionPages: true,
+        // Phase 1: 白黒印刷モードが ON のとき overlay の色を黒に projection
+        // する (マーカーは除外)。Adobe `/p` 経路でも事前 raster に焼き込ま
+        // れた overlay は黒になるので、ドライバ側の color → gray 変換に
+        // 頼らずカラー印影が薄くなる事故を回避できる。
+        // Phase 2: forceMono=true (FAX 経路) ではトグル状態に関わらず ON。
+        monoOverlays: forceMono || _isMonoPrintMode(),
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
@@ -490,11 +508,11 @@ async function actionPrintViaReader(pages, preselected, preselectedSource) {
       : result.reason === "reader-closed" ? "Reader を終了"
       : result.reason === "timeout" ? "タイムアウト"
       : "完了";
-    _wsStatus.textContent = `印刷経路: ${result.engine} (${reasonText}) — ${summary}`;
+    _wsStatus.textContent = `${labelPrefix}経路: ${result.engine} (${reasonText}) — ${summary}`;
   } catch (err) {
     hideBusy();
     console.error("[renderer] print failed:", err);
-    _wsStatus.textContent = `印刷失敗: ${err.message ?? err}`;
+    _wsStatus.textContent = `${labelPrefix}失敗: ${err.message ?? err}`;
   }
 }
 
@@ -599,6 +617,8 @@ export async function actionPrint() {
         renderPage: kpdf3.renderPage,
         renderSyntheticPage: renderSyntheticPagePixels,
         rasterRedactionPages: true,
+        // Phase 1: legacy 印刷経路 (Sumatra silent) でも白黒モード適用
+        monoOverlays: _isMonoPrintMode(),
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
@@ -724,6 +744,10 @@ export async function actionPrintOverlayOnly() {
       renderSyntheticPage: renderSyntheticPagePixels,
       overlayOnly: true,
       rasterRedactionPages: true,
+      // Phase 1: 下敷き印刷 (overlay-only) でも白黒モードに従う。下敷き印刷
+      // は overlay だけを物理紙に乗せる経路なので、カラー印影が薄くなる
+      // 問題と完全に同じシナリオが該当する。
+      monoOverlays: _isMonoPrintMode(),
       onProgress: ({ done, total }) => {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
@@ -747,5 +771,340 @@ export async function actionPrintOverlayOnly() {
     hideBusy();
     console.error("[print-overlay-only] failed:", err);
     _wsStatus.textContent = `下敷き印刷失敗: ${err.message ?? err}`;
+  }
+}
+
+// =====================================================================
+// Phase 2: FAX 送信ボタン
+//
+// FAX 専用ボタンを Adobe 経路から切り離し、(1) 既定 FAX プリンタへ直送、
+// (2) 白黒モード強制、(3) ページサイズ混在検出 + ミニダイアログ で 3 択
+// を出す。FAX プリンタは localStorage で永続化、初回 / 変更時のみ picker。
+//
+// 経路:
+//   - left-click  → _actionFaxSendAuto: 単一サイズなら streamlined、混在
+//                   なら _faxMixedDialog で A4 統一/Adobe/取消 を出す
+//   - 右クリック "Adobe 経由" → _actionFaxSendViaAdobe: Adobe `/p` 経由
+//                   (案 D の actionPrintViaReader を forceMono=true で呼ぶ)
+//   - 右クリック "FAX プリンタを変更…" → _faxSetupDialog を再表示
+// =====================================================================
+
+const LS_FAX_PRINTER = "kpdf3.faxPrinter";
+
+/** main 側の isFaxDevice と同じパターンで FAX 系プリンタ名を判定。 */
+function _isFaxNameLike(name) {
+  if (!name) return false;
+  if (/(?:^|[\s_\-()/\\:])fax(?:$|[\s_\-()/\\:])/i.test(name)) return true;
+  return /ファックス|ファクス|ﾌｧｯｸｽ|ﾌｧｸｽ/.test(name);
+}
+
+function _getRememberedFaxPrinter() {
+  try { return localStorage.getItem(LS_FAX_PRINTER) || null; }
+  catch { return null; }
+}
+function _rememberFaxPrinter(name) {
+  try { localStorage.setItem(LS_FAX_PRINTER, name); } catch { /* ignore */ }
+}
+
+/** ページサイズ混在検出。canonical (post-rotation) 寸法で比較し、半端
+ *  な誤差を吸収するため 1pt 以内の差は同一視する。 */
+function _detectPageSizeMix(pages) {
+  if (!Array.isArray(pages) || pages.length === 0) return { mixed: false, sizes: [] };
+  const sizes = [];
+  for (const p of pages) {
+    const rot = (((p.rotation ?? 0) + (p.userRotation ?? 0)) % 360 + 360) % 360;
+    const w = rot === 90 || rot === 270 ? p.cropH : p.cropW;
+    const h = rot === 90 || rot === 270 ? p.cropW : p.cropH;
+    const found = sizes.find((s) => Math.abs(s.w - w) <= 1 && Math.abs(s.h - h) <= 1);
+    if (!found) sizes.push({ w, h, count: 1 });
+    else found.count += 1;
+  }
+  return { mixed: sizes.length > 1, sizes };
+}
+
+/** mm 換算で「A4 相当」「A3 相当」のラベルを返す (体感ラベル化)。 */
+function _labelForPageSize(w, h) {
+  const W = Math.min(w, h), H = Math.max(w, h);
+  const mmW = W / 72 * 25.4, mmH = H / 72 * 25.4;
+  // tolerance 6mm: ユーザの裁断 PDF 等での誤差吸収
+  const near = (a, b) => Math.abs(a - b) <= 6;
+  if (near(mmW, 210) && near(mmH, 297)) return "A4";
+  if (near(mmW, 297) && near(mmH, 420)) return "A3";
+  if (near(mmW, 148) && near(mmH, 210)) return "A5";
+  if (near(mmW, 182) && near(mmH, 257)) return "B5";
+  if (near(mmW, 257) && near(mmH, 364)) return "B4";
+  if (near(mmW, 216) && near(mmH, 279)) return "Letter";
+  return `${Math.round(mmW)}×${Math.round(mmH)}mm`;
+}
+
+/** FAX 系プリンタ一覧を取得して [{name, displayName}] 配列で返す。 */
+async function _fetchFaxPrinters() {
+  try {
+    const all = await kpdf3.listPrinters();
+    return Array.isArray(all)
+      ? all.filter((p) => _isFaxNameLike(p.name) || _isFaxNameLike(p.displayName))
+      : [];
+  } catch (err) {
+    console.warn("[fax] listPrinters failed:", err);
+    return [];
+  }
+}
+
+const faxSetupDialog = $("fax-setup-dialog");
+const faxSetupSelect = $("fax-setup-printer-select");
+const faxSetupHint = $("fax-setup-hint");
+const faxSetupOk = $("fax-setup-ok");
+const faxSetupCancel = $("fax-setup-cancel");
+
+/** FAX プリンタ picker を表示。OK で device name を resolve、cancel/Esc で null。
+ *  printers が空のときは fallback として全プリンタを出し、注意 hint を変える。 */
+function _showFaxSetupDialog(faxPrinters, allPrinters = null) {
+  return new Promise((resolve) => {
+    faxSetupSelect.innerHTML = "";
+    const list = faxPrinters.length > 0 ? faxPrinters : (allPrinters ?? []);
+    if (list.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "(プリンタが見つかりません)";
+      faxSetupSelect.appendChild(opt);
+      faxSetupOk.disabled = true;
+    } else {
+      faxSetupOk.disabled = false;
+      const remembered = _getRememberedFaxPrinter();
+      for (const p of list) {
+        const opt = document.createElement("option");
+        opt.value = p.name;
+        opt.textContent = p.displayName ?? p.name;
+        if (p.name === remembered) opt.selected = true;
+        faxSetupSelect.appendChild(opt);
+      }
+    }
+    if (faxSetupHint) {
+      faxSetupHint.textContent = faxPrinters.length > 0
+        ? "※ fax / ファックス / ファクス を含むプリンタを表示しています。"
+        : "※ FAX 系プリンタが見つかりませんでした。全プリンタから選択できます。";
+    }
+    faxSetupDialog.hidden = false;
+    setTimeout(() => faxSetupOk.focus(), 0);
+
+    const cleanup = () => {
+      faxSetupDialog.hidden = true;
+      faxSetupOk.removeEventListener("click", onOk);
+      faxSetupCancel.removeEventListener("click", onCancel);
+      faxSetupDialog.removeEventListener("click", onBgClick);
+      document.removeEventListener("keydown", onKey, true);
+    };
+    const onOk = () => {
+      const v = faxSetupSelect.value || null;
+      cleanup();
+      resolve(v);
+    };
+    const onCancel = () => { cleanup(); resolve(null); };
+    const onBgClick = (e) => { if (e.target === faxSetupDialog) onCancel(); };
+    const onKey = (e) => {
+      if (faxSetupDialog.hidden) return;
+      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+      else if (e.key === "Enter") { e.preventDefault(); onOk(); }
+    };
+    faxSetupOk.addEventListener("click", onOk);
+    faxSetupCancel.addEventListener("click", onCancel);
+    faxSetupDialog.addEventListener("click", onBgClick);
+    document.addEventListener("keydown", onKey, true);
+  });
+}
+
+const faxMixedDialog = $("fax-mixed-dialog");
+const faxMixedMessage = $("fax-mixed-message");
+const faxMixedA4 = $("fax-mixed-a4");
+const faxMixedAdobe = $("fax-mixed-adobe");
+const faxMixedCancel = $("fax-mixed-cancel");
+
+/** ページサイズ混在ダイアログ。"a4" | "adobe" | "cancel" を resolve。 */
+function _showFaxMixedDialog(mix) {
+  return new Promise((resolve) => {
+    const labels = mix.sizes
+      .map((s) => `${_labelForPageSize(s.w, s.h)} × ${s.count}p`)
+      .join(" / ");
+    faxMixedMessage.textContent = `送信対象に複数のページサイズが混在しています (${labels})。`;
+    faxMixedDialog.hidden = false;
+    setTimeout(() => faxMixedA4.focus(), 0);
+
+    const cleanup = (v) => {
+      faxMixedDialog.hidden = true;
+      faxMixedA4.removeEventListener("click", on_a4);
+      faxMixedAdobe.removeEventListener("click", on_adobe);
+      faxMixedCancel.removeEventListener("click", on_cancel);
+      faxMixedDialog.removeEventListener("click", on_bg);
+      document.removeEventListener("keydown", on_key, true);
+      resolve(v);
+    };
+    const on_a4 = () => cleanup("a4");
+    const on_adobe = () => cleanup("adobe");
+    const on_cancel = () => cleanup("cancel");
+    const on_bg = (e) => { if (e.target === faxMixedDialog) on_cancel(); };
+    const on_key = (e) => {
+      if (faxMixedDialog.hidden) return;
+      if (e.key === "Escape") { e.preventDefault(); on_cancel(); }
+    };
+    faxMixedA4.addEventListener("click", on_a4);
+    faxMixedAdobe.addEventListener("click", on_adobe);
+    faxMixedCancel.addEventListener("click", on_cancel);
+    faxMixedDialog.addEventListener("click", on_bg);
+    document.addEventListener("keydown", on_key, true);
+  });
+}
+
+/** Split / sidebar 選択をプリ選択として読み出す (actionPrint と同じロジック)。 */
+function _gatherPreselection() {
+  const splitSel = _splitThumbSelection();
+  const sidebarSel = _sidebarThumbSelection();
+  if (splitSel.pageNos.size > 0) {
+    return { preselected: [...splitSel.pageNos], preselectedSource: "split" };
+  }
+  if (sidebarSel.pageNos.size >= 2) {
+    return { preselected: [...sidebarSel.pageNos], preselectedSource: "sidebar" };
+  }
+  return { preselected: null, preselectedSource: null };
+}
+
+/** FAX 送信メイン。
+ *  @param {{via?:"auto"|"adobe"}} opts via="auto" で streamlined (混在検出
+ *    時は内部でミニダイアログを出して分岐)、"adobe" で Adobe `/p` 経路 (FAX
+ *    印刷ボタン右クリックの escape hatch)。
+ */
+export async function actionFaxSend(opts = {}) {
+  if (!_isOpen()) return;
+  const via = opts.via === "adobe" ? "adobe" : "auto";
+  const pages = await _fetchVisiblePages();
+  if (pages.length === 0) return;
+  const { preselected, preselectedSource } = _gatherPreselection();
+
+  if (via === "adobe") {
+    // Adobe 経由 escape hatch: actionPrintViaReader を forceMono=true で
+    // 呼ぶ。ユーザは Adobe ダイアログで FAX プリンタを手動選択する。
+    return actionPrintViaReader(pages, preselected, preselectedSource, {
+      forceMono: true,
+      labelPrefix: "FAX 送信",
+    });
+  }
+
+  // auto 経路 — ページサイズ混在検出
+  const filteredPages = preselected
+    ? pages.filter((p) => preselected.includes(p.pageNo))
+    : pages;
+  const mix = _detectPageSizeMix(filteredPages);
+  let forceFitA4 = false;
+  if (mix.mixed) {
+    const choice = await _showFaxMixedDialog(mix);
+    if (choice === "cancel") {
+      _wsStatus.textContent = "FAX 送信をキャンセルしました";
+      return;
+    }
+    if (choice === "adobe") {
+      return actionPrintViaReader(pages, preselected, preselectedSource, {
+        forceMono: true,
+        labelPrefix: "FAX 送信",
+      });
+    }
+    // choice === "a4" → drop through; Sumatra/Chromium 側で fit/paper hint
+    forceFitA4 = true;
+  }
+
+  // FAX プリンタ取得 (記憶済 or 初回 picker)
+  let faxDevice = _getRememberedFaxPrinter();
+  let faxPrinters = null;
+  if (faxDevice) {
+    // 記憶済の名前が現在の接続プリンタに存在するか念のため確認
+    try {
+      const all = await kpdf3.listPrinters();
+      const exists = Array.isArray(all) && all.some((p) => p.name === faxDevice);
+      if (!exists) faxDevice = null; // 接続が外れた等 — picker を出し直す
+    } catch { /* ignore — try with remembered */ }
+  }
+  if (!faxDevice) {
+    let allPrinters;
+    try { allPrinters = await kpdf3.listPrinters(); } catch { allPrinters = []; }
+    faxPrinters = Array.isArray(allPrinters)
+      ? allPrinters.filter((p) => _isFaxNameLike(p.name) || _isFaxNameLike(p.displayName))
+      : [];
+    if (faxPrinters.length === 0 && allPrinters.length === 0) {
+      await customConfirm({
+        title: "FAX 送信",
+        message: "プリンタが見つかりません。OS のプリンタ設定をご確認ください。",
+        cancelLabel: null,
+      });
+      return;
+    }
+    faxDevice = await _showFaxSetupDialog(faxPrinters, allPrinters);
+    if (!faxDevice) {
+      _wsStatus.textContent = "FAX 送信をキャンセルしました";
+      return;
+    }
+    _rememberFaxPrinter(faxDevice);
+  }
+
+  // 描画 + 送信 (silent print — main 側で FAX device を検知して Chromium silent
+  // にフォールバックする。Sumatra は FAX driver を初期化できない β42 J2 既知問題)
+  showBusy("FAX 送信", "ページを描画中... (明朝保護のため全ページを内部 raster 化)", 0);
+  let composed = null;
+  try {
+    composed = await composePagesForExport({
+      pages: filteredPages,
+      projectStore: _projectStore(),
+      renderPage: kpdf3.renderPage,
+      renderSyntheticPage: renderSyntheticPagePixels,
+      rasterRedactionPages: true,
+      monoOverlays: true,
+      // Phase 3: FAX streamlined 経路では全ページを内部 mupdf で 900dpi
+      // raster 化してから Chromium silent print へ渡す。Adobe / Sumatra /
+      // Chromium のテキストレンダリング差を完全に消去し、明朝 hairline が
+      // FAX 200dpi で痩せる問題を防ぐ。Adobe 経由 escape hatch (上の via=
+      // "adobe" 分岐) では適用しない (Adobe の vector path を活かす)。
+      rasterAllPagesForFax: true,
+      onProgress: ({ done, total }) => {
+        updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
+      },
+    });
+    updateBusy(`${faxDevice} へ送信中... ドライバの送信先入力ダイアログをご確認ください`, 90);
+    await kpdf3.printPdfSilent({
+      source: "rasterized",
+      pages: composed,
+      deviceName: faxDevice,
+      copies: 1,
+      landscape: false,
+      color: "mono",
+      // forceFitA4 は将来の Phase で活用 (現状 main 側 Chromium silent は
+      // 印刷側 paper size に任せる)。記録だけ残してダイアログ選択を保持。
+    });
+    hideBusy();
+    _wsStatus.textContent =
+      `FAX 送信: ${faxDevice} に ${filteredPages.length} ページ${forceFitA4 ? " (A4 統一)" : ""} を送信しました`;
+  } catch (err) {
+    hideBusy();
+    console.error("[fax] send failed:", err);
+    _wsStatus.textContent = `FAX 送信失敗: ${err.message ?? err}`;
+  }
+}
+
+/** 右クリック「FAX プリンタを変更…」用 — picker を強制再表示し、記憶を
+ *  上書きする。送信は走らせない。 */
+export async function actionFaxChangePrinter() {
+  let allPrinters;
+  try { allPrinters = await kpdf3.listPrinters(); } catch { allPrinters = []; }
+  const faxPrinters = Array.isArray(allPrinters)
+    ? allPrinters.filter((p) => _isFaxNameLike(p.name) || _isFaxNameLike(p.displayName))
+    : [];
+  if (allPrinters.length === 0) {
+    await customConfirm({
+      title: "FAX プリンタを変更",
+      message: "プリンタが見つかりません。OS のプリンタ設定をご確認ください。",
+      cancelLabel: null,
+    });
+    return;
+  }
+  const picked = await _showFaxSetupDialog(faxPrinters, allPrinters);
+  if (picked) {
+    _rememberFaxPrinter(picked);
+    _wsStatus.textContent = `FAX プリンタを ${picked} に変更しました`;
   }
 }

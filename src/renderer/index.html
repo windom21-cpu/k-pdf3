@@ -112,6 +112,15 @@
     <div class="menu-item" data-ctx="delete">削除</div>
   </div>
 
+  <!-- Phase 2: FAX 送信ボタン右クリックメニュー
+       通常クリックは streamlined (既定 FAX プリンタへ直送)、画質保険として
+       Adobe 経由を残し、初回設定 / 変更用に「FAX プリンタを変更…」を出す。 -->
+  <div class="menu-dropdown" id="ctx-fax-btn" hidden>
+    <div class="menu-item" data-ctx="fax-adobe">Adobe 経由で FAX 送信 (画質保険)</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item" data-ctx="fax-set-printer">FAX プリンタを変更…</div>
+  </div>
+
   <!-- Tab right-click menu (B3-α tab tearout via menu) -->
   <div class="menu-dropdown" id="ctx-tab" hidden>
     <div class="menu-item" data-ctx="detach">別ウインドウへ移動</div>
@@ -453,6 +462,50 @@
     </div>
   </div>
 
+  <!-- Phase 2: FAX プリンタ初回設定 / 変更ダイアログ。fax/ファックス/
+       ファクス を含むプリンタ名だけ select に表示。OK で localStorage に
+       保存し、以降の FAX 送信ボタンは picker を出さず直送する。 -->
+  <div class="busy-modal" id="fax-setup-dialog" hidden>
+    <div class="window range-window">
+      <div class="title-bar">
+        <div class="title-bar-text">FAX プリンタを選択</div>
+      </div>
+      <div class="window-body">
+        <p class="range-message" style="margin-bottom:6px;">FAX 送信ボタンで使用する FAX プリンタを選んでください。</p>
+        <div style="margin: 8px 0;">
+          <select id="fax-setup-printer-select" style="width: 100%; max-width: 360px;"></select>
+        </div>
+        <p class="range-message" id="fax-setup-hint" style="color:#444; font-size: 11px;">※ fax / ファックス / ファクス を含むプリンタを表示しています。</p>
+        <div class="range-buttons">
+          <button id="fax-setup-ok" class="default">OK</button>
+          <button id="fax-setup-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phase 2: FAX 送信時のページサイズ混在確認ダイアログ。A4/A3 混在
+       FAX で「A4 統一」「Adobe 経由」「キャンセル」の 3 択を出す。 -->
+  <div class="busy-modal" id="fax-mixed-dialog" hidden>
+    <div class="window range-window">
+      <div class="title-bar">
+        <div class="title-bar-text">FAX 送信 — ページサイズ混在</div>
+      </div>
+      <div class="window-body">
+        <p class="range-message" id="fax-mixed-message" style="margin-bottom:6px;"></p>
+        <p class="range-message" style="color:#444; font-size: 11px;">
+          ・「A4 統一」=&nbsp;K-PDF3 で全ページを A4 に自動縮小して送信 (簡便)<br>
+          ・「Adobe 経由」=&nbsp;Adobe の「ページサイズに合わせて用紙を選択」を活用 (FAX 機が A3 対応している場合)
+        </p>
+        <div class="range-buttons">
+          <button id="fax-mixed-a4" class="default">A4 統一</button>
+          <button id="fax-mixed-adobe">Adobe 経由</button>
+          <button id="fax-mixed-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Recent PDFs dialog (M5-7) -->
   <div class="busy-modal" id="recent-dialog" hidden>
     <div class="window recent-window">
@@ -655,6 +708,8 @@
     <button id="btn-save" disabled title="上書き保存 (Ctrl+S)">上書き</button>
     <button id="btn-export" disabled title="名前を付けて保存 (Ctrl+Shift+S)">保存</button>
     <button id="btn-print" disabled title="印刷 (Ctrl+P)">印刷</button>
+    <button id="btn-mono-print" class="toolbar-toggle" disabled title="ON にすると印刷時に overlay (テキスト/スタンプ/印影/丸囲み/形/フォーム枠) の色を黒に変換します。マーカー (黄) は除外。FAX や白黒プリンタでカラー印影が薄くなるのを回避するための保険。">白黒</button>
+    <button id="btn-fax-send" disabled title="既定の FAX プリンタへ直送 (白黒強制)。右クリックで Adobe 経由切替 + FAX プリンタ変更。">FAX</button>
     <button id="btn-print-overlay-only" disabled title="申請書原本に重ね印刷 (背景なし、フィールドの値だけ印字)">下敷き印刷</button>
     <span class="toolbar-sep"></span>
     <button id="btn-mode-text" disabled>テキスト</button>

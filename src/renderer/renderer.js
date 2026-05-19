@@ -104,7 +104,7 @@ import {
   setBookmarkSnapshot,
   clearBookmarkState,
 } from "./bookmark-pane.js";
-import { initPrintFlow, actionPrint, actionPrintOverlayOnly } from "./print-flow.js";
+import { initPrintFlow, actionPrint, actionPrintOverlayOnly, actionFaxSend, actionFaxChangePrinter } from "./print-flow.js";
 import {
   initFormFill,
   invalidateTabOrderCache,
@@ -157,7 +157,10 @@ const btnOpen = $("btn-open");
 const btnSave = $("btn-save");
 const btnExport = $("btn-export");
 const btnPrint = $("btn-print");
+const btnMonoPrint = $("btn-mono-print");
+const btnFaxSend = $("btn-fax-send");
 const btnPrintOverlayOnly = $("btn-print-overlay-only");
+const ctxFaxBtn = $("ctx-fax-btn");
 const zoomSelect = $("zoom-select");
 const btnModeText = $("btn-mode-text");
 const btnModeStamp = $("btn-mode-stamp");
@@ -329,6 +332,18 @@ initBookmarkPane({
   isOpen: () => isOpen,
   showRangePrompt: (opts) => showRangePrompt(opts),
 });
+// 白黒印刷モード state (Phase 1)。ツールバーの「白黒」トグルで切替、
+// localStorage で永続化。print-flow.js が getter 経由で読みに来る。
+let _monoPrintMode = false;
+try {
+  _monoPrintMode = localStorage.getItem("kpdf3.monoPrintMode") === "1";
+} catch { /* private mode 等 — ignore */ }
+function _syncMonoPrintBtn() {
+  if (!btnMonoPrint) return;
+  btnMonoPrint.classList.toggle("is-on", _monoPrintMode);
+  btnMonoPrint.textContent = _monoPrintMode ? "白黒 ON" : "白黒";
+}
+
 initPrintFlow({
   projectStore: () => projectStore,
   viewer,
@@ -338,6 +353,7 @@ initPrintFlow({
   sidebarThumbSelection: () => sidebarThumbSelection,
   isSplitMode: () => isSplitMode,
   fetchVisiblePages: () => fetchVisiblePages(),
+  isMonoPrintMode: () => _monoPrintMode,
 });
 // β.80: 記入モード (form-fill)
 initFormFill({
@@ -1311,12 +1327,22 @@ ctxThumb.addEventListener("pointerdown", (e) => {
   if (el && el !== ctxThumb) dispatchThumbCtx(el);
 });
 ctxThumb.addEventListener("click", (e) => e.stopPropagation());
+// Phase 2: FAX ボタン context menu の click/outside/Esc クローズ。
+// thumb context menu と同じ document-level 動線に相乗りする。
+if (ctxFaxBtn) ctxFaxBtn.addEventListener("click", (e) => e.stopPropagation());
 document.addEventListener("pointerdown", (ev) => {
-  if (ev.target instanceof Node && ctxThumb.contains(ev.target)) return;
+  if (ev.target instanceof Node) {
+    if (ctxThumb.contains(ev.target)) return;
+    if (ctxFaxBtn && ctxFaxBtn.contains(ev.target)) return;
+  }
   hideThumbContextMenu();
+  if (ctxFaxBtn) ctxFaxBtn.hidden = true;
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") hideThumbContextMenu();
+  if (e.key === "Escape") {
+    hideThumbContextMenu();
+    if (ctxFaxBtn) ctxFaxBtn.hidden = true;
+  }
 });
 
 // ---- Overlay copy / paste (Ctrl+C, Ctrl+V) -------------------------------
@@ -1955,6 +1981,8 @@ function setOpen(open) {
   btnOpen.disabled = false;
   btnExport.disabled = !open;
   btnPrint.disabled = !open;
+  if (btnMonoPrint) btnMonoPrint.disabled = !open;
+  if (btnFaxSend) btnFaxSend.disabled = !open;
   if (btnPrintOverlayOnly) btnPrintOverlayOnly.disabled = !open;
   zoomSelect.disabled = !open;
   btnModeText.disabled = !open;
@@ -5577,8 +5605,48 @@ btnOpen.addEventListener("click", actionOpen);
 btnSave.addEventListener("click", actionSave);
 btnExport.addEventListener("click", actionExport);
 btnPrint.addEventListener("click", actionPrint);
+// 白黒印刷 sticky toggle (Phase 1)。state と sync 関数は initPrintFlow より
+// 前に宣言済 (print-flow.js が getter で読みに来るため)、ここでは初期
+// 表示の sync と click 配線のみ行う。
+_syncMonoPrintBtn();
+if (btnMonoPrint) {
+  btnMonoPrint.addEventListener("click", () => {
+    _monoPrintMode = !_monoPrintMode;
+    try { localStorage.setItem("kpdf3.monoPrintMode", _monoPrintMode ? "1" : "0"); }
+    catch { /* ignore */ }
+    _syncMonoPrintBtn();
+    wsStatus.textContent = _monoPrintMode
+      ? "白黒印刷モード ON — overlay の色を黒に変換して印刷します (マーカーは除外)"
+      : "白黒印刷モード OFF — 通常のカラーで印刷します";
+  });
+}
 if (btnPrintOverlayOnly) {
   btnPrintOverlayOnly.addEventListener("click", actionPrintOverlayOnly);
+}
+// Phase 2: FAX 送信ボタン。左クリック = streamlined (auto)、右クリック =
+// context menu (Adobe 経由 / FAX プリンタ変更)。
+if (btnFaxSend) {
+  btnFaxSend.addEventListener("click", () => actionFaxSend({ via: "auto" }));
+  btnFaxSend.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (btnFaxSend.disabled) return;
+    // anchored under the button's bottom-left。closeMenusOnDocClick で外側
+    // クリック時に閉じる (既存の document mousedown ハンドラに後から相乗り)。
+    const rect = btnFaxSend.getBoundingClientRect();
+    ctxFaxBtn.style.left = `${Math.round(rect.left)}px`;
+    ctxFaxBtn.style.top = `${Math.round(rect.bottom)}px`;
+    ctxFaxBtn.hidden = false;
+  });
+}
+if (ctxFaxBtn) {
+  ctxFaxBtn.addEventListener("click", (e) => {
+    const item = e.target.closest("[data-ctx]");
+    if (!item) return;
+    const action = item.dataset.ctx;
+    ctxFaxBtn.hidden = true;
+    if (action === "fax-adobe") actionFaxSend({ via: "adobe" });
+    else if (action === "fax-set-printer") actionFaxChangePrinter();
+  });
 }
 btnModeText.addEventListener("click", () =>
   setPlacementMode(placementMode === "text" ? "none" : "text"),

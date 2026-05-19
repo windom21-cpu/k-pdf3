@@ -441,6 +441,22 @@ button.toggled {
     inset 2px 2px grey;
 }
 
+/* 白黒印刷モード等の sticky toggle ボタン。OFF は淡色、ON は黒背景 +
+ * 白文字で「状態が明らかに変わっている」ことが目視で分かる UI に。
+ * 押し忘れて FAX で薄く出る事故を防ぐため、敢えて目立たせる。 */
+.toolbar-toggle {
+  font-weight: bold;
+}
+.toolbar-toggle.is-on {
+  background: #000000;
+  color: #ffffff;
+  box-shadow:
+    inset -1px -1px #ffffff,
+    inset 1px 1px #0a0a0a,
+    inset -2px -2px #dfdfdf,
+    inset 2px 2px grey;
+}
+
 /* ---- Main area (sidebar + viewer) ---- */
 .main-area {
   flex: 1 1 auto;
@@ -2062,6 +2078,10 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   /* 横スクロールは出さない。長いラベル等が popup 幅を越えた場合
    * は ellipsis で省略する (label 側の overflow / text-overflow 指定)。 */
   overflow-x: hidden;
+  /* base の `.stamp-preset-palette` が `flex-wrap: wrap`。column 方向で
+   * wrap すると 320px 超過分が次の「列」に流れ、overflow-x: hidden で
+   * 隠れて見切れる。縦スクロールさせるため nowrap で 1 列固定にする。 */
+  flex-wrap: nowrap;
 }
 .stamp-palette-popup .stamp-preset-btn {
   justify-content: flex-start;

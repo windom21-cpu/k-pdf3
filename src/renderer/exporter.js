@@ -299,6 +299,23 @@ export async function composePagesForExport({
   // ストが抜き出せた)。書き出し / 分割保存 / 印刷の全 8 経路で true
   // を渡す方針 (法律実務での安全側デフォルト)。
   rasterRedactionPages = false,
+  // Phase 1 (白黒印刷モード): true のとき drawOverlay で overlay の色を
+  // 黒 (#000000) に projection する。対象は text / stamp (画像含む) /
+  // form_field / callout / redaction (既に黒)。マーカー (line/marker)
+  // は対象外で原色を維持する (黒で塗ると下の文字が読めなくなる)。
+  // FAX や白黒プリンタでカラー画像スタンプが ramp 後でも薄く出る事故
+  // を構造的に防ぐための保険機能。印刷経路のみで true を渡し、書き出
+  // しでは false (色情報を残す)。
+  monoOverlays = false,
+  // Phase 3 (FAX 経路 明朝保険): true のとき overlay-only 以外の全ページ
+  // を strategy="full" に格上げし、ソース PDF の vector text 層ごと
+  // EXPORT_ZOOM (900dpi) ラスタに焼く。これで Sumatra/Chromium 等の
+  // ダウンストリーム engine が PDF text を独自にレンダリングする差が
+  // 完全に消え、明朝 hairline が FAX 200dpi で部分的に飛ぶ問題を防げる
+  // (raster は K-PDF3 内部の mupdf でコントロール下にあるため、Adobe
+  // 経路と同等の品質を担保できる)。書き出し / 通常印刷では false。
+  // FAX 送信ボタン (streamlined auto 経路) でのみ true。
+  rasterAllPagesForFax = false,
 }) {
   // Ensure custom @font-face faces (CrashNumberingSerif etc.) are loaded
   // before Canvas tries to use them — Canvas falls back to the next
@@ -360,6 +377,12 @@ export async function composePagesForExport({
       // 0 個のページは完全に空白のまま出力される (= 物理紙の不動文字
       // だけが印字結果として残る)。
       strategy = "overlay-only";
+    } else if (rasterAllPagesForFax) {
+      // Phase 3: FAX 経路では全ページを "full" (900dpi raster) に格上げ。
+      // 内部 mupdf でラスタ化することで、Sumatra/Chromium のテキスト
+      // レンダリング差を吸収し、明朝 hairline が FAX 200dpi で痩せる
+      // 問題を構造的に防ぐ。
+      strategy = "full";
     } else if (hasRedactionOverlay) {
       // β.85: redaction を含むページは source / external / overlay の
       // どれでも "full" (900dpi raster) に強制。synthetic は元々 full
@@ -387,7 +410,7 @@ export async function composePagesForExport({
       // 完全に空白ページとして main に渡す (imageBytes = undefined)。
       if (overlayCount > 0) {
         const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
-          row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM,
+          row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM, monoOverlays,
         );
         imageBytes = await canvasToPng(canvas);
         overlayBBox = bb;
@@ -402,7 +425,7 @@ export async function composePagesForExport({
       } else {
         result = await renderPage(row.pageNo, { zoom: EXPORT_ZOOM });
       }
-      const canvas = await compositePage(row, result, projectStore, EXPORT_ZOOM);
+      const canvas = await compositePage(row, result, projectStore, EXPORT_ZOOM, monoOverlays);
       // β31 #3: pick encoding by content type so printed sharpness is
       // maximised for text-heavy pages.
       //   - synthetic white + text page (no underlying image) → PNG
@@ -422,7 +445,7 @@ export async function composePagesForExport({
       // β62: bbox-cropped overlay。canvas は overlays の実領域だけ、
       // bboxPt は配置位置を main に渡すための metadata。
       const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
-        row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM,
+        row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM, monoOverlays,
       );
       // Overlay layer must be PNG to keep transparency — drawing on top of
       // the copied vector source page would otherwise paint white over it.
@@ -433,7 +456,7 @@ export async function composePagesForExport({
       // (e.g. a stamp pinned onto an inserted page). Author the overlay
       // layer the same way as the "overlay" strategy so main can compose.
       const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
-        row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM,
+        row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM, monoOverlays,
       );
       imageBytes = await canvasToPng(canvas);
       overlayBBox = bb;
@@ -532,7 +555,7 @@ export async function composeSinglePageCanvas(pageRow, renderPage, projectStore,
  * β63: 第 2 引数を projectStore から「overlays 配列」に変更。caller が
  * 描画対象だけを渡せるようにして、vector 化対象 overlay を canvas から
  * 除外できるようにする (vector は別途 main 側で pdf-lib drawText 経由)。 */
-export async function composeOverlayOnlyPage(row, overlays, zoom = EXPORT_ZOOM) {
+export async function composeOverlayOnlyPage(row, overlays, zoom = EXPORT_ZOOM, monoOverlays = false) {
   const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
   const swap = userRot === 90 || userRot === 270;
   const pageW = swap ? row.cropH : row.cropW;
@@ -610,7 +633,7 @@ export async function composeOverlayOnlyPage(row, overlays, zoom = EXPORT_ZOOM) 
   // だけで透過のサブセット描画が成立する。
   ctx.translate(-bx * zoom, -by * zoom);
   for (const ov of overlays) {
-    await drawOverlay(ctx, ov, zoom);
+    await drawOverlay(ctx, ov, zoom, monoOverlays);
   }
   return {
     canvas,
@@ -618,7 +641,7 @@ export async function composeOverlayOnlyPage(row, overlays, zoom = EXPORT_ZOOM) 
   };
 }
 
-export async function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOOM) {
+export async function compositePage(row, renderResult, projectStore, zoom = EXPORT_ZOOM, monoOverlays = false) {
   // mupdf returns the PDF at intrinsic /Rotate dims only — userRotation
   // is applied here so thumbs / export both match the rotated viewer.
   const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
@@ -668,7 +691,7 @@ export async function compositePage(row, renderResult, projectStore, zoom = EXPO
   // lands them where the user expects.
   const overlays = projectStore.getPageOverlays(row.pageNo);
   for (const ov of overlays) {
-    await drawOverlay(ctx, ov, zoom);
+    await drawOverlay(ctx, ov, zoom, monoOverlays);
   }
 
   return canvas;
@@ -683,17 +706,25 @@ export async function compositePage(row, renderResult, projectStore, zoom = EXPO
  * @param {CanvasRenderingContext2D} ctx
  * @param {import("../domain/project-store.js").Overlay} ov
  * @param {number} zoom    canonical → pixel scale
+ * @param {boolean} [monoOverlays=false] Phase 1: ON のとき色を黒に projection
+ *   (マーカーは除外、redaction の "white" 指定も維持)
  */
-async function drawOverlay(ctx, ov, zoom) {
+async function drawOverlay(ctx, ov, zoom, monoOverlays = false) {
   const x = ov.x * zoom;
   const y = ov.y * zoom;
   const w = ov.w * zoom;
   const h = ov.h * zoom;
   const props = ov.properties ?? {};
+  // Phase 1: 白黒印刷モード時に各 overlay の color を黒に置換する helper。
+  // marker (黄ハイライト) は呼び出し側で完全に skip するので、その他の
+  // overlay (text / stamp / form_field / callout / 形 / redaction) のみが
+  // この経路に乗る。redaction の "white" 指定は user 意図 (white-out 風)
+  // なので維持する (redaction 分岐で別途処理)。
+  const monoize = (c) => (monoOverlays ? "#000000" : c);
 
   if (ov.type === "text") {
     const fontSize = (props.fontSize ?? 12) * zoom;
-    const color = props.color ?? "#000000";
+    const color = monoize(props.color ?? "#000000");
     ctx.font = `${fontSize}px ${getTextFontStack(props.fontId, {
       digitsHanko: !!props.digitsHanko,
     })}`;
@@ -751,9 +782,13 @@ async function drawOverlay(ctx, ov, zoom) {
     // userRotation around the box center (paper metaphor). When
     // props.color is set we draw the tinted variant (luminance →
     // alpha + RGB ← color); empty color = image as-is.
+    // Phase 1: 白黒印刷モード時は props.color の有無に関わらず強制的に
+    // #000000 で tint する (元が tint なし or bg-transparent の画像も
+    // 黒シルエットに統一)。これで赤印影・青印影が薄く出る事故を回避。
     try {
-      const tinted = props.color
-        ? await getTintedAssetCanvas(props.assetId, props.color)
+      const effectiveTintColor = monoOverlays ? "#000000" : props.color;
+      const tinted = effectiveTintColor
+        ? await getTintedAssetCanvas(props.assetId, effectiveTintColor)
         : null;
       const src = tinted || (await getAssetBitmap(props.assetId));
       if (src) {
@@ -775,7 +810,10 @@ async function drawOverlay(ctx, ov, zoom) {
   }
 
   if (ov.type === "stamp") {
-    const color = props.color ?? "#cc0000";
+    // Phase 1: text/date スタンプは props.color (デフォ赤 #cc0000) を持つ
+    // ので、白黒モードでは黒に projection。frame の枠線も同色なので
+    // 一括で黒くなる。
+    const color = monoize(props.color ?? "#cc0000");
     const fontSize = (props.fontSize ?? 14) * zoom;
     const frame = props.frame ?? "circle";
     ctx.lineWidth = Math.max(2 * zoom * 0.5, 1.5);
@@ -862,6 +900,8 @@ async function drawOverlay(ctx, ov, zoom) {
     // True redaction: paint a fully opaque rectangle (default black).
     // The page is already rasterised at this point, so the underlying
     // text layer is gone; this rectangle then covers the matching pixels.
+    // Phase 1: redaction の "white" 指定 (white-out 風) は white を維持。
+    // 白黒モードで白を黒に塗ると user 意図と逆になるため例外扱い。
     const fill = props.color === "white" ? "#ffffff" : "#000000";
     ctx.fillStyle = fill;
     ctx.fillRect(x, y, w, h);
@@ -870,7 +910,9 @@ async function drawOverlay(ctx, ov, zoom) {
 
   if (ov.type === "rect" && props.kind === "callout") {
     // Callout: white-fill box + outline + arrow line + text inside.
-    const color = props.color ?? "#000000";
+    // Phase 1: 白黒モードで枠線・矢印・本文をすべて黒に projection。
+    // 白塗り fill (背景) は元々白なので影響なし。
+    const color = monoize(props.color ?? "#000000");
     ctx.save();
     ctx.fillStyle = "rgba(255,255,255,0.95)";
     ctx.fillRect(x, y, w, h);
@@ -948,6 +990,10 @@ async function drawOverlay(ctx, ov, zoom) {
   if (ov.type === "line" && (props.kind ?? "marker") === "marker") {
     // Highlighter marker — semi-transparent fill so the underlying
     // text remains readable through the marker color.
+    // Phase 1: マーカーは monoize **しない** (= 白黒モードでも原色維持)。
+    // 黄を黒に塗ると下のテキストが完全に塞がれて読めなくなるため、
+    // ハイライト機能の意義そのものが壊れる。白黒プリンタ側で淡い灰色
+    // にされる挙動に任せる (FAX なら受信側でハーフトーン)。
     const color = props.color ?? "#ffeb3b";
     const opacity = typeof props.opacity === "number" ? props.opacity : 0.3;
     ctx.save();
@@ -964,7 +1010,10 @@ async function drawOverlay(ctx, ov, zoom) {
   // だけ実印字する。text サブタイプは alignH / alignV で揃え制御。
   if (ov.type === "form_field") {
     const fieldKind = props.fieldKind ?? "text";
-    const color = props.color ?? "#000000";
+    // Phase 1: form_field (text/check/circle/radio) の色を黒に projection。
+    // デフォは元々 #000000 なので、ユーザがカラー指定したフォーム枠だけ
+    // 影響を受ける。
+    const color = monoize(props.color ?? "#000000");
     const value = String(props.value ?? "");
     const filled = value !== "" && value !== "off";
 
