@@ -103,6 +103,7 @@ import {
   getBookmarkSnapshot,
   setBookmarkSnapshot,
   clearBookmarkState,
+  clearBookmarkDom,
 } from "./bookmark-pane.js";
 import { initPrintFlow, actionPrint, actionPrintOverlayOnly, actionFaxSend, actionFaxChangePrinter } from "./print-flow.js";
 import {
@@ -394,6 +395,12 @@ initTabManager({
     placementMode = tab.placementMode;
     activeSourceName = tab.activeSourceName;
     workspaceMutated = tab.workspaceMutated;
+    // β.94: タブ切替の瞬間に bookmark DOM を即時クリア。refreshBookmarks
+    // は async chain (refreshViewer 経由 fire-and-forget) で後追いで
+    // 走るので、その間 DOM に前タブのしおりが残るレース条件があった。
+    // clearBookmarkDom で innerHTML="" を同期実行 → 新タブの DOM は
+    // 必ず空から始まる。
+    clearBookmarkDom();
     setBookmarkSnapshot({
       selectedBookmarkId: tab.selectedBookmarkId,
       bookmarkSource: tab.bookmarkSource,

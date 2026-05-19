@@ -66,6 +66,19 @@ export function clearBookmarkState() {
   workspaceBookmarksCache = [];
 }
 
+/** β.94: タブ切替時に呼ばれ、bookmark DOM を即時クリアする。
+ *  refreshBookmarks は viewer 再構築の async chain で fire-and-forget 呼出し
+ *  されるため、その間 DOM には前タブのしおりが残り、refreshBookmarks の
+ *  innerHTML="" が走るまで「前タブのしおりが残ったまま新タブのしおりが
+ *  追加される」レース条件で並行表示されるケースがあった。
+ *  applyStateFromTab で同期的にこの関数を呼ぶことで、新タブ環境に入る
+ *  瞬間に DOM が空に保証される。 */
+export function clearBookmarkDom() {
+  bookmarkTree.innerHTML = "";
+  const sourceLabel = $("bookmark-source-label");
+  if (sourceLabel) sourceLabel.textContent = "";
+}
+
 export async function refreshBookmarks() {
   bookmarkTree.innerHTML = "";
   refreshBookmarkToolbarState();

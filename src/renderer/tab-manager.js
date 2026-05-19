@@ -183,14 +183,26 @@ export async function applyTab(tabId) {
       console.warn("[tabs] switchTab failed (tab may not be opened on main side):", err);
     }
     await _refreshViewerAfterSwitch();
-    // Restore scroll after layout settles. scrollLeft is reset to 0 —
-    // fit-width / fit-page centre the inner via `margin: 0 auto`, so a
-    // non-zero scrollLeft from the previous tab (e.g. transient overflow
-    // during page rebuild) would offset the content to the right and
-    // leave gray padding on the left after re-fit.
+    // β.94: scroll 復元を 即時 + RAF の二重実行に。refreshViewer 内の
+    // viewer.load は scrollTop=0 を sync 設定するが、後続の applyFitWidthNow
+    // / setAnnotations 等が container の高さや scroll を変化させる可能性が
+    // ある。単発 RAF だと「次フレームで設定したつもりが、その後の layout
+    // reflow で scrollTop が clamp/復元される」現象を捉えきれず、ユーザの
+    // 目には「他タブの scroll 位置に飛ぶ」ように見える事故が報告された。
+    // 即時 + RAF + 2RAF の三段で再設定して堅牢化する。
+    // scrollLeft は 0 リセット (fit-width / fit-page で margin auto を効か
+    // せるため、前タブの非ゼロ値が残っていると左右にずれて見える)。
+    const target = tab.scrollPosition || 0;
+    _viewerContainer.scrollTop = target;
+    _viewerContainer.scrollLeft = 0;
     requestAnimationFrame(() => {
-      _viewerContainer.scrollTop = tab.scrollPosition || 0;
+      _viewerContainer.scrollTop = target;
       _viewerContainer.scrollLeft = 0;
+      requestAnimationFrame(() => {
+        if (_viewerContainer.scrollTop !== target) {
+          _viewerContainer.scrollTop = target;
+        }
+      });
     });
   } else {
     try { await kpdf3.switchTab(null); } catch { /* noop */ }
