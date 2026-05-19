@@ -70,6 +70,7 @@ import {
   placeFormCircle,
   startFormTextDrag,
   startShapeDrag,
+  updateShapeOverlay,
   // (form-fill imports below)
   currentRedactionColor,
   currentMarkerColor,
@@ -1987,6 +1988,10 @@ function refreshModeOptionsBar() {
         kind === "check"  ? "form-check"  :
         kind === "circle" ? "form-circle" :
         kind === "radio"  ? "form-radio"  : null;
+    } else if (ov?.type === "shape") {
+      // β.102: shape は kind 問わず "shape-edit" panel を表示
+      which = "shape-edit";
+      _populateShapeEditPanel(ov);
     } else {
       which = null;
     }
@@ -6370,6 +6375,56 @@ if (shapePalettePopup && shapePaletteTitlebar) {
       localStorage.setItem(SHAPE_POPUP_POS_KEY, JSON.stringify({ left, top }));
     } catch { /* ignore */ }
   });
+}
+
+// β.102: shape overlay 選択時の options bar (= mode-options-bar の
+// "shape-edit") の populate / change wiring。select 変更で即 update。
+function _populateShapeEditPanel(ov) {
+  if (!ov || ov.type !== "shape") return;
+  const props = ov.properties ?? {};
+  const kindSel = $("shape-edit-kind");
+  const dirSel = $("shape-edit-dir");
+  const colorSel = $("shape-edit-color");
+  const strokeSel = $("shape-edit-stroke");
+  const fillSel = $("shape-edit-fill");
+  if (kindSel) kindSel.value = props.kind ?? "line";
+  if (dirSel) {
+    // ellipse / rect / rounded-rect / ellipse-x は arrowDir を持たないので
+    // disable して "right" を表示しておく。
+    const directional =
+      props.kind === "line" || props.kind === "arrow" || props.kind === "double-arrow" ||
+      props.kind === "block-arrow" || props.kind === "double-block-arrow";
+    dirSel.disabled = !directional;
+    dirSel.value = directional ? (props.arrowDir ?? "right") : "right";
+  }
+  if (colorSel) colorSel.value = props.strokeColor ?? "#000000";
+  if (strokeSel) strokeSel.value = String(props.strokeWidth ?? 2);
+  if (fillSel) fillSel.value = props.fillColor ? "solid" : "hollow";
+}
+
+function _applyShapeEditChange() {
+  if (getSelectionSize() !== 1) return;
+  const id = getPrimarySelectedId();
+  if (!id) return;
+  const ov = projectStore.get(id);
+  if (!ov || ov.type !== "shape") return;
+  const patch = {
+    kind:        $("shape-edit-kind")?.value || ov.properties?.kind || "line",
+    arrowDir:    $("shape-edit-dir")?.value || ov.properties?.arrowDir || "right",
+    strokeColor: $("shape-edit-color")?.value || ov.properties?.strokeColor || "#000000",
+    strokeWidth: Number($("shape-edit-stroke")?.value) || ov.properties?.strokeWidth || 2,
+    fillMode:    $("shape-edit-fill")?.value || (ov.properties?.fillColor ? "solid" : "hollow"),
+  };
+  updateShapeOverlay(id, patch);
+  // kind 変更で directional 切替があるかもしれない → dir select の
+  // disabled 状態を再評価して値も同期。
+  const updated = projectStore.get(id);
+  if (updated) _populateShapeEditPanel(updated);
+}
+
+for (const id of ["shape-edit-kind", "shape-edit-dir", "shape-edit-color",
+                  "shape-edit-stroke", "shape-edit-fill"]) {
+  $(id)?.addEventListener("change", _applyShapeEditChange);
 }
 
 // Align toolbar (β5 §17.13/§17.14) — visible only with 2+ selected.

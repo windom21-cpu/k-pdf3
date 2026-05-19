@@ -14,6 +14,7 @@
 
 import { AddOverlayCommand } from "../domain/commands.js";
 import { TEXT_FONT_DEFAULT_ID, TEXT_FONT_DEFAULT_SIZE } from "./fonts.js";
+import { selectOverlay } from "./overlay-selection.js";
 
 let _projectStore = () => null;
 let _history = () => null;
@@ -566,24 +567,9 @@ function _readShapeDefaults() {
   return { kind, strokeColor, strokeWidth, fillMode };
 }
 
-function _dragDir4(dx, dy) {
-  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? "right" : "left";
-  return dy >= 0 ? "down" : "up";
-}
-
-// β.101: 8 方向量子化 (45° 単位)。block-arrow / double-block-arrow /
-// 矢印・双方矢印を斜めにも対応するため。drawDir が "right" の時 dx>=0
-// の水平、"down-right" は右下対角、… の順に時計回り。
-const _DIR8 = [
-  "right", "down-right", "down", "down-left",
-  "left", "up-left", "up", "up-right",
-];
-function _dragDir8(dx, dy) {
-  if (dx === 0 && dy === 0) return "right";
-  const a = Math.atan2(dy, dx); // -π .. π, X right / Y down (画面座標系)
-  const idx = Math.round((a + 2 * Math.PI) / (Math.PI / 4)) % 8;
-  return _DIR8[idx];
-}
+// β.102: 配置時の dir 量子化は撤去 (placement は常に "right" 固定)。
+// 方向は配置後に options bar の select で 8 方向から選び、bbox は
+// shape-style apply 経路 (applyShapeStyleToSelected) で回転させる。
 
 /**
  * Drag-to-place a shape. The drag rect's bbox is the overlay bbox;
@@ -658,13 +644,12 @@ export function startShapeDrag(pageNo, startX, startY, downEvt, div) {
       bw = Math.max(width, 4);
       bh = Math.max(height, 4);
     }
-    // β.101: arrow / line 系は 8 方向、ellipse 系・四角系は方向不要。
-    // block-arrow / double-block-arrow も 8 方向で斜め配置可。
-    const directional =
-      defs.kind === "line" || defs.kind === "arrow" || defs.kind === "double-arrow" ||
-      defs.kind === "block-arrow" || defs.kind === "double-block-arrow";
-    const dir = directional ? _dragDir8(dx, dy) : null;
-    _placeShape(pageNo, left, top, bw, bh, dir ?? "right", defs);
+    // β.102: placement は常に「右向き (right)」で確定する。配置プレビュー
+    // が点線四角だけだと斜め方向の予測が難しい (ユーザー報告) ので、配置
+    // 時はドラッグ方向を読まず、配置後に options bar の「方向」select で
+    // 8 方向を後付けで選ぶ流れにする。方向変更時に bbox は自動回転
+    // (横↔縦は w/h swap、斜めは正方形化、いずれも中心固定) する。
+    _placeShape(pageNo, left, top, bw, bh, "right", defs);
   }
   function onCancel(e) {
     if (e.pointerId !== pointerId) return;
@@ -699,6 +684,72 @@ function _placeShape(pageNo, x, y, w, h, arrowDir, defs) {
     properties: props,
   });
   _history().execute(cmd);
+  // β.102: 配置直後に選択状態にする → options bar の「方向」select で
+  // すぐ後付け回転できる。selectOverlay は reapplySelectionDom + ui
+  // 通知を兼ねるので別途 refresh は不要。
+  if (cmd._snapshot?.id) {
+    setTimeout(() => selectOverlay(cmd._snapshot.id, "replace"), 0);
+  }
+}
+
+/**
+ * β.102: 単一 shape overlay を id 指定で更新するヘルパー。renderer.js
+ * の options bar (mode-options-bar の "shape-edit") から呼ぶ。
+ * arrowDir が変わった時は bbox を中心固定で回転させて、横↔縦は
+ * w/h swap、斜めは正方形化することで切れを防ぐ。
+ */
+export function updateShapeOverlay(id, patch) {
+  const ps = _projectStore();
+  if (!ps) return;
+  const ov = ps.get(id);
+  if (!ov || ov.type !== "shape") return;
+  const oldProps = ov.properties ?? {};
+  const newProps = { ...oldProps };
+  let nextX = ov.x, nextY = ov.y, nextW = ov.w, nextH = ov.h;
+
+  // properties merge
+  if (typeof patch.kind === "string") newProps.kind = patch.kind;
+  if (typeof patch.strokeColor === "string") newProps.strokeColor = patch.strokeColor;
+  if (typeof patch.strokeWidth === "number") newProps.strokeWidth = patch.strokeWidth;
+  if (typeof patch.thickness === "number") newProps.thickness = patch.thickness;
+  if (typeof patch.cornerRadius === "number") newProps.cornerRadius = patch.cornerRadius;
+  if (patch.fillMode === "solid") newProps.fillColor = newProps.strokeColor;
+  else if (patch.fillMode === "hollow") delete newProps.fillColor;
+
+  // 方向変更: bbox を中心固定で回転
+  if (typeof patch.arrowDir === "string" && patch.arrowDir !== oldProps.arrowDir) {
+    const oldDir = oldProps.arrowDir ?? "right";
+    const newDir = patch.arrowDir;
+    const cx = ov.x + ov.w / 2;
+    const cy = ov.y + ov.h / 2;
+    const horiz = (d) => d === "right" || d === "left";
+    const vert  = (d) => d === "down"  || d === "up";
+    const diag  = (d) => !horiz(d) && !vert(d);
+    let nw = ov.w, nh = ov.h;
+    if (horiz(oldDir) && vert(newDir)) {
+      nw = ov.h; nh = ov.w; // 横→縦 swap
+    } else if (vert(oldDir) && horiz(newDir)) {
+      nw = ov.h; nh = ov.w; // 縦→横 swap
+    } else if (diag(newDir)) {
+      const s = Math.max(ov.w, ov.h);
+      nw = s; nh = s; // 斜めは正方形化
+    } else if (diag(oldDir) && (horiz(newDir) || vert(newDir))) {
+      // 斜め (square) → 横/縦: 元のアスペクトに戻す情報が無いので
+      // 「正方形のままほぼ等しい縦横比」で扱う。実用上 square →
+      // 細長方向への変更はユーザーがハンドルでリサイズすればよい。
+      nw = ov.w; nh = ov.h;
+    }
+    nextW = nw;
+    nextH = nh;
+    nextX = cx - nw / 2;
+    nextY = cy - nh / 2;
+    newProps.arrowDir = newDir;
+  }
+
+  ps.update(id, {
+    x: nextX, y: nextY, w: nextW, h: nextH,
+    properties: newProps,
+  });
 }
 
 /** Helper: shared drag-rect handler used by form-text and form-circle.
