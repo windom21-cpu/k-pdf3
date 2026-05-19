@@ -15,6 +15,7 @@
 import { AddOverlayCommand } from "../domain/commands.js";
 import { TEXT_FONT_DEFAULT_ID, TEXT_FONT_DEFAULT_SIZE } from "./fonts.js";
 import { selectOverlay } from "./overlay-selection.js";
+import { shapeDirectionalBbox } from "./exporter.js";
 
 let _projectStore = () => null;
 let _history = () => null;
@@ -662,17 +663,35 @@ export function startShapeDrag(pageNo, startX, startY, downEvt, div) {
   div.addEventListener("pointercancel", onCancel);
 }
 
-function _placeShape(pageNo, x, y, w, h, arrowDir, defs) {
+function _placeShape(pageNo, dragX, dragY, dragW, dragH, arrowDir, defs) {
   const props = {
     kind: defs.kind,
     strokeColor: defs.strokeColor,
     strokeWidth: defs.strokeWidth,
   };
-  // arrow / line / block-arrow 系のみ arrowDir を保持
+  // arrow / line / block-arrow 系のみ arrowDir + length / crossSize を保持
   const directional =
     defs.kind === "line" || defs.kind === "arrow" || defs.kind === "double-arrow" ||
     defs.kind === "block-arrow" || defs.kind === "double-block-arrow";
-  if (directional) props.arrowDir = arrowDir;
+  let x = dragX, y = dragY, w = dragW, h = dragH;
+  if (directional) {
+    // β.104: ドラッグ矩形の長辺 = 矢印の長さ、短辺 = 矢印の太さ方向。
+    // arrowDir が "down"/"up" など縦向きでもユーザーの「太さ・長さ」
+    // 認識は方向不変なので、長辺/短辺で決める。
+    const length = Math.max(dragW, dragH);
+    const crossSize = Math.max(4, Math.min(dragW, dragH));
+    props.arrowDir = arrowDir;
+    props.length = length;
+    props.crossSize = crossSize;
+    // bbox は AABB として派生計算 (回転後の AABB、center 固定)
+    const cx = dragX + dragW / 2;
+    const cy = dragY + dragH / 2;
+    const aabb = shapeDirectionalBbox(arrowDir, length, crossSize);
+    w = aabb.w;
+    h = aabb.h;
+    x = cx - w / 2;
+    y = cy - h / 2;
+  }
   if (defs.kind === "block-arrow" || defs.kind === "double-block-arrow") {
     props.thickness = 0.5;
   }
@@ -686,9 +705,7 @@ function _placeShape(pageNo, x, y, w, h, arrowDir, defs) {
     properties: props,
   });
   _history().execute(cmd);
-  // β.102: 配置直後に選択状態にする → options bar の「方向」select で
-  // すぐ後付け回転できる。selectOverlay は reapplySelectionDom + ui
-  // 通知を兼ねるので別途 refresh は不要。
+  // β.102: 配置直後に選択状態にする → popup で即時編集できる
   if (cmd._snapshot?.id) {
     setTimeout(() => selectOverlay(cmd._snapshot.id, "replace"), 0);
   }
@@ -718,40 +735,83 @@ export function updateShapeOverlay(id, patch) {
   if (patch.fillMode === "solid") newProps.fillColor = newProps.strokeColor;
   else if (patch.fillMode === "hollow") delete newProps.fillColor;
 
-  // 方向変更: bbox を中心固定で回転
-  if (typeof patch.arrowDir === "string" && patch.arrowDir !== oldProps.arrowDir) {
-    const oldDir = oldProps.arrowDir ?? "right";
-    const newDir = patch.arrowDir;
+  // β.104: directional shape の方向変更は length × crossSize を不変の
+  // まま bbox を AABB として再計算する。中心は維持。
+  const newKind = newProps.kind;
+  const directional =
+    newKind === "line" || newKind === "arrow" || newKind === "double-arrow" ||
+    newKind === "block-arrow" || newKind === "double-block-arrow";
+  const oldDirectional =
+    oldProps.kind === "line" || oldProps.kind === "arrow" || oldProps.kind === "double-arrow" ||
+    oldProps.kind === "block-arrow" || oldProps.kind === "double-block-arrow";
+
+  if (directional) {
+    const length = oldProps.length ?? Math.max(ov.w, ov.h);
+    const crossSize = oldProps.crossSize ?? Math.min(ov.w, ov.h);
+    newProps.length = length;
+    newProps.crossSize = crossSize;
+    const dir = typeof patch.arrowDir === "string" ? patch.arrowDir : (oldProps.arrowDir ?? "right");
+    newProps.arrowDir = dir;
     const cx = ov.x + ov.w / 2;
     const cy = ov.y + ov.h / 2;
-    const horiz = (d) => d === "right" || d === "left";
-    const vert  = (d) => d === "down"  || d === "up";
-    const diag  = (d) => !horiz(d) && !vert(d);
-    let nw = ov.w, nh = ov.h;
-    if (horiz(oldDir) && vert(newDir)) {
-      nw = ov.h; nh = ov.w; // 横→縦 swap
-    } else if (vert(oldDir) && horiz(newDir)) {
-      nw = ov.h; nh = ov.w; // 縦→横 swap
-    } else if (diag(newDir)) {
-      const s = Math.max(ov.w, ov.h);
-      nw = s; nh = s; // 斜めは正方形化
-    } else if (diag(oldDir) && (horiz(newDir) || vert(newDir))) {
-      // 斜め (square) → 横/縦: 元のアスペクトに戻す情報が無いので
-      // 「正方形のままほぼ等しい縦横比」で扱う。実用上 square →
-      // 細長方向への変更はユーザーがハンドルでリサイズすればよい。
-      nw = ov.w; nh = ov.h;
-    }
-    nextW = nw;
-    nextH = nh;
-    nextX = cx - nw / 2;
-    nextY = cy - nh / 2;
-    newProps.arrowDir = newDir;
+    const aabb = shapeDirectionalBbox(dir, length, crossSize);
+    nextW = aabb.w;
+    nextH = aabb.h;
+    nextX = cx - nextW / 2;
+    nextY = cy - nextH / 2;
+  } else if (oldDirectional && !directional) {
+    // directional → 非 directional (rect / ellipse 等) への kind 変更。
+    // bbox は length × crossSize を「右向き AABB」と読み替えて素直に
+    // length × crossSize にリセット (= 旧矢印が横長だった場合の元寸法)。
+    // 中心固定。
+    const length = oldProps.length ?? Math.max(ov.w, ov.h);
+    const crossSize = oldProps.crossSize ?? Math.min(ov.w, ov.h);
+    const cx = ov.x + ov.w / 2;
+    const cy = ov.y + ov.h / 2;
+    nextW = length;
+    nextH = crossSize;
+    nextX = cx - nextW / 2;
+    nextY = cy - nextH / 2;
+    delete newProps.length;
+    delete newProps.crossSize;
+    delete newProps.arrowDir;
+  } else if (!oldDirectional && directional) {
+    // 非 directional → directional: bbox の w/h を length/crossSize に
+    // 採用、向きは patch (or default "right")。bbox は維持される。
+    const length = Math.max(ov.w, ov.h);
+    const crossSize = Math.max(4, Math.min(ov.w, ov.h));
+    newProps.length = length;
+    newProps.crossSize = crossSize;
+    newProps.arrowDir = typeof patch.arrowDir === "string" ? patch.arrowDir : "right";
   }
 
   ps.update(id, {
     x: nextX, y: nextY, w: nextW, h: nextH,
     properties: newProps,
   });
+}
+
+/**
+ * β.104: 単一 shape 選択中 or popup の「向き」defaults を 45° 回転。
+ *   step = +1 → 時計回り (right → down-right → down → ...)
+ *   step = -1 → 反時計回り (right → up-right → up → ...)
+ * popup の "shape-dir" select の値を 1 段ずらすだけで、change handler
+ * (renderer.js) が選択中なら overlay update、未選択なら defaults 更新。
+ */
+const _SHAPE_DIRS = [
+  "right", "down-right", "down", "down-left",
+  "left", "up-left", "up", "up-right",
+];
+export function rotateSelectedShape(step) {
+  const dirSel = document.getElementById("shape-dir");
+  if (!dirSel) return;
+  const currentDir = dirSel.value || "right";
+  const idx = _SHAPE_DIRS.indexOf(currentDir);
+  const next = _SHAPE_DIRS[((idx + step) % 8 + 8) % 8];
+  dirSel.value = next;
+  // change event を発火 → 既存の _syncShapePopupToSelected (renderer.js)
+  // が選択中 shape なら overlay update、未選択なら no-op + defaults 反映。
+  dirSel.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 /** Helper: shared drag-rect handler used by form-text and form-circle.

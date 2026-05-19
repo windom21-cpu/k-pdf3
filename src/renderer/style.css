@@ -1319,6 +1319,24 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   line-height: 1.5;
 }
 
+/* β.104 回転ボタン + 現在の向き indicator */
+.shape-rotate-btn {
+  font-size: 14px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font-family: "MS UI Gothic", sans-serif;
+}
+.shape-dir-indicator {
+  display: inline-block;
+  min-width: 28px;
+  text-align: center;
+  font-size: 14px;
+  padding: 2px 6px;
+  background: #fff;
+  border: 1px inset #c0c0c0;
+  font-family: "MS UI Gothic", sans-serif;
+}
+
 /* shape の placement 中 preview rect (dashed bbox) */
 .shape-placement-preview {
   position: absolute;

@@ -344,15 +344,20 @@
       <hr class="shape-palette-sep">
       <div class="shape-palette-row">
         <label class="shape-palette-label">向き:</label>
-        <select id="shape-dir" class="shape-palette-select" title="矢印・線・ブロック矢印の向き。配置済みの図形を選ぶと、ここで 8 方向に回転できます (bbox は中心固定で自動回転、横→縦は w/h swap、斜めは正方形化)">
-          <option value="right" selected>→ 右</option>
-          <option value="down-right">↘ 右下</option>
-          <option value="down">↓ 下</option>
-          <option value="down-left">↙ 左下</option>
-          <option value="left">← 左</option>
-          <option value="up-left">↖ 左上</option>
-          <option value="up">↑ 上</option>
-          <option value="up-right">↗ 右上</option>
+        <button id="shape-rot-ccw" class="shape-rotate-btn" type="button" title="反時計回りに 45° 回転">↺</button>
+        <span id="shape-dir-indicator" class="shape-dir-indicator" aria-live="polite" title="現在の向き">→</span>
+        <button id="shape-rot-cw" class="shape-rotate-btn" type="button" title="時計回りに 45° 回転">↻</button>
+        <!-- 内部状態保持用: 旧 dir select は hidden で残し、popup change
+             handler の入出力ポイントとして使う。ボタン操作で値が変わる -->
+        <select id="shape-dir" hidden>
+          <option value="right" selected>右</option>
+          <option value="down-right">右下</option>
+          <option value="down">下</option>
+          <option value="down-left">左下</option>
+          <option value="left">左</option>
+          <option value="up-left">左上</option>
+          <option value="up">上</option>
+          <option value="up-right">右上</option>
         </select>
       </div>
       <div class="shape-palette-row">

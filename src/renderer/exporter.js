@@ -167,11 +167,13 @@ function _needsHairlineStroke(fontId) {
   return fontId === "mincho" || fontId === "serif";
 }
 
-// ---- β.100 / β.101 オートシェイプ helpers ------------------------------
+// ---- β.100 / β.104 オートシェイプ helpers ------------------------------
 //
-// arrowDir で 8 方向 (right/down-right/down/down-left/left/up-left/up/up-right)
-// の中央線・対角線の始点・終点を返す。直線・矢印・ブロック矢印・双方
-// 矢印は共通でこの 2 点を起点に描く。stroke 太さ分だけ pad。
+// β.104: properties に length / crossSize を保持し、描画は中心 (0,0) を
+// 起点に「右向き (= +X 軸方向)」で行ったあと ctx.rotate で arrowDir に
+// 応じた角度に回転させる。これにより方向を変えても矢印の太さ・長さが
+// 不変、bbox は AABB として派生計算 (length×crossSize の rotated AABB)
+// なので斜めでも切れない。
 //
 // ── shape spec (overlay.properties) ──
 //   kind:        "line" | "arrow" | "double-arrow"
@@ -179,11 +181,47 @@ function _needsHairlineStroke(fontId) {
 //                | "ellipse" | "ellipse-x"
 //                | "rect" | "rounded-rect"
 //   arrowDir:    8 方向 (kind に line/arrow 系が含まれる時のみ意味あり)
+//   length:      矢印の長さ (pt、方向不変)。旧 shape は max(w,h) で互換
+//   crossSize:   軸に直交する方向の bbox 大きさ (pt、方向不変)。
+//                旧 shape は min(w,h) で互換
 //   strokeColor: "#000000" 等
 //   strokeWidth: pt (default 2)
 //   fillColor:   null (中空) or "#xxxxxx"
 //   thickness:   block-arrow の shaft 太さ比率 (0..1, default 0.5)
 //   cornerRadius: rounded-rect の半径 (pt, default 8)
+const SHAPE_DIR_TO_ANGLE = {
+  "right":       0,
+  "down-right":  45,
+  "down":        90,
+  "down-left":   135,
+  "left":        180,
+  "up-left":     225,
+  "up":          270,
+  "up-right":    315,
+};
+
+/** β.104: directional shape (line/arrow/block-arrow 系) かどうか判定。 */
+function _isDirectionalShape(kind) {
+  return kind === "line" || kind === "arrow" || kind === "double-arrow"
+    || kind === "block-arrow" || kind === "double-block-arrow";
+}
+
+/** β.104: arrowDir + length + crossSize から AABB の (w, h) を計算する。
+ *  軸並行 (right/down/left/up) では length × crossSize の対応、斜め
+ *  方向 (down-right 等) では (length・|cos|+crossSize・|sin|) などで決定。
+ *  center 座標は保持される (caller が cx/cy を渡す)。
+ *
+ *  @returns {{ w:number, h:number }}
+ */
+export function shapeDirectionalBbox(arrowDir, length, crossSize) {
+  const angle = (SHAPE_DIR_TO_ANGLE[arrowDir] ?? 0) * Math.PI / 180;
+  const cos = Math.abs(Math.cos(angle));
+  const sin = Math.abs(Math.sin(angle));
+  const w = length * cos + crossSize * sin;
+  const h = length * sin + crossSize * cos;
+  return { w, h };
+}
+
 function _shapeEndpoints(dir, x, y, w, h, strokeWidth) {
   const pad = strokeWidth / 2 + 0.5;
   const cx = x + w / 2, cy = y + h / 2;
@@ -287,6 +325,12 @@ function _drawArrowHead(ctx, p1, p2, strokeWidth, zoom, color) {
  * Shared between exporter (writes overlay PNG layer) and viewer
  * (canvas inside an overlay-shape div).
  *
+ * β.104: directional shape (line / arrow / block-arrow 系) は properties
+ * の length / crossSize に従い「中心 (0,0) 基準・右向き」で描き、ctx.
+ * rotate で arrowDir に応じた角度へ回転させる。これにより方向を変えても
+ * 「同じ太さ・同じ長さ」のまま向きだけ回せる。bbox (ov.w / ov.h) は AABB
+ * として正確に派生し、斜めでも切れない。
+ *
  * @param {CanvasRenderingContext2D} ctx
  * @param {{x:number,y:number,w:number,h:number, properties?: object}} ov
  * @param {number} zoom
@@ -310,6 +354,26 @@ export function drawShape(ctx, ov, zoom, monoOverlays = false) {
   ctx.lineJoin = "miter";
   ctx.lineCap = "round";
   if (fillColor) ctx.fillStyle = fillColor;
+
+  // β.104: directional shape は length × crossSize で中心基準描画 + 回転
+  if (_isDirectionalShape(kind)) {
+    // length / crossSize: properties で保持 (旧 shape は w/h からの推測)。
+    // 旧 shape の bbox は arrowDir に応じて swap されている可能性がある
+    // ので max/min が安全な fallback。
+    const lengthPt = props.length ?? Math.max(ov.w, ov.h);
+    const crossSizePt = props.crossSize ?? Math.min(ov.w, ov.h);
+    const length = lengthPt * zoom;
+    const crossSize = crossSizePt * zoom;
+    const angleRad = ((SHAPE_DIR_TO_ANGLE[dir] ?? 0) * Math.PI) / 180;
+    const cx = x + w / 2, cy = y + h / 2;
+    ctx.translate(cx, cy);
+    ctx.rotate(angleRad);
+    _drawDirectionalShapeAtOrigin(
+      ctx, kind, length, crossSize, strokeColor, strokeWidth, fillColor, thickness, zoom,
+    );
+    ctx.restore();
+    return;
+  }
 
   // β.101: 矩形・角丸矩形
   if (kind === "rect") {
@@ -385,76 +449,134 @@ export function drawShape(ctx, ov, zoom, monoOverlays = false) {
     return;
   }
 
-  const { p1, p2 } = _shapeEndpoints(dir, x, y, w, h, strokeWidth);
+  // directional shape は冒頭で処理済 (length × crossSize + rotate)
+  ctx.restore();
+}
 
+// ---- β.104 directional shape helpers (中心基準で右向き描画) ----------
+//
+// すべて (0, 0) を中心、+X 軸方向を「進行方向 / 矢じり方向」、Y 軸を
+// crossSize の伸びる方向として描く。caller の drawShape が ctx.rotate
+// で実方向に回す。bbox からは独立しているので、回転で「太さ・長さ」
+// が一切変わらない。
+
+/** ブロック矢印 (片端) の中心基準 7 頂点ポリゴン。 */
+function _blockArrowPolyAtOrigin(length, crossSize, thickness) {
+  const headWidth = crossSize;
+  const shaftWidth = crossSize * thickness;
+  const headLen = Math.min(crossSize * 1.0, length * 0.4);
+  const sh = shaftWidth / 2;
+  const hh = headWidth / 2;
+  const bx = length / 2 - headLen;
+  return [
+    { x: -length / 2, y:  sh },
+    { x:  bx,         y:  sh },
+    { x:  bx,         y:  hh },
+    { x:  length / 2, y:  0  },
+    { x:  bx,         y: -hh },
+    { x:  bx,         y: -sh },
+    { x: -length / 2, y: -sh },
+  ];
+}
+
+/** 双方ブロック矢印の中心基準 10 頂点ポリゴン。 */
+function _doubleBlockArrowPolyAtOrigin(length, crossSize, thickness) {
+  const headWidth = crossSize;
+  const shaftWidth = crossSize * thickness;
+  const headLen = Math.min(crossSize * 1.0, length * 0.3);
+  const sh = shaftWidth / 2;
+  const hh = headWidth / 2;
+  const ax = -length / 2 + headLen;
+  const bx =  length / 2 - headLen;
+  return [
+    { x: -length / 2, y:  0  },
+    { x:  ax,         y:  hh },
+    { x:  ax,         y:  sh },
+    { x:  bx,         y:  sh },
+    { x:  bx,         y:  hh },
+    { x:  length / 2, y:  0  },
+    { x:  bx,         y: -hh },
+    { x:  bx,         y: -sh },
+    { x:  ax,         y: -sh },
+    { x:  ax,         y: -hh },
+  ];
+}
+
+/** Directional shape (line / arrow / double-arrow / block-arrow /
+ *  double-block-arrow) を中心 (0,0) 基準で右向きに描く。caller が
+ *  ctx.rotate で実方向に回す前提。stroke/fill は caller がセット済。 */
+function _drawDirectionalShapeAtOrigin(ctx, kind, length, crossSize,
+                                       strokeColor, strokeWidth, fillColor, thickness, zoom) {
   if (kind === "line") {
     ctx.beginPath();
-    ctx.moveTo(p1.x, p1.y);
-    ctx.lineTo(p2.x, p2.y);
+    ctx.moveTo(-length / 2, 0);
+    ctx.lineTo( length / 2, 0);
     ctx.stroke();
-    ctx.restore();
     return;
   }
-
   if (kind === "arrow") {
-    // 線 + 終点に塗りつぶし三角の矢じり (普通の片端矢印)。
     const ah = Math.max(strokeWidth * 4, 10 * zoom);
-    const dx = p2.x - p1.x, dy = p2.y - p1.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const ux = dx / len, uy = dy / len;
-    const shaftEnd = { x: p2.x - ux * ah * 0.85, y: p2.y - uy * ah * 0.85 };
+    const aw = ah * 0.6;
     ctx.beginPath();
-    ctx.moveTo(p1.x, p1.y);
-    ctx.lineTo(shaftEnd.x, shaftEnd.y);
+    ctx.moveTo(-length / 2, 0);
+    ctx.lineTo(length / 2 - ah * 0.85, 0);
     ctx.stroke();
-    _drawArrowHead(ctx, p1, p2, strokeWidth, zoom, strokeColor);
-    ctx.restore();
+    const baseX = length / 2 - ah;
+    ctx.beginPath();
+    ctx.moveTo(length / 2, 0);
+    ctx.lineTo(baseX,  aw);
+    ctx.lineTo(baseX, -aw);
+    ctx.closePath();
+    ctx.fillStyle = strokeColor;
+    ctx.fill();
     return;
   }
-
-  // β.101: 双方矢印 (細線) — 両端に塗り三角の矢じり
   if (kind === "double-arrow") {
     const ah = Math.max(strokeWidth * 4, 10 * zoom);
-    const dx = p2.x - p1.x, dy = p2.y - p1.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const ux = dx / len, uy = dy / len;
-    const start = { x: p1.x + ux * ah * 0.85, y: p1.y + uy * ah * 0.85 };
-    const end   = { x: p2.x - ux * ah * 0.85, y: p2.y - uy * ah * 0.85 };
+    const aw = ah * 0.6;
     ctx.beginPath();
-    ctx.moveTo(start.x, start.y);
-    ctx.lineTo(end.x, end.y);
+    ctx.moveTo(-length / 2 + ah * 0.85, 0);
+    ctx.lineTo( length / 2 - ah * 0.85, 0);
     ctx.stroke();
-    _drawArrowHead(ctx, p1, p2, strokeWidth, zoom, strokeColor); // p2 tip
-    _drawArrowHead(ctx, p2, p1, strokeWidth, zoom, strokeColor); // p1 tip
-    ctx.restore();
+    // right head
+    const rBase = length / 2 - ah;
+    ctx.beginPath();
+    ctx.moveTo(length / 2, 0);
+    ctx.lineTo(rBase,  aw);
+    ctx.lineTo(rBase, -aw);
+    ctx.closePath();
+    ctx.fillStyle = strokeColor;
+    ctx.fill();
+    // left head
+    const lBase = -length / 2 + ah;
+    ctx.beginPath();
+    ctx.moveTo(-length / 2, 0);
+    ctx.lineTo(lBase,  aw);
+    ctx.lineTo(lBase, -aw);
+    ctx.closePath();
+    ctx.fill();
     return;
   }
-
   if (kind === "block-arrow") {
-    const poly = _blockArrowPolygon(p1, p2, w, h, dir, thickness);
+    const poly = _blockArrowPolyAtOrigin(length, crossSize, thickness);
     ctx.beginPath();
     ctx.moveTo(poly[0].x, poly[0].y);
     for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
     ctx.closePath();
     if (fillColor) ctx.fill();
     ctx.stroke();
-    ctx.restore();
     return;
   }
-
-  // β.101: 双方ブロック矢印 (両端に head 三角)
   if (kind === "double-block-arrow") {
-    const poly = _doubleBlockArrowPolygon(p1, p2, w, h, dir, thickness);
+    const poly = _doubleBlockArrowPolyAtOrigin(length, crossSize, thickness);
     ctx.beginPath();
     ctx.moveTo(poly[0].x, poly[0].y);
     for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
     ctx.closePath();
     if (fillColor) ctx.fill();
     ctx.stroke();
-    ctx.restore();
     return;
   }
-  ctx.restore();
 }
 
 /**

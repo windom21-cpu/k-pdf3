@@ -71,6 +71,7 @@ import {
   startFormTextDrag,
   startShapeDrag,
   updateShapeOverlay,
+  rotateSelectedShape,
   // (form-fill imports below)
   currentRedactionColor,
   currentMarkerColor,
@@ -6391,6 +6392,22 @@ if (shapePalettePopup && shapePaletteTitlebar) {
 //
 // onSelectionChanged から populate、popup の各 control の change で
 // _syncShapePopupToSelected を呼ぶ。
+const _SHAPE_DIR_GLYPHS = {
+  "right": "→", "down-right": "↘", "down": "↓", "down-left": "↙",
+  "left": "←", "up-left": "↖", "up": "↑", "up-right": "↗",
+};
+function _updateShapeDirIndicator(dir, enabled) {
+  const indicator = $("shape-dir-indicator");
+  const ccw = $("shape-rot-ccw");
+  const cw = $("shape-rot-cw");
+  if (indicator) {
+    indicator.textContent = enabled ? (_SHAPE_DIR_GLYPHS[dir] ?? "→") : "—";
+    indicator.style.opacity = enabled ? "1" : "0.4";
+  }
+  if (ccw) ccw.disabled = !enabled;
+  if (cw) cw.disabled = !enabled;
+}
+
 function _populateShapePopupFromSelection() {
   if (getSelectionSize() !== 1) return;
   const id = getPrimarySelectedId();
@@ -6400,18 +6417,17 @@ function _populateShapePopupFromSelection() {
   // kind radio
   const kindRadios = document.querySelectorAll('input[name="shape-kind"]');
   for (const r of kindRadios) r.checked = r.value === (props.kind ?? "line");
-  // dir / color / stroke / fill
+  // dir (hidden select) / color / stroke / fill
   const dirSel = $("shape-dir");
   const colorSel = $("shape-color");
   const strokeSel = $("shape-stroke-width");
   const fillSel = $("shape-fill-mode");
-  if (dirSel) {
-    const directional =
-      props.kind === "line" || props.kind === "arrow" || props.kind === "double-arrow" ||
-      props.kind === "block-arrow" || props.kind === "double-block-arrow";
-    dirSel.disabled = !directional;
-    dirSel.value = directional ? (props.arrowDir ?? "right") : "right";
-  }
+  const directional =
+    props.kind === "line" || props.kind === "arrow" || props.kind === "double-arrow" ||
+    props.kind === "block-arrow" || props.kind === "double-block-arrow";
+  const dir = directional ? (props.arrowDir ?? "right") : "right";
+  if (dirSel) dirSel.value = dir;
+  _updateShapeDirIndicator(dir, directional);
   if (colorSel) colorSel.value = props.strokeColor ?? "#000000";
   if (strokeSel) strokeSel.value = String(props.strokeWidth ?? 2);
   if (fillSel) fillSel.value = props.fillColor ? "solid" : "hollow";
@@ -6443,10 +6459,33 @@ function _syncShapePopupToSelected() {
 for (const id of ["shape-dir", "shape-color", "shape-stroke-width", "shape-fill-mode"]) {
   $(id)?.addEventListener("change", _syncShapePopupToSelected);
 }
-// kind の radio 群にも同じ handler
+// kind の radio 群にも同じ handler + indicator の有効/無効も更新
 for (const r of document.querySelectorAll('input[name="shape-kind"]')) {
-  r.addEventListener("change", _syncShapePopupToSelected);
+  r.addEventListener("change", () => {
+    const kind = r.value;
+    const directional =
+      kind === "line" || kind === "arrow" || kind === "double-arrow" ||
+      kind === "block-arrow" || kind === "double-block-arrow";
+    const dirSel = $("shape-dir");
+    _updateShapeDirIndicator(dirSel?.value ?? "right", directional);
+    _syncShapePopupToSelected();
+  });
 }
+// dir select の値変更で indicator を追従させる (回転ボタン経由でも発火)
+$("shape-dir")?.addEventListener("change", () => {
+  const dirSel = $("shape-dir");
+  const kindEl = document.querySelector('input[name="shape-kind"]:checked');
+  const kind = kindEl?.value || "line";
+  const directional =
+    kind === "line" || kind === "arrow" || kind === "double-arrow" ||
+    kind === "block-arrow" || kind === "double-block-arrow";
+  _updateShapeDirIndicator(dirSel?.value ?? "right", directional);
+});
+// β.104: 回転ボタン (↻ ↺) — 45° 単位回転。選択中 shape なら overlay
+// を回転 (bbox AABB 再計算で center 固定)、未選択時は popup defaults
+// の dir を 1 段ずらすだけ。
+$("shape-rot-ccw")?.addEventListener("click", () => rotateSelectedShape(-1));
+$("shape-rot-cw")?.addEventListener("click",  () => rotateSelectedShape(+1));
 
 // Align toolbar (β5 §17.13/§17.14) — visible only with 2+ selected.
 document.getElementById("align-left")  ?.addEventListener("click", () => alignSelectedOverlays("left"));
