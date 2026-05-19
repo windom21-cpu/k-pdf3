@@ -2106,6 +2106,12 @@ function silentPrintPdf(pdfPath, opts) {
             : opts.duplex === "simplex" ? "simplex"
             : undefined;
           const colorOpt = opts.color === "mono" ? false : true;
+          // β.91: Chromium silent print のデフォルトは fit-to-printable-area
+          // (= プリンタの印刷可能領域に収まるよう自動縮小) で、A4 PDF を
+          // FAX 送信すると 5-10% 縮小して送られていた。Sumatra の `noscale`
+          // と同等を実現するため margins を none にして可能な限り native
+          // scale で描画させる。pageSize はプリンタのデフォ (FAX なら通常
+          // A4) を使うのでそのまま omit。
           const printOpts = {
             silent: useSilent,
             deviceName: opts.deviceName,
@@ -2113,7 +2119,9 @@ function silentPrintPdf(pdfPath, opts) {
             printBackground: true,
             color: colorOpt,
             landscape: opts.landscape ?? false,
+            margins: { marginType: "none" },
             ...(duplexMode ? { duplexMode } : {}),
+            ...(opts.pageSize ? { pageSize: opts.pageSize } : {}),
           };
           win.webContents.print(
             printOpts,
@@ -2951,7 +2959,22 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     // 最終 = Chromium silent / silent:false (FAX、非 Win、Sumatra 不在、
     //                                       force chromium のいずれか)
     if (!usedEngine) {
-      await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
+      // β.91: Chromium silent の auto-fit を抑止するため pageSize を
+      // 渡す (= composed[0] の widthPt/heightPt から microns 換算)。
+      // pages が無い byte-copy 経路や、widthPt/heightPt が欠落している
+      // 場合は pageSize を omit → Chromium はプリンタの既定用紙を使う。
+      let pageSize;
+      if (Array.isArray(pages) && pages.length > 0) {
+        const first = pages[0];
+        if (first?.widthPt && first?.heightPt) {
+          // 1 PDF point = 25400 / 72 microns
+          pageSize = {
+            width: Math.round(first.widthPt * 25400 / 72),
+            height: Math.round(first.heightPt * 25400 / 72),
+          };
+        }
+      }
+      await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color, pageSize });
       usedEngine = "chromium";
     }
     logCrash("print-route-end", { engine: usedEngine, deviceName, engineOverride });
