@@ -2245,6 +2245,53 @@ let _activePdfReaderProcess = null;
  *
  * 戻り値: { success: true } または process が non-zero で reject。
  */
+/** β.96: tasklist で「Acrobat / Adobe 関連」のプロセスをすべて列挙して
+ *  名前 + PID で返す。β.95 までは「事前に知っている exe 名 4 つだけ」を
+ *  ピンポイントで検出していたが、ユーザ環境 (Adobe DC 2024+ 等) で
+ *  該当 4 つのいずれも tasklist で見つからない事象 (preExistingPidsByExe
+ *  すべて空) が確認されたため、名前パターンで拡張検出する。
+ *  whitelist (kill しない: ARM / Collab / Notification など Adobe の常駐
+ *  バックグラウンド) を除外して返す。
+ *  @returns {Promise<Array<{name:string, pid:number}>>}
+ */
+function listAdobeRelatedProcesses() {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") {
+      resolve([]);
+      return;
+    }
+    // 名前が以下のいずれかで始まる exe は kill しない (Adobe 業務継続に必要)
+    const NEVER_KILL_PREFIX = /^(AdobeARM|AdobeCollabSync|AdobeNotificationClient|AdobeIPCBroker|AdobeUpdateService|Adobe Update Service|Adobe Updater)/i;
+    // Adobe / Acrobat 系として検出対象とするパターン
+    const ADOBE_PATTERN = /^(Acro|Adobe Acrobat|AdobeAcrobat|adcef|acrobat)/i;
+    try {
+      const sp = spawn("tasklist", ["/FO", "CSV", "/NH"], { windowsHide: true });
+      let out = "";
+      sp.stdout?.on("data", (d) => { out += d.toString(); });
+      sp.on("error", () => resolve([]));
+      sp.on("close", () => {
+        const items = [];
+        for (const line of out.split(/\r?\n/)) {
+          // CSV: "Image","PID","Session","Session#","MemUsage"
+          const m = line.match(/^"([^"]*)","(\d+)",/);
+          if (m) {
+            const name = m[1];
+            const pid = parseInt(m[2], 10);
+            if (!Number.isFinite(pid)) continue;
+            if (NEVER_KILL_PREFIX.test(name)) continue;
+            if (ADOBE_PATTERN.test(name)) {
+              items.push({ name, pid });
+            }
+          }
+        }
+        resolve(items);
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
 /** β66: tasklist で指定 exe 名のプロセス PID 一覧を取得する。
  *  PDF Reader の残留プロセス検出 + kill に使用。Win 限定。 */
 function getProcessPidsByName(exeName) {
@@ -2316,6 +2363,13 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
   const killDetails = {};
   const newPidsByExe = {};
   const preExistingPidsByExe = {};
+  // β.96: 拡張検出 — 旧 fixed list (Acrobat.exe + 3 helpers) では捕捉でき
+  // ない Adobe DC 2024+ 系プロセスを名前パターンで全列挙。kill 対象に
+  // 加える。診断ログにも残して次回ユーザ環境を確認しやすくする。
+  let adobeRelatedAtCleanup = [];
+  try {
+    adobeRelatedAtCleanup = await listAdobeRelatedProcesses();
+  } catch { /* ignore */ }
   for (const [exeName, beforePids] of Object.entries(beforePidsByExe)) {
     try {
       const afterPids = await getProcessPidsByName(exeName);
@@ -2359,6 +2413,38 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
       killDetails[exeName] = [{ error: err?.message ?? String(err) }];
     }
   }
+  // β.96: 旧固定 list (exeName 4 つ) で捕捉できなかった Adobe 系プロセスも
+  // ここで kill する。listAdobeRelatedProcesses で広く列挙した結果から、
+  // 既に上で kill 試行済の PID を除いた残りを taskkill /F /T する。
+  const knownKilled = new Set();
+  for (const arr of Object.values(killDetails)) {
+    for (const d of arr) {
+      if (d.pid != null) knownKilled.add(d.pid);
+    }
+  }
+  const extraKilled = [];
+  for (const { name, pid } of adobeRelatedAtCleanup) {
+    if (knownKilled.has(pid)) continue;
+    const outcome = await new Promise((resolveKill) => {
+      try {
+        const tk = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+          windowsHide: true,
+          detached: false,
+        });
+        let stderr = "";
+        tk.stderr?.on("data", (d) => { stderr += d.toString(); });
+        tk.on("error", (err) => {
+          resolveKill({ name, pid, exitCode: -1, error: err?.message ?? String(err) });
+        });
+        tk.on("close", (code) => {
+          resolveKill({ name, pid, exitCode: code, stderr: stderr.trim() || undefined });
+        });
+      } catch (err) {
+        resolveKill({ name, pid, exitCode: -2, error: err?.message ?? String(err) });
+      }
+    });
+    extraKilled.push(outcome);
+  }
   // β.85: 500ms 後に再 snapshot して taskkill /T で消えなかった生存
   // プロセスを記録する。ユーザ報告「印刷後 Adobe が消えない」の
   // 根因切り分け用 (Pro DC が helpers を遅延 spawn して /T 漏れ /
@@ -2373,6 +2459,7 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
   // 全 PID」を見る (pre-existing 含む)。1 個でも残っていれば「自動消去
   // 失敗」が確定。
   let survivors = {};
+  let survivorsExtra = [];
   try {
     await new Promise((r) => setTimeout(r, 500));
     for (const exeName of Object.keys(beforePidsByExe)) {
@@ -2381,6 +2468,8 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
         survivors[exeName] = stillAlive;
       }
     }
+    // β.96: 拡張検出した Adobe 系プロセスの生存確認
+    survivorsExtra = await listAdobeRelatedProcesses();
   } catch { /* ignore */ }
   try {
     logCrash("pdfreader-cleanup", {
@@ -2389,7 +2478,10 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
       killDetails,
       newPidsByExe,
       preExistingPidsByExe,
+      adobeRelatedAtCleanup,
+      extraKilled,
       survivors,
+      survivorsExtra,
       survivorsCount: Object.keys(survivors).length,
     });
   } catch { /* ignore */ }
