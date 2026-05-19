@@ -2296,13 +2296,18 @@ const PDF_READER_HELPER_EXES = {
   "PDFXCview.exe":    [],
 };
 
-/** β66/β67: 印刷起因で生まれた PDF Reader プロセス + ヘルパープロセス
- *  群を kill する。before 時点で存在していた PID は exe 名ごとに保護
- *  (ユーザが別途開いている Adobe ウィンドウを誤って閉じない)。
- *  失敗時は no-op (kill 失敗してもユーザの業務は継続可能なので
- *  最善 effort)。
+/** β.95: 印刷完了後、PDF Reader プロセス + ヘルパープロセス群を **既存
+ *  含めて全て** kill する。β.66/67 では before 時点で存在していた PID は
+ *  保護していたが、Adobe Acrobat Pro DC の `/n` フラグが半ば無視されて
+ *  既存インスタンスにハンドオフされる挙動 (= K-PDF3 spawn が新 PID を
+ *  作らない) で「Adobe が消えない」問題が頻発したため、ユーザ判断で
+ *  「印刷完了後は全 Adobe を閉じてよい」方針に切替えた。並行 Adobe 作業
+ *  は K-PDF3 viewer に置き換える前提。
+ *  失敗時は no-op (kill 失敗してもユーザの業務は継続可能なので最善 effort)。
+ *  beforePidsByExe は kill 対象選定には使わなくなったが、診断ログで
+ *  「pre-existing / 新規」を区別するために残置。
  *  @param {{exePath:string, engine:string, displayName:string}} readerInfo
- *  @param {Record<string, number[]>} beforePidsByExe  exe 名ごとの PID 一覧
+ *  @param {Record<string, number[]>} beforePidsByExe  exe 名ごとの PID 一覧 (診断用)
  */
 async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
   const killedCounts = {};
@@ -2310,14 +2315,22 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
    *  成功 / 128 = 既に終了 / 1 = アクセス拒否 / その他は OS message)。 */
   const killDetails = {};
   const newPidsByExe = {};
+  const preExistingPidsByExe = {};
   for (const [exeName, beforePids] of Object.entries(beforePidsByExe)) {
     try {
       const afterPids = await getProcessPidsByName(exeName);
+      // β.95: 診断用に「pre-existing (= 印刷前から alive)」と「新規 (= 印刷
+      // 起因で新規 spawn)」を分けて記録するが、実際の kill 対象は両方の
+      // 合算 (= afterPids 全て)。Adobe `/n` が効かないケースで pre-existing
+      // を残すと「Adobe 消えない」になるため、ユーザ判断で全 kill に切替。
       const newPids = afterPids.filter((pid) => !beforePids.includes(pid));
-      killedCounts[exeName] = newPids.length;
+      const preExisting = afterPids.filter((pid) => beforePids.includes(pid));
       newPidsByExe[exeName] = newPids;
+      preExistingPidsByExe[exeName] = preExisting;
+      const killTargets = afterPids; // 全 alive PID を kill
+      killedCounts[exeName] = killTargets.length;
       const details = [];
-      for (const pid of newPids) {
+      for (const pid of killTargets) {
         // β.85: spawn を await 化して exit code を回収。これまで fire-and-
         // forget で「kill 投げたが実は failed」が見えなかった。
         const outcome = await new Promise((resolveKill) => {
@@ -2356,14 +2369,16 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
   // /F の完了に十分かつ手動 × より十分早い。survivors に PID がいる
   // 時点で「自動消去失敗」が確定するので、後続のユーザー × による
   // 死亡は判定に影響しない (audit はスナップショット記録)。
+  // β.95: 全 kill 方針に切替えたので survivors は「kill 後も alive な
+  // 全 PID」を見る (pre-existing 含む)。1 個でも残っていれば「自動消去
+  // 失敗」が確定。
   let survivors = {};
   try {
     await new Promise((r) => setTimeout(r, 500));
-    for (const [exeName, beforePids] of Object.entries(beforePidsByExe)) {
+    for (const exeName of Object.keys(beforePidsByExe)) {
       const stillAlive = await getProcessPidsByName(exeName);
-      const stillNew = stillAlive.filter((pid) => !beforePids.includes(pid));
-      if (stillNew.length > 0) {
-        survivors[exeName] = stillNew;
+      if (stillAlive.length > 0) {
+        survivors[exeName] = stillAlive;
       }
     }
   } catch { /* ignore */ }
@@ -2373,6 +2388,7 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
       killed: killedCounts,
       killDetails,
       newPidsByExe,
+      preExistingPidsByExe,
       survivors,
       survivorsCount: Object.keys(survivors).length,
     });
