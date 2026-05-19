@@ -2000,14 +2000,16 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   min-width: 72px;
   font-weight: bold;
 }
-.image-export-radio {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  cursor: pointer;
+/* radio + label は並列構造 (β.86 で確立した 98.css 互換パターン)。
+   label には input への spacing と right margin を直接当てる。 */
+.image-export-row input[type="radio"] {
+  margin: 0 0 0 4px;
+  vertical-align: middle;
 }
-.image-export-radio input {
-  margin: 0 2px 0 0;
+.image-export-row input[type="radio"] + label {
+  margin-right: 6px;
+  vertical-align: middle;
+  cursor: pointer;
 }
 .image-export-input {
   flex: 1;

@@ -194,31 +194,21 @@
         </p>
         <div class="image-export-row">
           <label class="image-export-label">範囲:</label>
-          <label class="image-export-radio">
-            <input type="radio" name="image-export-range" value="all" checked>
-            <span>全ページ</span>
-          </label>
-          <label class="image-export-radio">
-            <input type="radio" name="image-export-range" value="current">
-            <span>現在のページ</span>
-          </label>
-          <label class="image-export-radio">
-            <input type="radio" name="image-export-range" value="custom">
-            <span>指定:</span>
-          </label>
+          <input type="radio" id="image-export-range-all" name="image-export-range" value="all" checked>
+          <label for="image-export-range-all">全ページ</label>
+          <input type="radio" id="image-export-range-current" name="image-export-range" value="current">
+          <label for="image-export-range-current">現在のページ</label>
+          <input type="radio" id="image-export-range-custom" name="image-export-range" value="custom">
+          <label for="image-export-range-custom">指定:</label>
           <input type="text" id="image-export-range-input" class="image-export-input"
                  placeholder="例: 1-3,5,7-10" disabled>
         </div>
         <div class="image-export-row">
           <label class="image-export-label">形式:</label>
-          <label class="image-export-radio">
-            <input type="radio" name="image-export-format" value="png" checked>
-            <span>PNG (推奨・無劣化・透過可)</span>
-          </label>
-          <label class="image-export-radio">
-            <input type="radio" name="image-export-format" value="jpeg">
-            <span>JPEG (軽量・写真向き)</span>
-          </label>
+          <input type="radio" id="image-export-format-png" name="image-export-format" value="png" checked>
+          <label for="image-export-format-png">PNG (推奨・無劣化・透過可)</label>
+          <input type="radio" id="image-export-format-jpeg" name="image-export-format" value="jpeg">
+          <label for="image-export-format-jpeg">JPEG (軽量・写真向き)</label>
         </div>
         <div class="image-export-row">
           <label class="image-export-label">解像度:</label>
