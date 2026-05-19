@@ -498,6 +498,16 @@ function configureWindowChrome(win, { isPrimary }) {
     // Dispose tabs this window owned (closes their workspaces).
     unregisterWindow(win.id);
     if (isPrimary) {
+      // β.90 diag: primary window 閉鎖時点で生き残っているウインドウ
+      // 数を記録。survivingWindows > 0 のとき、process 自体は終わら
+      // ず zombie 状態に入る (window-all-closed が発火しないため
+      // app.quit() が走らない)。次の second-instance で復旧経路に
+      // 入る予定だが、トリガー検知のため記録を残す。
+      let survivingWindows = 0;
+      try {
+        survivingWindows = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length;
+      } catch { /* ignore */ }
+      logCrash("primary-window-closed", { survivingWindows });
       disposeActiveDoc();
       if (activeWorkspace) {
         try { activeWorkspace.close(); } catch { /* ignore */ }
@@ -734,8 +744,22 @@ if (!gotInstanceLock) {
         mainWindow.webContents.send("kpdf3:open-pdf-by-os", p);
       }
     } else {
+      // β.90: HANDOVER §8.2 #1 (β.51 以来追跡中の「一瞬開いてすぐ閉じる」)
+      // の根治。primary window が閉じた状態 (B3 子ウインドウだけ alive
+      // の zombie 状態) で second-instance を受けると、これまでは paths
+      // を pendingOpens に push するだけで何も window を出さなかった →
+      // 新規インスタンスは app.quit() で即終了するため、ユーザ視点では
+      // 「一瞬開いて閉じた」になり、queue した PDF も永遠に表示されない。
+      // ここで新しい primary main window を生成すると、createMainWindow
+      // 内の did-finish-load → pendingOpens 消化が走って PDF が開く。
       pendingOpens.push(...paths);
       logCrash("second-instance-deferred", { paths, reason: "no-main-window" });
+      try {
+        createMainWindow();
+        logCrash("second-instance-recovery-window-spawned", { paths });
+      } catch (err) {
+        logCrash("second-instance-recovery-failed", err);
+      }
     }
   });
 }
