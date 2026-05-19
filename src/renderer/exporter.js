@@ -167,48 +167,53 @@ function _needsHairlineStroke(fontId) {
   return fontId === "mincho" || fontId === "serif";
 }
 
-// ---- β.100 オートシェイプ helpers --------------------------------------
+// ---- β.100 / β.101 オートシェイプ helpers ------------------------------
 //
-// arrowDir で 4 方向 (right/left/down/up) の中央線の始点・終点を返す。
-// 直線・矢印・ブロック矢印は共通でこの 2 点を起点に描く。stroke 太さ分
-// だけ pad して、bbox の縁に線がはみ出さないようにする。
+// arrowDir で 8 方向 (right/down-right/down/down-left/left/up-left/up/up-right)
+// の中央線・対角線の始点・終点を返す。直線・矢印・ブロック矢印・双方
+// 矢印は共通でこの 2 点を起点に描く。stroke 太さ分だけ pad。
 //
 // ── shape spec (overlay.properties) ──
-//   kind:        "line" | "arrow" | "block-arrow" | "ellipse"
-//   arrowDir:    "right" | "left" | "down" | "up"  (ellipse は無視)
+//   kind:        "line" | "arrow" | "double-arrow"
+//                | "block-arrow" | "double-block-arrow"
+//                | "ellipse" | "ellipse-x"
+//                | "rect" | "rounded-rect"
+//   arrowDir:    8 方向 (kind に line/arrow 系が含まれる時のみ意味あり)
 //   strokeColor: "#000000" 等
 //   strokeWidth: pt (default 2)
 //   fillColor:   null (中空) or "#xxxxxx"
 //   thickness:   block-arrow の shaft 太さ比率 (0..1, default 0.5)
+//   cornerRadius: rounded-rect の半径 (pt, default 8)
 function _shapeEndpoints(dir, x, y, w, h, strokeWidth) {
   const pad = strokeWidth / 2 + 0.5;
-  if (dir === "left") return {
-    p1: { x: x + w - pad, y: y + h / 2 },
-    p2: { x: x + pad,     y: y + h / 2 },
-  };
-  if (dir === "down") return {
-    p1: { x: x + w / 2, y: y + pad },
-    p2: { x: x + w / 2, y: y + h - pad },
-  };
-  if (dir === "up") return {
-    p1: { x: x + w / 2, y: y + h - pad },
-    p2: { x: x + w / 2, y: y + pad },
-  };
-  // default "right"
-  return {
-    p1: { x: x + pad,     y: y + h / 2 },
-    p2: { x: x + w - pad, y: y + h / 2 },
-  };
+  const cx = x + w / 2, cy = y + h / 2;
+  switch (dir) {
+    case "left":       return { p1: { x: x + w - pad, y: cy }, p2: { x: x + pad,     y: cy } };
+    case "down":       return { p1: { x: cx, y: y + pad },     p2: { x: cx, y: y + h - pad } };
+    case "up":         return { p1: { x: cx, y: y + h - pad }, p2: { x: cx, y: y + pad } };
+    case "down-right": return { p1: { x: x + pad,     y: y + pad },     p2: { x: x + w - pad, y: y + h - pad } };
+    case "down-left":  return { p1: { x: x + w - pad, y: y + pad },     p2: { x: x + pad,     y: y + h - pad } };
+    case "up-right":   return { p1: { x: x + pad,     y: y + h - pad }, p2: { x: x + w - pad, y: y + pad } };
+    case "up-left":    return { p1: { x: x + w - pad, y: y + h - pad }, p2: { x: x + pad,     y: y + pad } };
+    case "right":
+    default:           return { p1: { x: x + pad,     y: cy }, p2: { x: x + w - pad, y: cy } };
+  }
 }
 
-/** ブロック矢印の 7 頂点ポリゴンを返す。bbox 短辺を矢印の headWidth、
- *  shaftWidth = headWidth × thickness。head の長さは min(短辺×1.0, 全長×0.4) */
+/** ブロック矢印 (片端) の 7 頂点ポリゴン、双方版 (両端) の 10 頂点
+ *  ポリゴン。bbox 軸に直交する方向の短辺で shaft 太さを決め、斜め
+ *  方向は bbox 短辺で近似する (はみ出し許容)。 */
+function _blockArrowShortSide(dir, bboxW, bboxH) {
+  if (dir === "right" || dir === "left") return bboxH;
+  if (dir === "down"  || dir === "up")   return bboxW;
+  return Math.min(bboxW, bboxH); // diagonal
+}
+
 function _blockArrowPolygon(p1, p2, bboxW, bboxH, dir, thickness) {
-  const horizontal = (dir === "right" || dir === "left");
-  const shortSide = horizontal ? bboxH : bboxW;
+  const shortSide = _blockArrowShortSide(dir, bboxW, bboxH);
   const totalLen = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
-  const headWidth = shortSide;                  // arrowhead 三角の幅 (= 短辺)
-  const shaftWidth = shortSide * thickness;     // shaft の太さ
+  const headWidth = shortSide;
+  const shaftWidth = shortSide * thickness;
   const headLen = Math.min(shortSide * 1.0, totalLen * 0.4);
   const ux = (p2.x - p1.x) / totalLen;
   const uy = (p2.y - p1.y) / totalLen;
@@ -218,14 +223,62 @@ function _blockArrowPolygon(p1, p2, bboxW, bboxH, dir, thickness) {
   const bx = p2.x - ux * headLen;
   const by = p2.y - uy * headLen;
   return [
-    { x: p1.x + vx * sh, y: p1.y + vy * sh },   // T1
-    { x: bx   + vx * sh, y: by   + vy * sh },   // T2
-    { x: bx   + vx * hh, y: by   + vy * hh },   // T3
-    { x: p2.x,           y: p2.y           },   // T4 (tip)
-    { x: bx   - vx * hh, y: by   - vy * hh },   // T5
-    { x: bx   - vx * sh, y: by   - vy * sh },   // T6
-    { x: p1.x - vx * sh, y: p1.y - vy * sh },   // T7
+    { x: p1.x + vx * sh, y: p1.y + vy * sh },
+    { x: bx   + vx * sh, y: by   + vy * sh },
+    { x: bx   + vx * hh, y: by   + vy * hh },
+    { x: p2.x,           y: p2.y           },
+    { x: bx   - vx * hh, y: by   - vy * hh },
+    { x: bx   - vx * sh, y: by   - vy * sh },
+    { x: p1.x - vx * sh, y: p1.y - vy * sh },
   ];
+}
+
+/** 双方ブロック矢印の 10 頂点ポリゴン。両端に head 三角、中央に shaft。 */
+function _doubleBlockArrowPolygon(p1, p2, bboxW, bboxH, dir, thickness) {
+  const shortSide = _blockArrowShortSide(dir, bboxW, bboxH);
+  const totalLen = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+  const headWidth = shortSide;
+  const shaftWidth = shortSide * thickness;
+  const headLen = Math.min(shortSide * 1.0, totalLen * 0.3);
+  const ux = (p2.x - p1.x) / totalLen;
+  const uy = (p2.y - p1.y) / totalLen;
+  const vx = -uy, vy = ux;
+  const sh = shaftWidth / 2;
+  const hh = headWidth / 2;
+  // head の base 点 (両端から headLen 内側)
+  const ax = p1.x + ux * headLen, ay = p1.y + uy * headLen; // p1 側 head 底
+  const bx = p2.x - ux * headLen, by = p2.y - uy * headLen; // p2 側 head 底
+  return [
+    { x: p1.x,            y: p1.y           },             // tip1
+    { x: ax + vx * hh,    y: ay + vy * hh   },             // head1 outer +
+    { x: ax + vx * sh,    y: ay + vy * sh   },             // shaft start +
+    { x: bx + vx * sh,    y: by + vy * sh   },             // shaft end +
+    { x: bx + vx * hh,    y: by + vy * hh   },             // head2 outer +
+    { x: p2.x,            y: p2.y           },             // tip2
+    { x: bx - vx * hh,    y: by - vy * hh   },             // head2 outer -
+    { x: bx - vx * sh,    y: by - vy * sh   },             // shaft end -
+    { x: ax - vx * sh,    y: ay - vy * sh   },             // shaft start -
+    { x: ax - vx * hh,    y: ay - vy * hh   },             // head1 outer -
+  ];
+}
+
+/** Canvas に塗りつぶし三角矢じり (細矢印 head) を描画。p2 が tip。 */
+function _drawArrowHead(ctx, p1, p2, strokeWidth, zoom, color) {
+  const ah = Math.max(strokeWidth * 4, 10 * zoom);
+  const aw = ah * 0.6;
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len;
+  const vx = -uy, vy = ux;
+  const base = { x: p2.x - ux * ah, y: p2.y - uy * ah };
+  ctx.beginPath();
+  ctx.moveTo(p2.x, p2.y);
+  ctx.lineTo(base.x + vx * aw, base.y + vy * aw);
+  ctx.lineTo(base.x - vx * aw, base.y - vy * aw);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  return { base, ah };
 }
 
 /**
@@ -258,12 +311,75 @@ export function drawShape(ctx, ov, zoom, monoOverlays = false) {
   ctx.lineCap = "round";
   if (fillColor) ctx.fillStyle = fillColor;
 
+  // β.101: 矩形・角丸矩形
+  if (kind === "rect") {
+    const inset = strokeWidth / 2;
+    if (fillColor) {
+      ctx.fillRect(x + inset, y + inset, Math.max(0, w - strokeWidth), Math.max(0, h - strokeWidth));
+    }
+    ctx.strokeRect(x + inset, y + inset, Math.max(0, w - strokeWidth), Math.max(0, h - strokeWidth));
+    ctx.restore();
+    return;
+  }
+  if (kind === "rounded-rect") {
+    const inset = strokeWidth / 2;
+    const rPt = props.cornerRadius ?? 8;
+    const rx = Math.max(0, Math.min((w - strokeWidth) / 2, (h - strokeWidth) / 2, rPt * zoom));
+    const rectX = x + inset, rectY = y + inset;
+    const rectW = Math.max(0, w - strokeWidth);
+    const rectH = Math.max(0, h - strokeWidth);
+    ctx.beginPath();
+    if (typeof ctx.roundRect === "function") {
+      ctx.roundRect(rectX, rectY, rectW, rectH, rx);
+    } else {
+      // Manual path fallback for older Chromium where roundRect is absent
+      const x0 = rectX, y0 = rectY, x1 = rectX + rectW, y1 = rectY + rectH;
+      ctx.moveTo(x0 + rx, y0);
+      ctx.lineTo(x1 - rx, y0);
+      ctx.quadraticCurveTo(x1, y0, x1, y0 + rx);
+      ctx.lineTo(x1, y1 - rx);
+      ctx.quadraticCurveTo(x1, y1, x1 - rx, y1);
+      ctx.lineTo(x0 + rx, y1);
+      ctx.quadraticCurveTo(x0, y1, x0, y1 - rx);
+      ctx.lineTo(x0, y0 + rx);
+      ctx.quadraticCurveTo(x0, y0, x0 + rx, y0);
+      ctx.closePath();
+    }
+    if (fillColor) ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
   if (kind === "ellipse") {
     const rx = Math.max(w / 2 - strokeWidth / 2, 1);
     const ry = Math.max(h / 2 - strokeWidth / 2, 1);
     ctx.beginPath();
     ctx.ellipse(x + w / 2, y + h / 2, rx, ry, 0, 0, Math.PI * 2);
     if (fillColor) ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  // β.101: 楕円 + ×
+  if (kind === "ellipse-x") {
+    const rx = Math.max(w / 2 - strokeWidth / 2, 1);
+    const ry = Math.max(h / 2 - strokeWidth / 2, 1);
+    const cx = x + w / 2, cy = y + h / 2;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    if (fillColor) ctx.fill();
+    ctx.stroke();
+    // × — 内接矩形 (sin45° = √2/2 ≈ 0.707) の対角線を引く
+    const k = 0.707;
+    const xOff = rx * k;
+    const yOff = ry * k;
+    ctx.beginPath();
+    ctx.moveTo(cx - xOff, cy - yOff);
+    ctx.lineTo(cx + xOff, cy + yOff);
+    ctx.moveTo(cx + xOff, cy - yOff);
+    ctx.lineTo(cx - xOff, cy + yOff);
     ctx.stroke();
     ctx.restore();
     return;
@@ -282,34 +398,53 @@ export function drawShape(ctx, ov, zoom, monoOverlays = false) {
 
   if (kind === "arrow") {
     // 線 + 終点に塗りつぶし三角の矢じり (普通の片端矢印)。
-    const ah = Math.max(strokeWidth * 4, 10 * zoom * (props.strokeWidth ?? 2) / 2);
-    const aw = ah * 0.6;
+    const ah = Math.max(strokeWidth * 4, 10 * zoom);
     const dx = p2.x - p1.x, dy = p2.y - p1.y;
     const len = Math.hypot(dx, dy) || 1;
     const ux = dx / len, uy = dy / len;
-    const vx = -uy, vy = ux;
-    // 線を引く (head の根元まで)。head 内まで線を伸ばすと太い線で head が
-    // つぶれるので、shaft endpoint を head 根元 (= p2 - ah*u) に短縮。
     const shaftEnd = { x: p2.x - ux * ah * 0.85, y: p2.y - uy * ah * 0.85 };
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y);
     ctx.lineTo(shaftEnd.x, shaftEnd.y);
     ctx.stroke();
-    // arrowhead 三角を塗りで描画 (枠は同色なので fill だけで OK)。
-    const base = { x: p2.x - ux * ah, y: p2.y - uy * ah };
+    _drawArrowHead(ctx, p1, p2, strokeWidth, zoom, strokeColor);
+    ctx.restore();
+    return;
+  }
+
+  // β.101: 双方矢印 (細線) — 両端に塗り三角の矢じり
+  if (kind === "double-arrow") {
+    const ah = Math.max(strokeWidth * 4, 10 * zoom);
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    const start = { x: p1.x + ux * ah * 0.85, y: p1.y + uy * ah * 0.85 };
+    const end   = { x: p2.x - ux * ah * 0.85, y: p2.y - uy * ah * 0.85 };
     ctx.beginPath();
-    ctx.moveTo(p2.x, p2.y);
-    ctx.lineTo(base.x + vx * aw, base.y + vy * aw);
-    ctx.lineTo(base.x - vx * aw, base.y - vy * aw);
-    ctx.closePath();
-    ctx.fillStyle = strokeColor;
-    ctx.fill();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+    _drawArrowHead(ctx, p1, p2, strokeWidth, zoom, strokeColor); // p2 tip
+    _drawArrowHead(ctx, p2, p1, strokeWidth, zoom, strokeColor); // p1 tip
     ctx.restore();
     return;
   }
 
   if (kind === "block-arrow") {
     const poly = _blockArrowPolygon(p1, p2, w, h, dir, thickness);
+    ctx.beginPath();
+    ctx.moveTo(poly[0].x, poly[0].y);
+    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
+    ctx.closePath();
+    if (fillColor) ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  // β.101: 双方ブロック矢印 (両端に head 三角)
+  if (kind === "double-block-arrow") {
+    const poly = _doubleBlockArrowPolygon(p1, p2, w, h, dir, thickness);
     ctx.beginPath();
     ctx.moveTo(poly[0].x, poly[0].y);
     for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);

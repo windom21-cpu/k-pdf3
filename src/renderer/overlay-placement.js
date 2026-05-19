@@ -571,6 +571,20 @@ function _dragDir4(dx, dy) {
   return dy >= 0 ? "down" : "up";
 }
 
+// β.101: 8 方向量子化 (45° 単位)。block-arrow / double-block-arrow /
+// 矢印・双方矢印を斜めにも対応するため。drawDir が "right" の時 dx>=0
+// の水平、"down-right" は右下対角、… の順に時計回り。
+const _DIR8 = [
+  "right", "down-right", "down", "down-left",
+  "left", "up-left", "up", "up-right",
+];
+function _dragDir8(dx, dy) {
+  if (dx === 0 && dy === 0) return "right";
+  const a = Math.atan2(dy, dx); // -π .. π, X right / Y down (画面座標系)
+  const idx = Math.round((a + 2 * Math.PI) / (Math.PI / 4)) % 8;
+  return _DIR8[idx];
+}
+
 /**
  * Drag-to-place a shape. The drag rect's bbox is the overlay bbox;
  * the drag direction picks arrowDir (4-way). On a too-small drag we
@@ -630,18 +644,27 @@ export function startShapeDrag(pageNo, startX, startY, downEvt, div) {
       _placeShape(pageNo, startX - 40, startY - 10, 80, 20, "right", defs);
       return;
     }
-    // 楕円・block-arrow は最小 bbox を確保 (細い縦線等を弾く)。
+    // bbox サイズの下限: shape kind ごとに過小サイズを弾く。
     let bw = width, bh = height;
     const minDim = 20;
-    if (defs.kind === "ellipse" || defs.kind === "block-arrow") {
+    const needSquareish =
+      defs.kind === "ellipse" || defs.kind === "ellipse-x" ||
+      defs.kind === "block-arrow" || defs.kind === "double-block-arrow" ||
+      defs.kind === "rect" || defs.kind === "rounded-rect";
+    if (needSquareish) {
       bw = Math.max(width, minDim);
       bh = Math.max(height, minDim);
     } else {
       bw = Math.max(width, 4);
       bh = Math.max(height, 4);
     }
-    const dir = _dragDir4(dx, dy);
-    _placeShape(pageNo, left, top, bw, bh, dir, defs);
+    // β.101: arrow / line 系は 8 方向、ellipse 系・四角系は方向不要。
+    // block-arrow / double-block-arrow も 8 方向で斜め配置可。
+    const directional =
+      defs.kind === "line" || defs.kind === "arrow" || defs.kind === "double-arrow" ||
+      defs.kind === "block-arrow" || defs.kind === "double-block-arrow";
+    const dir = directional ? _dragDir8(dx, dy) : null;
+    _placeShape(pageNo, left, top, bw, bh, dir ?? "right", defs);
   }
   function onCancel(e) {
     if (e.pointerId !== pointerId) return;
@@ -658,8 +681,15 @@ function _placeShape(pageNo, x, y, w, h, arrowDir, defs) {
     strokeColor: defs.strokeColor,
     strokeWidth: defs.strokeWidth,
   };
-  if (defs.kind !== "ellipse") props.arrowDir = arrowDir;
-  if (defs.kind === "block-arrow") props.thickness = 0.5;
+  // arrow / line / block-arrow 系のみ arrowDir を保持
+  const directional =
+    defs.kind === "line" || defs.kind === "arrow" || defs.kind === "double-arrow" ||
+    defs.kind === "block-arrow" || defs.kind === "double-block-arrow";
+  if (directional) props.arrowDir = arrowDir;
+  if (defs.kind === "block-arrow" || defs.kind === "double-block-arrow") {
+    props.thickness = 0.5;
+  }
+  if (defs.kind === "rounded-rect") props.cornerRadius = 8;
   if (defs.fillMode === "solid") props.fillColor = defs.strokeColor;
   const cmd = new AddOverlayCommand(_projectStore(), {
     pageNo,

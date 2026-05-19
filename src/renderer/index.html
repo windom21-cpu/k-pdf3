@@ -311,19 +311,35 @@
       </div>
     </div>
     <div class="window-body">
+      <!-- 線 / 矢印 系 -->
       <div class="shape-palette-row">
         <input type="radio" id="shape-kind-line" name="shape-kind" value="line">
         <label for="shape-kind-line" title="直線 (矢じりなし)">／ 直線</label>
         <input type="radio" id="shape-kind-arrow" name="shape-kind" value="arrow" checked>
         <label for="shape-kind-arrow" title="細線矢印 (片端に塗り三角)">↗ 矢印</label>
+        <input type="radio" id="shape-kind-double-arrow" name="shape-kind" value="double-arrow">
+        <label for="shape-kind-double-arrow" title="細線の双方矢印 (両端に矢じり)">⇄ 双方矢印</label>
       </div>
+      <!-- ブロック矢印 系 -->
       <div class="shape-palette-row">
         <input type="radio" id="shape-kind-block-arrow" name="shape-kind" value="block-arrow">
         <label for="shape-kind-block-arrow" title="中空ブロック矢印 (枠線で縁取られた幅広矢印)">⇨ ブロック矢印</label>
+        <input type="radio" id="shape-kind-double-block-arrow" name="shape-kind" value="double-block-arrow">
+        <label for="shape-kind-double-block-arrow" title="両端に矢じりがあるブロック矢印">⇔ 双方ブロック</label>
       </div>
+      <!-- 矩形 系 -->
+      <div class="shape-palette-row">
+        <input type="radio" id="shape-kind-rect" name="shape-kind" value="rect">
+        <label for="shape-kind-rect" title="四角 (長方形枠)">▭ 四角</label>
+        <input type="radio" id="shape-kind-rounded-rect" name="shape-kind" value="rounded-rect">
+        <label for="shape-kind-rounded-rect" title="角丸四角">▢ 角丸四角</label>
+      </div>
+      <!-- 円 系 -->
       <div class="shape-palette-row">
         <input type="radio" id="shape-kind-ellipse" name="shape-kind" value="ellipse">
         <label for="shape-kind-ellipse" title="楕円 (枠線、中は透過)">◯ 楕円</label>
+        <input type="radio" id="shape-kind-ellipse-x" name="shape-kind" value="ellipse-x">
+        <label for="shape-kind-ellipse-x" title="楕円の中に × 印を描画 (禁止・不可・却下 等の指示)">⊗ 楕円+×</label>
       </div>
       <hr class="shape-palette-sep">
       <div class="shape-palette-row">
@@ -347,12 +363,12 @@
       </div>
       <div class="shape-palette-row">
         <label class="shape-palette-label">塗り:</label>
-        <select id="shape-fill-mode" class="shape-palette-select" title="中空 = 枠線のみ / 塗り = 線色で塗りつぶし (ブロック矢印・楕円のみ有効)">
+        <select id="shape-fill-mode" class="shape-palette-select" title="中空 = 枠線のみ / 塗り = 線色で塗りつぶし (ブロック矢印・四角・楕円のみ有効)">
           <option value="hollow" selected>中空 (枠線のみ)</option>
           <option value="solid">塗りつぶし</option>
         </select>
       </div>
-      <p class="shape-palette-hint">配置: 紙の上でドラッグ → 離した位置までの矩形に配置されます。<br>線・矢印・ブロック矢印は ドラッグ方向 (水平/垂直) で向きが決まります。</p>
+      <p class="shape-palette-hint">配置: 紙の上でドラッグ → 離した位置までの矩形に配置されます。<br>線・矢印・ブロック矢印は <strong>ドラッグ方向 (8 方向、斜めも可)</strong> で向きが決まります。</p>
     </div>
   </div>
 

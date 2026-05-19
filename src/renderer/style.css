@@ -1267,8 +1267,10 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   top: 160px;
   right: 24px;
   z-index: 5000;
-  min-width: 240px;
-  max-width: 320px;
+  min-width: 300px;
+  max-width: 380px;
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
   user-select: none;
 }
 .shape-palette-popup .title-bar {
