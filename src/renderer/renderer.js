@@ -5023,14 +5023,24 @@ async function deleteSelectedPages(state = sidebarThumbSelection) {
 }
 
 // Delete key from either thumb context — each operates on its own selection.
+// β.98 fix: part-name の input 等で Backspace を吸い取らないよう、テキスト
+// 入力中はページ削除分岐を skip する (browser default の文字削除に任せる)。
+function _isTextInputTarget(t) {
+  if (!t) return false;
+  if (t.tagName === "INPUT" || t.tagName === "TEXTAREA") return true;
+  if (t.isContentEditable) return true;
+  return false;
+}
 thumbList?.addEventListener("keydown", (e) => {
   if (e.key === "Delete" || e.key === "Backspace") {
+    if (_isTextInputTarget(e.target)) return;
     e.preventDefault();
     deleteSelectedPages(sidebarThumbSelection);
   }
 });
 splitFlow?.addEventListener("keydown", (e) => {
   if (e.key === "Delete" || e.key === "Backspace") {
+    if (_isTextInputTarget(e.target)) return;
     e.preventDefault();
     deleteSelectedPages(splitThumbSelection);
   }
