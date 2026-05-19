@@ -1065,9 +1065,19 @@ export async function actionFaxSend(opts = {}) {
     }
   }
 
-  // 描画 + 送信 (silent print — main 側で FAX device を検知して Chromium silent
-  // にフォールバックする。Sumatra は FAX driver を初期化できない β42 J2 既知問題)
-  // β.89 hotfix: 送信先を busy modal に明示し、誤送信に気付ける UI に
+  // β.92: 描画 + 送信 — Adobe `/p` 経路 + OS 既定プリンタを FAX に一時切替。
+  //
+  // β.91 までは streamlined FAX = Chromium silent print 直送だったが、
+  // Chromium の webContents.print() は PDFium 内部で常に fit-to-paper を
+  // 適用しており、API 経由 (margins/pageSize/scaleFactor) では抑止できな
+  // いことが判明 (A4 PDF が 5-10% 縮小されて送信される問題)。
+  //
+  // 解決として Adobe `/p` 経路に切替え + 既定プリンタを FAX に一時設定する
+  // ことで「Adobe ダイアログが FAX 選択済の状態で開く」体験を作る。Adobe
+  // のスケール設定 (実際のサイズ / ページサイズに合わせる) はユーザが
+  // 1 度「実際のサイズ」を選べば記憶されるので、以降は手数ほぼ同等。
+  // 副次効果として Adobe の vector レンダラを使うので明朝の hairline 品質
+  // も保たれる (β.88 Phase 3 が達成しようとした目的を別経路で実現)。
   showBusy("FAX 送信", `送信先 ${faxDevice} — ページを描画中...`, 0);
   let composed = null;
   try {
@@ -1078,28 +1088,24 @@ export async function actionFaxSend(opts = {}) {
       renderSyntheticPage: renderSyntheticPagePixels,
       rasterRedactionPages: true,
       monoOverlays: true,
-      // β.89 hotfix: β.88 で実装した rasterAllPagesForFax (900dpi 全ページ
-      // raster) は PDF サイズが膨大になり、Chromium silent print が
-      // "Print job canceled" で窒息 + 物理印字が黒ベタになる事故を引き
-      // 起こしたため一旦無効化。明朝保険は別途 400dpi 等で再設計する。
       onProgress: ({ done, total }) => {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
     });
-    updateBusy(`送信先 ${faxDevice} へ送信中... ドライバの送信先入力ダイアログをご確認ください`, 90);
-    await kpdf3.printPdfSilent({
+    updateBusy(`Adobe を ${faxDevice} 選択済で起動しています...`, 90);
+    const result = await kpdf3.printViaReaderDialog({
       source: "rasterized",
       pages: composed,
-      deviceName: faxDevice,
-      copies: 1,
-      landscape: false,
-      color: "mono",
-      // forceFitA4 は将来の Phase で活用 (現状 main 側 Chromium silent は
-      // 印刷側 paper size に任せる)。記録だけ残してダイアログ選択を保持。
+      defaultPrinterHint: faxDevice,
     });
     hideBusy();
+    const reasonText =
+      result.reason === "job-detected" ? "印刷ジョブ投入を検出"
+      : result.reason === "reader-closed" ? "Reader を終了"
+      : result.reason === "timeout" ? "タイムアウト"
+      : "完了";
     _wsStatus.textContent =
-      `FAX 送信: ${faxDevice} に ${filteredPages.length} ページ${forceFitA4 ? " (A4 統一)" : ""} を送信しました`;
+      `FAX 送信: ${faxDevice} (${reasonText}) — ${filteredPages.length} ページ${forceFitA4 ? " (A4 統一)" : ""}`;
   } catch (err) {
     hideBusy();
     console.error("[fax] send failed:", err);

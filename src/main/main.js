@@ -2834,7 +2834,12 @@ ipcMain.handle("kpdf3:has-pdf-reader", async () => {
  */
 ipcMain.handle("kpdf3:print-via-reader-dialog", async (_, payload) => {
   if (!activeWorkspace) throw new Error("No active workspace");
-  const { source, pages } = payload ?? {};
+  // β.92: defaultPrinterHint — Adobe `/p` 起動前に OS 規定プリンタを
+  // 一時的に hint のプリンタへ切替え、Adobe ダイアログ内で「プリンタ」
+  // 欄が指定機 (= FAX) で開いている状態を作るのに使う。Chromium silent
+  // path で β.54 から使っている applyFaxAsDefaultPrinter / restoreDefaultPrinter
+  // と同じ仕組みを Adobe 経路にも流用。
+  const { source, pages, defaultPrinterHint } = payload ?? {};
   let pdfBytes;
   if (source === "byte-copy") {
     pdfBytes = activeWorkspace.getSourceBytes();
@@ -2856,13 +2861,24 @@ ipcMain.handle("kpdf3:print-via-reader-dialog", async (_, payload) => {
     pageCount: Array.isArray(pages) ? pages.length : 0,
     engine: reader.engine,
     exe: reader.exePath,
+    defaultPrinterHint: defaultPrinterHint ?? null,
   });
+  // OS 規定プリンタ切替 (Win + hint あり時のみ)。失敗しても続行 (best-effort)
+  let defaultToken = null;
+  if (defaultPrinterHint && process.platform === "win32") {
+    try {
+      defaultToken = await applyFaxAsDefaultPrinter(defaultPrinterHint);
+    } catch (err) {
+      console.warn("[print] applyFaxAsDefaultPrinter (reader path) failed:", err?.message ?? err);
+    }
+  }
   _printInFlight = true;
   try {
     const result = await printPdfViaReaderDialog(reader, tempPath);
     return { tempPath, engine: reader.engine, reason: result.reason };
   } finally {
     _printInFlight = false;
+    if (defaultToken) restoreDefaultPrinter(defaultToken).catch(() => {});
   }
 });
 
