@@ -16,6 +16,8 @@ import {
   composePagesForExport,
   composeSinglePageCanvas,
   compositePage,
+  composePageImage,
+  composeRegionImage,
 } from "./exporter.js";
 import {
   TEXT_FONT_DEFAULT_ID,
@@ -197,6 +199,7 @@ const thumbList = $("thumb-list");
 const mainArea = $("main-area");
 const splitView = $("split-view");
 const btnSplit = $("btn-split");
+const btnModeRegionImage = $("btn-mode-region-image");
 const btnRotateLeft = $("btn-rotate-left");
 const btnRotateRight = $("btn-rotate-right");
 const viewer = new Viewer(viewerContainer, {
@@ -635,6 +638,8 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
     placeFormCircle(pageNo, x, y);
   } else if (placementMode === "form-radio") {
     placeFormRadio(pageNo, x, y);
+  } else if (placementMode === "region-image") {
+    startRegionImageDrag(pageNo, x, y, evt, div);
   }
   // Clicks on empty page area no longer deselect — that fired even
   // when the user "exited" inline edit by clicking outside, leaving
@@ -1432,6 +1437,7 @@ function setPlacementMode(mode) {
   btnModeRedaction.classList.toggle("toggled", mode === "redaction");
   btnModeMarker.classList.toggle("toggled", mode === "marker");
   if (btnModeCallout) btnModeCallout.classList.toggle("toggled", mode === "callout");
+  if (btnModeRegionImage) btnModeRegionImage.classList.toggle("toggled", mode === "region-image");
   // β.80: form-* tool toggle highlights
   if (btnModeFormText) btnModeFormText.classList.toggle("toggled", mode === "form-text");
   if (btnModeFormCheck) btnModeFormCheck.classList.toggle("toggled", mode === "form-check");
@@ -1988,6 +1994,7 @@ function setOpen(open) {
   btnOpen.disabled = false;
   btnExport.disabled = !open;
   btnPrint.disabled = !open;
+  if (btnModeRegionImage) btnModeRegionImage.disabled = !open;
   if (btnMonoPrint) btnMonoPrint.disabled = !open;
   if (btnFaxSend) btnFaxSend.disabled = !open;
   if (btnPrintOverlayOnly) btnPrintOverlayOnly.disabled = !open;
@@ -2137,6 +2144,8 @@ function refreshMenuState() {
     "toggle-bookmarks": isOpen,
     export: isOpen,
     "export-range": isOpen,
+    "export-image": isOpen,
+    "export-region-image": isOpen,
     "split-save": isOpen,
     print: isOpen,
     "mode-text": isOpen,
@@ -2580,6 +2589,34 @@ function parsePageRange(input, total) {
   if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
   if (start < 1 || end > total || start > end) return null;
   return { start, end };
+}
+
+/**
+ * β.97: parse a multi-segment page range like "1-3,5,7-10" into a sorted,
+ * de-duplicated array of 1-based page numbers. Empty input or any segment
+ * that goes out of bounds (1..total) → null. Spaces are tolerated.
+ *
+ * @param {string} input
+ * @param {number} total
+ * @returns {number[] | null}
+ */
+function parseMultiPageRange(input, total) {
+  const s = String(input ?? "").trim();
+  if (!s) return null;
+  const out = new Set();
+  for (const seg of s.split(",")) {
+    const t = seg.trim();
+    if (!t) continue;
+    const m = t.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!m) return null;
+    const a = Number(m[1]);
+    const b = m[2] ? Number(m[2]) : a;
+    if (!Number.isInteger(a) || !Number.isInteger(b)) return null;
+    if (a < 1 || b > total || a > b) return null;
+    for (let i = a; i <= b; i++) out.add(i);
+  }
+  if (out.size === 0) return null;
+  return [...out].sort((x, y) => x - y);
 }
 
 /**
@@ -3057,6 +3094,352 @@ async function actionExport() {
   });
   if (!choice) return;
   await actionExportToPath(choice.path, { secureExport: choice.secureExport });
+}
+
+// ---- β.97 機能 2: 範囲選択して画像保存 -----------------------------------
+//
+// ツールバー「範囲画像」ボタン or メニュー「選んだ範囲を画像で保存…」で
+// placementMode を "region-image" に切替 → ページ上のドラッグで矩形を
+// 描く → リリースで mode-options-bar の formato/dpi/mono を反映して
+// composeRegionImage → save dialog で 1 枚画像保存。
+//
+// drag UI は redaction とほぼ同じ実装 (preview rect を div に当てる)。
+// commit 時に setPlacementMode("none") で抜ける (繰り返し配置はしない、
+// 1 ドラッグ = 1 保存)。
+
+function startRegionImageDrag(pageNo, startX, startY, downEvt, div) {
+  if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
+    // Pointer capture not available — abort cleanly, the user can retry.
+    setPlacementMode("none");
+    return;
+  }
+  const pointerId = downEvt.pointerId;
+  const z = viewer.zoom;
+  const preview = document.createElement("div");
+  preview.className = "region-image-preview";
+  preview.style.left = `${startX * z}px`;
+  preview.style.top = `${startY * z}px`;
+  preview.style.width = "0px";
+  preview.style.height = "0px";
+  div.appendChild(preview);
+
+  let curX = startX, curY = startY;
+  try { div.setPointerCapture(pointerId); } catch { /* ignore */ }
+
+  function onMove(e) {
+    if (e.pointerId !== pointerId) return;
+    const rect = div.getBoundingClientRect();
+    curX = (e.clientX - rect.left) / z;
+    curY = (e.clientY - rect.top) / z;
+    const left = Math.min(startX, curX);
+    const top = Math.min(startY, curY);
+    const width = Math.abs(curX - startX);
+    const height = Math.abs(curY - startY);
+    preview.style.left = `${left * z}px`;
+    preview.style.top = `${top * z}px`;
+    preview.style.width = `${width * z}px`;
+    preview.style.height = `${height * z}px`;
+  }
+  function cleanup() {
+    div.removeEventListener("pointermove", onMove);
+    div.removeEventListener("pointerup", onUp);
+    div.removeEventListener("pointercancel", onCancel);
+    try { div.releasePointerCapture(pointerId); } catch { /* ignore */ }
+    preview.remove();
+  }
+  async function onUp(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+    const left = Math.min(startX, curX);
+    const top = Math.min(startY, curY);
+    const width = Math.abs(curX - startX);
+    const height = Math.abs(curY - startY);
+    if (width < 5 || height < 5) {
+      wsStatus.textContent = "範囲が小さすぎます — もう一度ドラッグしてください";
+      return; // stay in region-image mode for a retry
+    }
+    setPlacementMode("none");
+    await saveRegionImage(pageNo, { x: left, y: top, w: width, h: height });
+  }
+  function onCancel(e) {
+    if (e.pointerId !== pointerId) return;
+    cleanup();
+  }
+  div.addEventListener("pointermove", onMove);
+  div.addEventListener("pointerup", onUp);
+  div.addEventListener("pointercancel", onCancel);
+}
+
+async function saveRegionImage(pageNo, bbox) {
+  // Pull options from the mode-options-bar (these stayed visible while the
+  // user dragged) so they don't need to confirm again in a second dialog.
+  const fmtSel = $("region-image-format");
+  const dpiSel = $("region-image-dpi");
+  const monoChk = $("region-image-mono");
+  const fmt = (fmtSel?.value === "jpeg") ? "jpeg" : "png";
+  const ext = fmt === "jpeg" ? "jpg" : "png";
+  const dpi = Number(dpiSel?.value) || 300;
+  const mono = !!monoChk?.checked;
+
+  // Find the page row for this pageNo (synthetic / source agnostic).
+  const pages = await fetchVisiblePages();
+  const pageRow = pages.find((p) => p.pageNo === pageNo);
+  if (!pageRow) {
+    wsStatus.textContent = `ページ ${pageNo} が見つかりません`;
+    return;
+  }
+
+  // File picker
+  const baseStem = (activeSourceName || "region").replace(/\.[a-zA-Z0-9]+$/, "");
+  const defaults = await kpdf3.getExportDefaults();
+  const choice = await showFileBrowser({
+    mode: "save",
+    title: "範囲を画像として保存",
+    initialName: `${baseStem}_p${pageNo > 0 ? pageNo : "ins"}.${ext}`,
+    defaultDir: defaults.sourceDir,
+    defaultExt: `.${ext}`,
+    filterDefault: "image",
+  });
+  if (!choice) return;
+  const savePath = typeof choice === "string" ? choice : choice.path;
+
+  const zoom = dpi / 72;
+  showBusy("範囲画像書き出し", "選択範囲を描画しています...", 30);
+  try {
+    const img = await composeRegionImage({
+      pageRow,
+      renderPage: kpdf3.renderPage,
+      projectStore,
+      renderSyntheticPage: renderSyntheticPagePixels,
+      zoom,
+      format: fmt,
+      quality: 0.92,
+      monoOverlays: mono,
+      bbox,
+    });
+    updateBusy("ファイルに書き込み中...", 90);
+    await kpdf3.saveImageFile({ savePath, bytes: img.bytes });
+    hideBusy();
+    wsStatus.textContent =
+      `範囲画像を保存しました (${img.widthPx}×${img.heightPx}px, ${fmt.toUpperCase()}, ${dpi}dpi → ${savePath})`;
+  } catch (err) {
+    hideBusy();
+    console.error("[renderer] region image export failed:", err);
+    wsStatus.textContent = `範囲画像書き出し失敗: ${err.message ?? err}`;
+  }
+}
+
+// ---- β.97 機能 1: PDF を画像として保存 -----------------------------------
+//
+// PDF の各ページを PNG / JPEG として書き出す。複数ページの場合はフォルダを
+// 1 つ選んで、その中に「<base>_p001.png」「<base>_p002.png」… の連番で
+// 出力する。単一ページの場合は普通の save ダイアログで 1 ファイル保存。
+//
+// 解像度は dpi → zoom 換算 (96/150/300/600/900 dpi)。900dpi は EXPORT_ZOOM と
+// 同じで PDF 書き出しの fidelity が出る。300dpi が標準推奨 (送付用・印刷代用)。
+// 編集 overlay は常に flatten で焼き込み (画像なので分離保持できない)。
+
+function showImageExportDialog() {
+  const dlg = $("image-export-dialog");
+  if (!dlg) return Promise.resolve(null);
+  const rangeRadios = dlg.querySelectorAll('input[name="image-export-range"]');
+  const formatRadios = dlg.querySelectorAll('input[name="image-export-format"]');
+  const rangeInput = $("image-export-range-input");
+  const dpiSel = $("image-export-dpi");
+  const monoChk = $("image-export-mono");
+  const baseInput = $("image-export-basename");
+  const okBtn = $("image-export-confirm");
+  const cancelBtn = $("image-export-cancel");
+
+  // Restore last-used config
+  const stored = (() => {
+    try { return JSON.parse(localStorage.getItem("kpdf3.imageExportPrefs") || "{}"); }
+    catch { return {}; }
+  })();
+  if (stored.format === "jpeg") {
+    const r = dlg.querySelector('input[name="image-export-format"][value="jpeg"]');
+    if (r) r.checked = true;
+  }
+  if (Number.isFinite(stored.dpi)) {
+    const opt = [...dpiSel.options].find((o) => Number(o.value) === stored.dpi);
+    if (opt) dpiSel.value = opt.value;
+  }
+  monoChk.checked = !!stored.mono;
+  // Default basename from active source (.pdf → "")
+  const meta = activeSourceName || "export.pdf";
+  const defaultBase = String(meta).replace(/\.[a-zA-Z0-9]+$/, "");
+  baseInput.value = defaultBase;
+  rangeInput.value = "";
+
+  // Reset range to all by default each invocation (user is making a fresh choice)
+  for (const r of rangeRadios) r.checked = r.value === "all";
+  rangeInput.disabled = true;
+
+  function syncRangeInput() {
+    const sel = [...rangeRadios].find((r) => r.checked)?.value || "all";
+    rangeInput.disabled = sel !== "custom";
+    if (sel === "custom") rangeInput.focus();
+  }
+  for (const r of rangeRadios) r.addEventListener("change", syncRangeInput);
+
+  dlg.hidden = false;
+  baseInput.focus();
+  baseInput.select();
+
+  return new Promise((resolve) => {
+    function cleanup() {
+      for (const r of rangeRadios) r.removeEventListener("change", syncRangeInput);
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      dlg.removeEventListener("keydown", onKey);
+      dlg.hidden = true;
+    }
+    function onCancel() {
+      cleanup();
+      resolve(null);
+    }
+    function onOk() {
+      const rangeKind = [...rangeRadios].find((r) => r.checked)?.value || "all";
+      const format = [...formatRadios].find((r) => r.checked)?.value || "png";
+      const dpi = Number(dpiSel.value) || 300;
+      const mono = !!monoChk.checked;
+      const baseName = baseInput.value.trim() || defaultBase || "page";
+      const rangeText = rangeInput.value.trim();
+      // Persist prefs for next time (range kind is invocation-specific so we skip it)
+      try {
+        localStorage.setItem("kpdf3.imageExportPrefs", JSON.stringify({
+          format, dpi, mono,
+        }));
+      } catch { /* ignore */ }
+      cleanup();
+      resolve({ rangeKind, rangeText, format, dpi, mono, baseName });
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+      else if (e.key === "Enter" && e.target !== rangeInput) {
+        e.preventDefault(); onOk();
+      }
+    }
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    dlg.addEventListener("keydown", onKey);
+  });
+}
+
+async function actionExportAsImage() {
+  if (!isOpen) return;
+  const pages = await fetchVisiblePages();
+  if (pages.length === 0) return;
+  const total = pages.length;
+  const cfg = await showImageExportDialog();
+  if (!cfg) return;
+
+  // Decide which page numbers (1-based among visible pages) to write
+  let targetIdxs;
+  if (cfg.rangeKind === "all") {
+    targetIdxs = pages.map((_, i) => i);
+  } else if (cfg.rangeKind === "current") {
+    const cp = viewer.currentPage;
+    // Map currentPage (pageNo) to its index in `pages` (which is the
+    // visible-order list, including synthetic pages).
+    const idx = pages.findIndex((p) => p.pageNo === cp);
+    if (idx < 0) {
+      wsStatus.textContent = "現在のページが見つかりませんでした";
+      return;
+    }
+    targetIdxs = [idx];
+  } else {
+    const seq = parseMultiPageRange(cfg.rangeText, total);
+    if (!seq) {
+      wsStatus.textContent = `無効な範囲: ${cfg.rangeText}`;
+      return;
+    }
+    targetIdxs = seq.map((n) => n - 1);
+  }
+
+  const zoom = cfg.dpi / 72;
+  const fmt = cfg.format === "jpeg" ? "jpeg" : "png";
+  const ext = fmt === "jpeg" ? "jpg" : "png";
+
+  const defaults = await kpdf3.getExportDefaults();
+  if (targetIdxs.length === 1) {
+    // Single-page → save dialog with one filename.
+    const initialName = `${cfg.baseName}.${ext}`;
+    const choice = await showFileBrowser({
+      mode: "save",
+      title: "画像として保存",
+      initialName,
+      defaultDir: defaults.sourceDir,
+      defaultExt: `.${ext}`,
+      filterDefault: "image",
+    });
+    if (!choice) return;
+    const savePath = typeof choice === "string" ? choice : choice.path;
+    showBusy("画像書き出し", `ページを ${fmt.toUpperCase()} に変換しています...`, 30);
+    try {
+      const img = await composePageImage({
+        pageRow: pages[targetIdxs[0]],
+        renderPage: kpdf3.renderPage,
+        projectStore,
+        renderSyntheticPage: renderSyntheticPagePixels,
+        zoom,
+        format: fmt,
+        quality: 0.92,
+        monoOverlays: cfg.mono,
+      });
+      updateBusy("ファイルに書き込み中...", 90);
+      await kpdf3.saveImageFile({ savePath, bytes: img.bytes });
+      hideBusy();
+      wsStatus.textContent = `画像書き出し完了 (${fmt.toUpperCase()}, ${cfg.dpi}dpi → ${savePath})`;
+    } catch (err) {
+      hideBusy();
+      console.error("[renderer] image export (single) failed:", err);
+      wsStatus.textContent = `画像書き出し失敗: ${err.message ?? err}`;
+    }
+    return;
+  }
+
+  // Multi-page → folder picker, then write N files inside it.
+  const folder = await showFileBrowser({
+    mode: "folder",
+    title: "画像を保存するフォルダ",
+    defaultDir: defaults.sourceDir,
+    confirmLabel: "このフォルダに保存",
+  });
+  if (!folder) return;
+  const totalN = targetIdxs.length;
+  showBusy("画像書き出し", `${totalN} ページを ${fmt.toUpperCase()} に変換しています...`, 0);
+  try {
+    const files = [];
+    for (let i = 0; i < totalN; i++) {
+      const idx = targetIdxs[i];
+      const img = await composePageImage({
+        pageRow: pages[idx],
+        renderPage: kpdf3.renderPage,
+        projectStore,
+        renderSyntheticPage: renderSyntheticPagePixels,
+        zoom,
+        format: fmt,
+        quality: 0.92,
+        monoOverlays: cfg.mono,
+      });
+      files.push({ seq: i + 1, ext, bytes: img.bytes });
+      updateBusy(`${i + 1} / ${totalN} ページを変換中...`, ((i + 1) / totalN) * 90);
+    }
+    updateBusy("ファイルに書き込み中...", 95);
+    const result = await kpdf3.saveImageFiles({
+      folder,
+      baseName: cfg.baseName,
+      files,
+    });
+    hideBusy();
+    wsStatus.textContent =
+      `画像書き出し完了 (${result.count} ファイル, ${fmt.toUpperCase()}, ${cfg.dpi}dpi → ${folder})`;
+  } catch (err) {
+    hideBusy();
+    console.error("[renderer] image export (multi) failed:", err);
+    wsStatus.textContent = `画像書き出し失敗: ${err.message ?? err}`;
+  }
 }
 
 /**
@@ -4940,6 +5323,9 @@ const menuBar = new MenuBar({
     save: actionSave,
     export: actionExport,
     "export-range": actionExportRange,
+    "export-image": actionExportAsImage,
+    "export-region-image": () =>
+      setPlacementMode(placementMode === "region-image" ? "none" : "region-image"),
     "split-save": actionSplitSave,
     print: actionPrint,
     exit: actionExit,
@@ -5344,6 +5730,8 @@ const MENU_HINTS = {
   save: "現在の状態を上書き保存します (Ctrl+S)",
   export: "PDF を選んだ場所に保存します (Ctrl+Shift+S)",
   "export-range": "ページ範囲を指定して PDF を書き出します",
+  "export-image": "PDF を PNG / JPEG 画像として保存します (連番ファイル)",
+  "export-region-image": "ドラッグで囲んだ範囲を 1 枚の画像として保存します",
   "split-save": "PDF を複数のパートに分割保存します",
   print: "PDF を印刷します (Ctrl+P)",
   exit: "アプリを終了します",
@@ -5672,6 +6060,11 @@ if (btnModeMarker) {
 if (btnModeCallout) {
   btnModeCallout.addEventListener("click", () =>
     setPlacementMode(placementMode === "callout" ? "none" : "callout"),
+  );
+}
+if (btnModeRegionImage) {
+  btnModeRegionImage.addEventListener("click", () =>
+    setPlacementMode(placementMode === "region-image" ? "none" : "region-image"),
   );
 }
 // β.80: form-field tool buttons

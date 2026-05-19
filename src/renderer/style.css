@@ -1971,6 +1971,84 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   white-space: pre-line;
 }
 
+/* β.97 機能 1: 画像書き出しダイアログ */
+.image-export-window {
+  width: 460px;
+}
+.image-export-window .window-body {
+  padding: 14px 16px;
+}
+.image-export-message {
+  margin: 0 0 12px 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.image-export-message code {
+  background: #ecece0;
+  padding: 0 4px;
+  border: 1px solid #cccaba;
+}
+.image-export-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.image-export-label {
+  min-width: 72px;
+  font-weight: bold;
+}
+.image-export-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
+.image-export-radio input {
+  margin: 0 2px 0 0;
+}
+.image-export-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  font-family: "MS UI Gothic", sans-serif;
+  font-size: 12px;
+}
+.image-export-basename {
+  flex: 1;
+}
+.image-export-select {
+  flex: 1;
+  min-width: 0;
+  font-family: "MS UI Gothic", sans-serif;
+  font-size: 12px;
+}
+.image-export-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.image-export-buttons button {
+  min-width: 90px;
+}
+
+/* β.97 機能 2: 範囲画像モード — 選択中の preview rect (redaction 風) */
+.region-image-preview {
+  position: absolute;
+  pointer-events: none;
+  border: 2px dashed #1f4ea1;
+  background: rgba(31, 78, 161, 0.12);
+  z-index: 9000;
+}
+.mode-options-hint {
+  font-size: 11px;
+  color: #444;
+  font-style: italic;
+}
+
 /* ---- Stamp manager + register dialogs (ADR-0019 MVP) ---- */
 .stamp-mgr-window { width: 360px; }
 .stamp-mgr-window .window-body { padding: 12px 14px; font-size: 12px; }

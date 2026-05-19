@@ -508,7 +508,7 @@ export async function composePagesForExport({
  * @param {import("../domain/project-store.js").ProjectStore} projectStore
  * @param {number} zoom
  */
-export async function composeSinglePageCanvas(pageRow, renderPage, projectStore, zoom, renderSyntheticPage) {
+export async function composeSinglePageCanvas(pageRow, renderPage, projectStore, zoom, renderSyntheticPage, monoOverlays = false) {
   await ensureCustomFontsReady();
   let result;
   if (pageRow.isSynthetic || pageRow.pageNo < 0) {
@@ -519,7 +519,111 @@ export async function composeSinglePageCanvas(pageRow, renderPage, projectStore,
   } else {
     result = await renderPage(pageRow.pageNo, { zoom });
   }
-  return await compositePage(pageRow, result, projectStore, zoom);
+  return await compositePage(pageRow, result, projectStore, zoom, monoOverlays);
+}
+
+/**
+ * β.97 機能 1: PDF を画像として保存
+ *
+ * Compose a single page (PDF + overlays) at `zoom` and encode it as PNG
+ * or JPEG. Returns the encoded bytes plus the canonical page dimensions
+ * in points (top-left origin, user rotation applied — i.e. what the
+ * viewer shows).
+ *
+ * Used by actionExportAsImage to fan out across the selected page range
+ * and hand the bytes to main for file writes.
+ *
+ * @param {object} args
+ * @param {any} args.pageRow  page row from workspace.getPages()
+ * @param {(p:number, o:object) => Promise<any>} args.renderPage
+ * @param {import("../domain/project-store.js").ProjectStore} args.projectStore
+ * @param {(row:any, zoom:number) => Promise<any>} [args.renderSyntheticPage]
+ * @param {number} [args.zoom=EXPORT_ZOOM]  pixels per point
+ * @param {"png"|"jpeg"} [args.format="png"]
+ * @param {number} [args.quality=0.92]      JPEG quality 0..1
+ * @param {boolean} [args.monoOverlays=false]  project overlay colors → black
+ * @returns {Promise<{ bytes: Uint8Array, widthPt: number, heightPt: number, mime: string, ext: string }>}
+ */
+export async function composePageImage({
+  pageRow,
+  renderPage,
+  projectStore,
+  renderSyntheticPage,
+  zoom = EXPORT_ZOOM,
+  format = "png",
+  quality = 0.92,
+  monoOverlays = false,
+}) {
+  const canvas = await composeSinglePageCanvas(
+    pageRow, renderPage, projectStore, zoom, renderSyntheticPage, monoOverlays,
+  );
+  const widthPt = canvas.width / zoom;
+  const heightPt = canvas.height / zoom;
+  if (format === "jpeg" || format === "jpg") {
+    const bytes = await canvasToJpeg(canvas, quality);
+    return { bytes, widthPt, heightPt, mime: "image/jpeg", ext: "jpg" };
+  }
+  const bytes = await canvasToPng(canvas);
+  return { bytes, widthPt, heightPt, mime: "image/png", ext: "png" };
+}
+
+/**
+ * β.97 機能 2: 範囲選択して画像保存
+ *
+ * Compose a single page at `zoom` then crop the result to `bbox`
+ * (canonical points, top-left origin) and encode as PNG or JPEG.
+ *
+ * @param {object} args
+ * @param {any} args.pageRow
+ * @param {(p:number, o:object) => Promise<any>} args.renderPage
+ * @param {import("../domain/project-store.js").ProjectStore} args.projectStore
+ * @param {(row:any, zoom:number) => Promise<any>} [args.renderSyntheticPage]
+ * @param {number} [args.zoom=EXPORT_ZOOM]
+ * @param {"png"|"jpeg"} [args.format="png"]
+ * @param {number} [args.quality=0.92]
+ * @param {boolean} [args.monoOverlays=false]
+ * @param {{x:number,y:number,w:number,h:number}} args.bbox  canonical pt
+ * @returns {Promise<{ bytes: Uint8Array, widthPx: number, heightPx: number, mime: string, ext: string }>}
+ */
+export async function composeRegionImage({
+  pageRow,
+  renderPage,
+  projectStore,
+  renderSyntheticPage,
+  zoom = EXPORT_ZOOM,
+  format = "png",
+  quality = 0.92,
+  monoOverlays = false,
+  bbox,
+}) {
+  if (!bbox || !(bbox.w > 0) || !(bbox.h > 0)) {
+    throw new Error("composeRegionImage: bbox with positive w/h is required");
+  }
+  const fullCanvas = await composeSinglePageCanvas(
+    pageRow, renderPage, projectStore, zoom, renderSyntheticPage, monoOverlays,
+  );
+  const sx = Math.max(0, Math.round(bbox.x * zoom));
+  const sy = Math.max(0, Math.round(bbox.y * zoom));
+  const sw = Math.max(1, Math.min(fullCanvas.width - sx, Math.round(bbox.w * zoom)));
+  const sh = Math.max(1, Math.min(fullCanvas.height - sy, Math.round(bbox.h * zoom)));
+  const out = document.createElement("canvas");
+  out.width = sw;
+  out.height = sh;
+  const ctx = out.getContext("2d");
+  if (!ctx) throw new Error("composeRegionImage: 2d context unavailable");
+  // JPEG is opaque, paint white under so transparent overlay-only regions
+  // don't show as black after encoding.
+  if (format === "jpeg" || format === "jpg") {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, sw, sh);
+  }
+  ctx.drawImage(fullCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  if (format === "jpeg" || format === "jpg") {
+    const bytes = await canvasToJpeg(out, quality);
+    return { bytes, widthPx: sw, heightPx: sh, mime: "image/jpeg", ext: "jpg" };
+  }
+  const bytes = await canvasToPng(out);
+  return { bytes, widthPx: sw, heightPx: sh, mime: "image/png", ext: "png" };
 }
 
 /**

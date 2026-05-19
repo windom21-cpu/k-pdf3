@@ -2810,6 +2810,68 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
 });
 
 /**
+ * β.97 機能 1: PDF を画像として保存 — single image
+ *
+ * Used by 範囲選択 → 1 枚画像保存 (機能 2) and by 全ページを画像出力
+ * の単一ページケース。Trusts caller for the full path; bytes is a raw
+ * Uint8Array of PNG/JPEG that the renderer already encoded.
+ *
+ * @param {{ savePath: string, bytes: Uint8Array }} payload
+ */
+ipcMain.handle("kpdf3:save-image-file", async (_, payload) => {
+  const { savePath, bytes } = payload || {};
+  if (!savePath || typeof savePath !== "string") {
+    throw new Error("save-image-file: savePath is required");
+  }
+  if (!bytes || !(bytes instanceof Uint8Array || bytes.buffer)) {
+    throw new Error("save-image-file: bytes is required");
+  }
+  const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  writeFileSync(savePath, buf);
+  return { savePath, bytesWritten: buf.byteLength };
+});
+
+/**
+ * β.97 機能 1: PDF を画像として保存 — multi-page
+ *
+ * Receives N composed images for N pages and writes them as
+ * `<folder>/<baseName>_p<NNN>.<ext>` (3-digit zero-padded). Files
+ * use the indexed sequence number passed in `seq` (1-based) rather
+ * than the original pageNo so non-sequential ranges (e.g. 3,5,7)
+ * still produce contiguous filenames p001 / p002 / p003.
+ *
+ * @param {{ folder: string, baseName: string, files: Array<{ seq:number, ext:string, bytes:Uint8Array }> }} payload
+ */
+ipcMain.handle("kpdf3:save-image-files", async (_, payload) => {
+  const { folder, baseName, files } = payload || {};
+  if (!folder || typeof folder !== "string") {
+    throw new Error("save-image-files: folder is required");
+  }
+  if (!baseName || typeof baseName !== "string") {
+    throw new Error("save-image-files: baseName is required");
+  }
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error("save-image-files: files[] required");
+  }
+  // Strip path separators / NUL from baseName to keep filenames inside the
+  // chosen folder. Tester might paste a full path into the base-name input.
+  const safeBase = baseName.replace(/[/\\\0]/g, "_").trim() || "page";
+  const totalDigits = Math.max(3, String(files.length).length);
+  const written = [];
+  for (const f of files) {
+    const seq = Number.isFinite(f.seq) && f.seq > 0 ? f.seq : 1;
+    const ext = (f.ext || "png").replace(/^\./, "").toLowerCase();
+    const fileName = `${safeBase}_p${String(seq).padStart(totalDigits, "0")}.${ext}`;
+    const fullPath = join(folder, fileName);
+    const bytes = f.bytes;
+    const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+    writeFileSync(fullPath, buf);
+    written.push({ path: fullPath, bytes: buf.byteLength });
+  }
+  return { folder, count: written.length, files: written };
+});
+
+/**
  * Print pipeline (M5-4):
  *   - flatten path: same composer as export → mupdf assembly → temp PDF
  *   - byte-copy path: when the workspace has no overlays the user is

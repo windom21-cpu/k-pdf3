@@ -42,6 +42,10 @@ const fileBrowserState = {
   // "セキュア書き出し" checkbox row and resolves to { path, secureExport }
   // instead of just a path string.
   secureExportToggle: false,
+  // β.97 画像書き出し: ".pdf" 既定だと "契約書" → "契約書.pdf" に
+  // 強制されてしまい、image save で .png が消える。caller が拡張子を
+  // 指定できるようにする (デフォは ".pdf" で後方互換)。
+  defaultExt: ".pdf",
 };
 
 function isPdfName(name) {
@@ -241,8 +245,11 @@ async function handleFileBrowserConfirm() {
   let target = isAbsolute ? filename : joinPath(fileBrowserState.currentPath, filename);
 
   if (mode === "save") {
-    // Auto-append .pdf if missing
-    if (!/\.[a-zA-Z0-9]+$/.test(target)) target += ".pdf";
+    // Auto-append the caller-specified default extension if the typed
+    // name has none. Defaults to .pdf for back-compat with all callers
+    // that don't pass `defaultExt`.
+    const defaultExt = fileBrowserState.defaultExt || ".pdf";
+    if (!/\.[a-zA-Z0-9]+$/.test(target)) target += defaultExt;
     if (await kpdf3.fileExists(target)) {
       const ok = await customConfirm({
         title: "上書きの確認",
@@ -289,9 +296,11 @@ export async function showFileBrowser({
   filterDefault = "pdf",
   confirmLabel,
   secureExportToggle = false,
+  defaultExt = ".pdf",
 } = {}) {
   fileBrowserState.mode = mode;
   fileBrowserState.secureExportToggle = !!secureExportToggle && mode === "save";
+  fileBrowserState.defaultExt = defaultExt || ".pdf";
   if (openSecureExportRow) {
     openSecureExportRow.hidden = !fileBrowserState.secureExportToggle;
   }

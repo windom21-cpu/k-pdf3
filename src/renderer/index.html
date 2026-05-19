@@ -36,6 +36,8 @@
     <div class="menu-item disabled" data-action="save">上書き保存 (Ctrl+S)</div>
     <div class="menu-item disabled" data-action="export">名前を付けて保存 (Ctrl+Shift+S)</div>
     <div class="menu-item disabled" data-action="export-range">範囲指定で書き出し...</div>
+    <div class="menu-item disabled" data-action="export-image">画像として保存... (PNG/JPEG)</div>
+    <div class="menu-item disabled" data-action="export-region-image">選んだ範囲を画像で保存...</div>
     <div class="menu-item disabled" data-action="split-save">分割保存...</div>
     <div class="menu-item disabled" data-action="print">印刷... (Ctrl+P)</div>
     <div class="menu-separator"></div>
@@ -178,6 +180,75 @@
       </div>
     </div>
   </div>
+
+  <!-- β.97 機能 1: PDF を画像として保存ダイアログ -->
+  <div class="busy-modal" id="image-export-dialog" hidden>
+    <div class="window image-export-window">
+      <div class="title-bar">
+        <div class="title-bar-text">画像として保存</div>
+      </div>
+      <div class="window-body">
+        <p class="image-export-message">
+          PDF の各ページを PNG / JPEG 画像として保存します。<br>
+          複数ページの場合はフォルダ内に <code>名前_p001.png</code> のように連番で書き出されます。
+        </p>
+        <div class="image-export-row">
+          <label class="image-export-label">範囲:</label>
+          <label class="image-export-radio">
+            <input type="radio" name="image-export-range" value="all" checked>
+            <span>全ページ</span>
+          </label>
+          <label class="image-export-radio">
+            <input type="radio" name="image-export-range" value="current">
+            <span>現在のページ</span>
+          </label>
+          <label class="image-export-radio">
+            <input type="radio" name="image-export-range" value="custom">
+            <span>指定:</span>
+          </label>
+          <input type="text" id="image-export-range-input" class="image-export-input"
+                 placeholder="例: 1-3,5,7-10" disabled>
+        </div>
+        <div class="image-export-row">
+          <label class="image-export-label">形式:</label>
+          <label class="image-export-radio">
+            <input type="radio" name="image-export-format" value="png" checked>
+            <span>PNG (推奨・無劣化・透過可)</span>
+          </label>
+          <label class="image-export-radio">
+            <input type="radio" name="image-export-format" value="jpeg">
+            <span>JPEG (軽量・写真向き)</span>
+          </label>
+        </div>
+        <div class="image-export-row">
+          <label class="image-export-label">解像度:</label>
+          <select id="image-export-dpi" class="image-export-select">
+            <option value="96">標準 96 dpi (画面共有・SNS 向け)</option>
+            <option value="150">中 150 dpi</option>
+            <option value="300" selected>高 300 dpi (推奨・印刷代用)</option>
+            <option value="600">特高 600 dpi</option>
+            <option value="900">最高 900 dpi (原本品質)</option>
+          </select>
+        </div>
+        <div class="image-export-row">
+          <label class="image-export-label"></label>
+          <input type="checkbox" id="image-export-mono">
+          <label for="image-export-mono">白黒で書き出し (overlay の色を黒に変換)</label>
+        </div>
+        <div class="image-export-row">
+          <label class="image-export-label" for="image-export-basename">ファイル名:</label>
+          <input type="text" id="image-export-basename" class="image-export-input image-export-basename"
+                 placeholder="ファイル名 (拡張子は自動付与)">
+        </div>
+        <div class="image-export-buttons">
+          <button id="image-export-confirm" class="default">次へ (保存先フォルダ選択)</button>
+          <button id="image-export-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- β.97 機能 2: 範囲選択ガイダンス (mode-options-bar に統合済) -->
 
   <!-- Page-jump dialog (replaces window.prompt for goto-page) -->
   <div class="busy-modal" id="goto-dialog" hidden>
@@ -725,6 +796,7 @@
     <button id="btn-detach-tab" disabled title="現在のタブを別ウインドウに分離します">別窓化</button>
     <span class="toolbar-sep"></span>
     <button id="btn-split" disabled>分割保存</button>
+    <button id="btn-mode-region-image" disabled title="ドラッグで囲んだ範囲を PNG/JPEG として保存します">範囲画像</button>
     <span class="toolbar-sep"></span>
     <label for="zoom-select" class="toolbar-label">表示:</label>
     <select id="zoom-select" disabled>
@@ -903,6 +975,25 @@
         <option value="32">32</option>
         <option value="48">48</option>
       </select>
+    </div>
+    <div class="mode-options" data-mode="region-image" hidden>
+      <span class="mode-options-label">範囲画像:</span>
+      <span class="mode-options-hint">ページ上をドラッグして範囲を囲んでください。離すと保存ダイアログが開きます。</span>
+      <span class="mode-options-label" style="margin-left:12px">形式:</span>
+      <select id="region-image-format" class="toolbar-inline-select" title="保存する画像の形式">
+        <option value="png" selected>PNG (推奨)</option>
+        <option value="jpeg">JPEG</option>
+      </select>
+      <span class="mode-options-label" style="margin-left:12px">解像度:</span>
+      <select id="region-image-dpi" class="toolbar-inline-select" title="出力解像度">
+        <option value="96">96</option>
+        <option value="150">150</option>
+        <option value="300" selected>300</option>
+        <option value="600">600</option>
+        <option value="900">900</option>
+      </select>
+      <input type="checkbox" id="region-image-mono" style="margin-left:8px">
+      <label for="region-image-mono" title="overlay の色を黒に変換">白黒</label>
     </div>
     <div class="mode-options" data-mode="form-radio" hidden>
       <span class="mode-options-label">グループ:</span>
