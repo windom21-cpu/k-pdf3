@@ -557,14 +557,16 @@ export function placeFormRadio(pageNo, x, y) {
 
 function _readShapeDefaults() {
   const kindEl = document.querySelector('input[name="shape-kind"]:checked');
+  const dirEl = document.getElementById("shape-dir");
   const colorEl = document.getElementById("shape-color");
   const widthEl = document.getElementById("shape-stroke-width");
   const fillEl = document.getElementById("shape-fill-mode");
   const kind = kindEl?.value || "arrow";
+  const arrowDir = dirEl?.value || "right";
   const strokeColor = colorEl?.value || "#cc0000";
   const strokeWidth = Number(widthEl?.value) || 2;
   const fillMode = fillEl?.value || "hollow"; // "hollow" | "solid"
-  return { kind, strokeColor, strokeWidth, fillMode };
+  return { kind, arrowDir, strokeColor, strokeWidth, fillMode };
 }
 
 // β.102: 配置時の dir 量子化は撤去 (placement は常に "right" 固定)。
@@ -644,12 +646,12 @@ export function startShapeDrag(pageNo, startX, startY, downEvt, div) {
       bw = Math.max(width, 4);
       bh = Math.max(height, 4);
     }
-    // β.102: placement は常に「右向き (right)」で確定する。配置プレビュー
-    // が点線四角だけだと斜め方向の予測が難しい (ユーザー報告) ので、配置
-    // 時はドラッグ方向を読まず、配置後に options bar の「方向」select で
-    // 8 方向を後付けで選ぶ流れにする。方向変更時に bbox は自動回転
-    // (横↔縦は w/h swap、斜めは正方形化、いずれも中心固定) する。
-    _placeShape(pageNo, left, top, bw, bh, "right", defs);
+    // β.102/β.103: 配置時はドラッグ方向を読まず、popup で選んだ「向き」
+    // (defs.arrowDir) を採用する。「向き」未操作なら "right" のまま。配置
+    // 後にユーザーが popup の向きを変えると selection 経由で bbox 自動
+    // 回転 (横↔縦 swap、斜めは正方形化) が走るので、最初に何向きでも
+    // 後から自由に変更できる。
+    _placeShape(pageNo, left, top, bw, bh, defs.arrowDir, defs);
   }
   function onCancel(e) {
     if (e.pointerId !== pointerId) return;

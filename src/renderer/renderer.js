@@ -309,6 +309,16 @@ initOverlaySelection({
   onSelectionChanged: () => {
     refreshModeOptionsBar();
     populateFormFieldOptionsBar();
+    // β.102/β.103: shape を 1 つだけ選んだら shape palette popup の
+    // 値をその overlay のものに同期する。popup が hidden でも値だけは
+    // 更新しておく (次に popup を開いた時に反映)。
+    if (getSelectionSize() === 1) {
+      const selId = getPrimarySelectedId();
+      const sel = selId ? projectStore.get(selId) : null;
+      if (sel?.type === "shape") {
+        _populateShapePopupFromSelection();
+      }
+    }
     // β.82 (B-6): Tab 順 popup が開いていれば active 行を更新
     _updateTabOrderListActive();
   },
@@ -1988,10 +1998,6 @@ function refreshModeOptionsBar() {
         kind === "check"  ? "form-check"  :
         kind === "circle" ? "form-circle" :
         kind === "radio"  ? "form-radio"  : null;
-    } else if (ov?.type === "shape") {
-      // β.102: shape は kind 問わず "shape-edit" panel を表示
-      which = "shape-edit";
-      _populateShapeEditPanel(ov);
     } else {
       which = null;
     }
@@ -6377,20 +6383,29 @@ if (shapePalettePopup && shapePaletteTitlebar) {
   });
 }
 
-// β.102: shape overlay 選択時の options bar (= mode-options-bar の
-// "shape-edit") の populate / change wiring。select 変更で即 update。
-function _populateShapeEditPanel(ov) {
+// β.102: shape palette popup を「配置設定 + 編集」の両用に。
+//
+// - 未選択 / 複数選択時 → popup の値は次の配置の defaults (現状維持)
+// - 単一 shape 選択中    → popup の値を選択 shape のもので populate、
+//                          popup 値変更時は選択 shape を即時 update
+//
+// onSelectionChanged から populate、popup の各 control の change で
+// _syncShapePopupToSelected を呼ぶ。
+function _populateShapePopupFromSelection() {
+  if (getSelectionSize() !== 1) return;
+  const id = getPrimarySelectedId();
+  const ov = id ? projectStore.get(id) : null;
   if (!ov || ov.type !== "shape") return;
   const props = ov.properties ?? {};
-  const kindSel = $("shape-edit-kind");
-  const dirSel = $("shape-edit-dir");
-  const colorSel = $("shape-edit-color");
-  const strokeSel = $("shape-edit-stroke");
-  const fillSel = $("shape-edit-fill");
-  if (kindSel) kindSel.value = props.kind ?? "line";
+  // kind radio
+  const kindRadios = document.querySelectorAll('input[name="shape-kind"]');
+  for (const r of kindRadios) r.checked = r.value === (props.kind ?? "line");
+  // dir / color / stroke / fill
+  const dirSel = $("shape-dir");
+  const colorSel = $("shape-color");
+  const strokeSel = $("shape-stroke-width");
+  const fillSel = $("shape-fill-mode");
   if (dirSel) {
-    // ellipse / rect / rounded-rect / ellipse-x は arrowDir を持たないので
-    // disable して "right" を表示しておく。
     const directional =
       props.kind === "line" || props.kind === "arrow" || props.kind === "double-arrow" ||
       props.kind === "block-arrow" || props.kind === "double-block-arrow";
@@ -6402,29 +6417,35 @@ function _populateShapeEditPanel(ov) {
   if (fillSel) fillSel.value = props.fillColor ? "solid" : "hollow";
 }
 
-function _applyShapeEditChange() {
+function _syncShapePopupToSelected() {
   if (getSelectionSize() !== 1) return;
   const id = getPrimarySelectedId();
   if (!id) return;
   const ov = projectStore.get(id);
   if (!ov || ov.type !== "shape") return;
+  const kindEl = document.querySelector('input[name="shape-kind"]:checked');
+  const kind = kindEl?.value || ov.properties?.kind || "line";
   const patch = {
-    kind:        $("shape-edit-kind")?.value || ov.properties?.kind || "line",
-    arrowDir:    $("shape-edit-dir")?.value || ov.properties?.arrowDir || "right",
-    strokeColor: $("shape-edit-color")?.value || ov.properties?.strokeColor || "#000000",
-    strokeWidth: Number($("shape-edit-stroke")?.value) || ov.properties?.strokeWidth || 2,
-    fillMode:    $("shape-edit-fill")?.value || (ov.properties?.fillColor ? "solid" : "hollow"),
+    kind,
+    arrowDir:    $("shape-dir")?.value || ov.properties?.arrowDir || "right",
+    strokeColor: $("shape-color")?.value || ov.properties?.strokeColor || "#000000",
+    strokeWidth: Number($("shape-stroke-width")?.value) || ov.properties?.strokeWidth || 2,
+    fillMode:    $("shape-fill-mode")?.value || (ov.properties?.fillColor ? "solid" : "hollow"),
   };
   updateShapeOverlay(id, patch);
-  // kind 変更で directional 切替があるかもしれない → dir select の
-  // disabled 状態を再評価して値も同期。
+  // kind 変更で dir の有効/無効が変わるので popup を再 populate
   const updated = projectStore.get(id);
-  if (updated) _populateShapeEditPanel(updated);
+  if (updated) _populateShapePopupFromSelection();
 }
 
-for (const id of ["shape-edit-kind", "shape-edit-dir", "shape-edit-color",
-                  "shape-edit-stroke", "shape-edit-fill"]) {
-  $(id)?.addEventListener("change", _applyShapeEditChange);
+// popup の全 control に change handler。popup を開いただけ (未選択) は
+// no-op、選択中なら即時 apply。
+for (const id of ["shape-dir", "shape-color", "shape-stroke-width", "shape-fill-mode"]) {
+  $(id)?.addEventListener("change", _syncShapePopupToSelected);
+}
+// kind の radio 群にも同じ handler
+for (const r of document.querySelectorAll('input[name="shape-kind"]')) {
+  r.addEventListener("change", _syncShapePopupToSelected);
 }
 
 // Align toolbar (β5 §17.13/§17.14) — visible only with 2+ selected.

@@ -343,6 +343,19 @@
       </div>
       <hr class="shape-palette-sep">
       <div class="shape-palette-row">
+        <label class="shape-palette-label">向き:</label>
+        <select id="shape-dir" class="shape-palette-select" title="矢印・線・ブロック矢印の向き。配置済みの図形を選ぶと、ここで 8 方向に回転できます (bbox は中心固定で自動回転、横→縦は w/h swap、斜めは正方形化)">
+          <option value="right" selected>→ 右</option>
+          <option value="down-right">↘ 右下</option>
+          <option value="down">↓ 下</option>
+          <option value="down-left">↙ 左下</option>
+          <option value="left">← 左</option>
+          <option value="up-left">↖ 左上</option>
+          <option value="up">↑ 上</option>
+          <option value="up-right">↗ 右上</option>
+        </select>
+      </div>
+      <div class="shape-palette-row">
         <label class="shape-palette-label">線の色:</label>
         <select id="shape-color" class="shape-palette-select" title="線 (枠) の色">
           <option value="#000000">黒</option>
@@ -368,7 +381,7 @@
           <option value="solid">塗りつぶし</option>
         </select>
       </div>
-      <p class="shape-palette-hint">配置: 紙の上でドラッグ → 矩形に <strong>横向き</strong>で配置されます。<br>配置後にツールバー下の「向き」select で <strong>8 方向 (斜め含む)</strong> へ後から回転できます。</p>
+      <p class="shape-palette-hint">配置: 紙の上でドラッグ → 矩形に <strong>横向き</strong>で配置されます。配置後に図形をクリックして選択すると、このパネルの値が選択された図形のものに切り替わり、ここで <strong>向き / 種類 / 色 / 太さ / 塗り</strong> を後から変更できます。</p>
     </div>
   </div>
 
@@ -1039,54 +1052,8 @@
         <option value="48">48</option>
       </select>
     </div>
-    <!-- β.102: shape overlay 選択時の後付け編集パネル。
-         向きを 8 方向から選択 (横向きで配置した shape を斜めや縦に
-         回転できる)、kind / 線色 / 太さ / 中空・塗りも変更可。 -->
-    <div class="mode-options" data-mode="shape-edit" hidden>
-      <span class="mode-options-label">図形:</span>
-      <select id="shape-edit-kind" class="toolbar-inline-select" title="図形の種類を変更">
-        <option value="line">直線</option>
-        <option value="arrow">矢印</option>
-        <option value="double-arrow">双方矢印</option>
-        <option value="block-arrow">ブロック矢印</option>
-        <option value="double-block-arrow">双方ブロック</option>
-        <option value="rect">四角</option>
-        <option value="rounded-rect">角丸四角</option>
-        <option value="ellipse">楕円</option>
-        <option value="ellipse-x">楕円+×</option>
-      </select>
-      <span class="mode-options-label" style="margin-left:8px">向き:</span>
-      <select id="shape-edit-dir" class="toolbar-inline-select" title="8 方向。横向きで配置したあと、ここで斜め・縦などへ回転できます (bbox は中心固定で自動回転)">
-        <option value="right">→ 右</option>
-        <option value="down-right">↘ 右下</option>
-        <option value="down">↓ 下</option>
-        <option value="down-left">↙ 左下</option>
-        <option value="left">← 左</option>
-        <option value="up-left">↖ 左上</option>
-        <option value="up">↑ 上</option>
-        <option value="up-right">↗ 右上</option>
-      </select>
-      <span class="mode-options-label" style="margin-left:8px">色:</span>
-      <select id="shape-edit-color" class="toolbar-inline-select" title="線の色">
-        <option value="#000000">黒</option>
-        <option value="#cc0000">赤</option>
-        <option value="#1f4ea1">青</option>
-        <option value="#2e7d32">緑</option>
-        <option value="#e65100">橙</option>
-      </select>
-      <span class="mode-options-label" style="margin-left:8px">太さ:</span>
-      <select id="shape-edit-stroke" class="toolbar-inline-select" title="線・枠の太さ">
-        <option value="1">細</option>
-        <option value="2">中</option>
-        <option value="3">太</option>
-        <option value="5">極太</option>
-      </select>
-      <span class="mode-options-label" style="margin-left:8px">塗り:</span>
-      <select id="shape-edit-fill" class="toolbar-inline-select" title="中空 = 枠線のみ / 塗り = 線色で塗りつぶし">
-        <option value="hollow">中空</option>
-        <option value="solid">塗り</option>
-      </select>
-    </div>
+    <!-- β.103: shape の編集は shape palette popup に統合済 (data-mode=
+         "shape-edit" は撤去)。 -->
     <div class="mode-options" data-mode="region-image" hidden>
       <span class="mode-options-label">範囲画像:</span>
       <span class="mode-options-hint">ページ上をドラッグして範囲を囲んでください。離すと保存ダイアログが開きます。</span>
