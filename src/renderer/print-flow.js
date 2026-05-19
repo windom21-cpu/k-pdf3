@@ -1027,25 +1027,48 @@ export async function actionFaxSend(opts = {}) {
     faxPrinters = Array.isArray(allPrinters)
       ? allPrinters.filter((p) => _isFaxNameLike(p.name) || _isFaxNameLike(p.displayName))
       : [];
-    if (faxPrinters.length === 0 && allPrinters.length === 0) {
+    // β.89 hotfix: FAX 系プリンタが見つからない場合は silently 全プリンタ
+    // への fallback をしない (通常プリンタを誤って「FAX 送信」してしまう
+    // 事故を構造防止)。FAX が無い環境では通常の「印刷」+ 「白黒」トグル
+    // を案内する。
+    if (faxPrinters.length === 0) {
       await customConfirm({
         title: "FAX 送信",
-        message: "プリンタが見つかりません。OS のプリンタ設定をご確認ください。",
+        message:
+          allPrinters.length === 0
+            ? "プリンタが見つかりません。OS のプリンタ設定をご確認ください。"
+            : "FAX 系プリンタ (名前に「FAX」「ファックス」「ファクス」を含む) が見つかりません。\n\nFAX 印字がない場合は通常の「印刷」ボタン + 「白黒」トグルを使用してください。",
         cancelLabel: null,
       });
       return;
     }
-    faxDevice = await _showFaxSetupDialog(faxPrinters, allPrinters);
+    faxDevice = await _showFaxSetupDialog(faxPrinters, null);
     if (!faxDevice) {
       _wsStatus.textContent = "FAX 送信をキャンセルしました";
       return;
     }
     _rememberFaxPrinter(faxDevice);
   }
+  // β.89 hotfix: 記憶済 / 選択直後の faxDevice が実は FAX 名でないケース
+  // を最終チェック (旧 β.88 で alllPrinters fallback から非 FAX を記憶した
+  // 痕跡を一掃する保険)。
+  if (!_isFaxNameLike(faxDevice)) {
+    const proceed = await customConfirm({
+      title: "FAX 送信 — 注意",
+      message: `選択されたプリンタ「${faxDevice}」は FAX 系の名前ではありません。\n\n本当にこのプリンタに白黒で送信しますか? (キャンセル推奨。「FAX プリンタを変更…」から FAX 系プリンタを選び直してください)`,
+      okLabel: "続行",
+      cancelLabel: "キャンセル",
+    });
+    if (!proceed) {
+      _wsStatus.textContent = "FAX 送信をキャンセルしました";
+      return;
+    }
+  }
 
   // 描画 + 送信 (silent print — main 側で FAX device を検知して Chromium silent
   // にフォールバックする。Sumatra は FAX driver を初期化できない β42 J2 既知問題)
-  showBusy("FAX 送信", "ページを描画中... (明朝保護のため全ページを内部 raster 化)", 0);
+  // β.89 hotfix: 送信先を busy modal に明示し、誤送信に気付ける UI に
+  showBusy("FAX 送信", `送信先 ${faxDevice} — ページを描画中...`, 0);
   let composed = null;
   try {
     composed = await composePagesForExport({
@@ -1055,17 +1078,15 @@ export async function actionFaxSend(opts = {}) {
       renderSyntheticPage: renderSyntheticPagePixels,
       rasterRedactionPages: true,
       monoOverlays: true,
-      // Phase 3: FAX streamlined 経路では全ページを内部 mupdf で 900dpi
-      // raster 化してから Chromium silent print へ渡す。Adobe / Sumatra /
-      // Chromium のテキストレンダリング差を完全に消去し、明朝 hairline が
-      // FAX 200dpi で痩せる問題を防ぐ。Adobe 経由 escape hatch (上の via=
-      // "adobe" 分岐) では適用しない (Adobe の vector path を活かす)。
-      rasterAllPagesForFax: true,
+      // β.89 hotfix: β.88 で実装した rasterAllPagesForFax (900dpi 全ページ
+      // raster) は PDF サイズが膨大になり、Chromium silent print が
+      // "Print job canceled" で窒息 + 物理印字が黒ベタになる事故を引き
+      // 起こしたため一旦無効化。明朝保険は別途 400dpi 等で再設計する。
       onProgress: ({ done, total }) => {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
     });
-    updateBusy(`${faxDevice} へ送信中... ドライバの送信先入力ダイアログをご確認ください`, 90);
+    updateBusy(`送信先 ${faxDevice} へ送信中... ドライバの送信先入力ダイアログをご確認ください`, 90);
     await kpdf3.printPdfSilent({
       source: "rasterized",
       pages: composed,
@@ -1094,15 +1115,21 @@ export async function actionFaxChangePrinter() {
   const faxPrinters = Array.isArray(allPrinters)
     ? allPrinters.filter((p) => _isFaxNameLike(p.name) || _isFaxNameLike(p.displayName))
     : [];
-  if (allPrinters.length === 0) {
+  // β.89 hotfix: 通常プリンタへの誤送信を防ぐため、FAX 系名以外は picker
+  // に出さない方針。FAX 系が 0 件のときは「FAX 系プリンタを追加してくだ
+  // さい」案内で中止 (allPrinters fallback は廃止)。
+  if (faxPrinters.length === 0) {
     await customConfirm({
       title: "FAX プリンタを変更",
-      message: "プリンタが見つかりません。OS のプリンタ設定をご確認ください。",
+      message:
+        allPrinters.length === 0
+          ? "プリンタが見つかりません。OS のプリンタ設定をご確認ください。"
+          : "FAX 系プリンタ (名前に「FAX」「ファックス」「ファクス」を含む) が見つかりません。OS 側で FAX ドライバを追加してから再度お試しください。",
       cancelLabel: null,
     });
     return;
   }
-  const picked = await _showFaxSetupDialog(faxPrinters, allPrinters);
+  const picked = await _showFaxSetupDialog(faxPrinters, null);
   if (picked) {
     _rememberFaxPrinter(picked);
     _wsStatus.textContent = `FAX プリンタを ${picked} に変更しました`;
