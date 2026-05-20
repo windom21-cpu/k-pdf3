@@ -1262,7 +1262,12 @@ async function drawOverlay(ctx, ov, zoom, monoOverlays = false) {
     const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
     // β76: 明朝/serif で bold OFF のときだけ極細 stroke で補強。bold ON
     // のときは従来どおり 0.06 stroke。Gothic/sans は β73 状態 (no stroke)。
-    const _hairline = !props.bold && _needsHairlineStroke(props.fontId);
+    // β121: ページ番号など「細字のまま印刷を濃くしたい」用途向けに
+    // props.enforceHairline でフォントに依らず hairline 補強を強制する
+    // (= 太字 OFF + Gothic でもパリッと出る)。
+    const _hairline = !props.bold && (
+      !!props.enforceHairline || _needsHairlineStroke(props.fontId)
+    );
     const boldOpt = {
       bold: !!props.bold,
       stroke: !!props.bold || _hairline,

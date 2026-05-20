@@ -797,9 +797,11 @@ async function applyPageNumbers() {
   const fontSize = Math.max(6, Math.min(36, Number($("page-numbers-fontsize").value) || 11));
   // β.116: フォントを page-numbers-font select から取得 (preset + system フォント)
   const fontId = $("page-numbers-font")?.value || currentTextFontId();
-  // β.120: 太字 ON で β.73 の 0.03×fontSize 同色 overstroke が効き、印刷時
-  // もパリッと出る。デフォ ON。
-  const boldOn = $("page-numbers-bold")?.checked ?? true;
+  // β.120 → β.121: 太字デフォを OFF に変更。代わりに太字 OFF のとき
+  // properties.enforceHairline = true を埋め込んで、exporter で β.76 の
+  // hairline 補強 (0.02×fontSize) をフォントに依らず適用させる。これで
+  // 「細字 (=見た目細い)」のまま「印刷時は濃く出る」両立が可能。
+  const boldOn = $("page-numbers-bold")?.checked ?? false;
   const allPages = await kpdf3.getPages();
   const visible  = allPages.filter((p) => !pendingDeletedPages.has(p.pageNo));
   if (visible.length === 0) {
@@ -862,9 +864,11 @@ async function applyPageNumbers() {
         color: "#000000",
         fontId,
         digitsHanko: false, // ページ番号は数字主体なので hanko は OFF (= 明示)
-        // β.120: 太字 ON で β.73 の同色 overstroke が効き、印刷時もパリッと
-        // 出る (ユーザー報告: 印刷時に薄く出ていた)。
         bold: boldOn,
+        // β.121: 太字 OFF のときだけ enforceHairline を立てて、exporter で
+        // β.76 の hairline 補強をフォント非依存に適用させる。太字 ON のとき
+        // は β.73 overstroke が効くので enforceHairline 不要。
+        enforceHairline: !boldOn,
         rotation: 0,
       },
     });
