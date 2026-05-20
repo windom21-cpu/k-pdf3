@@ -1,7 +1,7 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-05-19
-現在のバージョン: **v2.0.0-beta.104** (autoUpdater 経由で配布中)
+最終更新: 2026-05-20
+現在のバージョン: **v2.0.0-beta.121** (autoUpdater 経由で配布中)
 リポジトリ: 開発リポ [windom21-cpu/k-pdf3](https://github.com/windom21-cpu/k-pdf3) (Public) / 配布フィード [windom21-cpu/k-pdf3-releases](https://github.com/windom21-cpu/k-pdf3-releases) (Public)
 
 このドキュメントは、K-PDF3 の開発を引き継ぐ次の AI アシスタント（または別環境の自分）が会話履歴なしで作業継続できるよう書かれている。**着手前に §0 → §1 → §2 → §3 → §6 → §8 → §17 の順で必ず読むこと**。
@@ -12,9 +12,9 @@
 
 ## 現状サマリ (1 分で把握)
 
-**フェーズ**: M5 + M6 大半完了、**β テスト継続中** (法律実務家本人 + スタッフ数名で実利用)。M6 残: 「後で」仮説恒久対応 / 診断ロガー撤去 (annotation read-only proxy + qpdf sanitize は β.83 / β.84 で完了、真の墨消しは β.85 で完了)。**β.97 で PDF→画像書き出し + 範囲画像保存、β.100-104 でオートシェイプ (直線/矢印/ブロック矢印/双方矢印/四角/角丸/楕円/楕円+× の 9 種、太さ・長さ不変の 45° 回転) を投入**。
+**フェーズ**: M5 + M6 大半完了、**β テスト継続中** (法律実務家本人 + スタッフ数名で実利用)。M6 残: 「後で」仮説恒久対応 / 診断ロガー撤去 (annotation read-only proxy + qpdf sanitize は β.83 / β.84 で完了、真の墨消しは β.85 で完了)。**β.97 画像書き出し / β.100-104 オートシェイプ / β.105-121 では選択 UX 強化 (群移動/Ctrl+A/矢印キー/同種一括変更) + Adobe ハンドオフ強化 + OS native CJK font fallback + 印刷ジョブ drain 待ちなど運用面を仕上げ**。
 
-**直近完了 (β71〜β104、2026-05-14〜19)**:
+**直近完了 (β71〜β121、2026-05-14〜20)**:
 - **β71** — B2 renderer.js モジュール分離完結 (8631→4472 行 / -48.2% / 12 モジュール) + B3 タブ別ウインドウ完成 (右クリック / ツールバー / File menu / drag tearout / drag dock-back の 5 経路)
 - **β72** — 印刷経路を**案 D に再々設計**: K-PDF3 自前ダイアログを skip して Adobe `/p` でネイティブ印刷ダイアログ直接起動。**FAX freeze バグ根治** (β54-β70 の構造的問題、Adobe `/t` silent flag が driver UI 抑止する仕様 + β70 SW_HIDE 併発が原因)。案 X 印刷キュー監視 (`Win32_PrintJob` PowerShell) で Pro DC を 3 秒バッファ後 auto-kill
 - **β73** — テキスト太字化バグ修正 (β34 の 0.03×fontSize overstroke を bold OFF 時 skip)。Adobe spawn の preamble を `Promise.all` で並列化 (~1 秒短縮)
@@ -130,33 +130,124 @@
   - 旧 `_shapeEndpoints` / `_blockArrowPolygon` / `_doubleBlockArrowPolygon` / `_drawArrowHead` は撤去、`_drawDirectionalShapeAtOrigin` + 中心基準ポリゴン helper に統合
   - UI: popup の 8 方向 dropdown → 「↺ ⟨向き indicator⟩ ↻」3 要素のボタン UI。`rotateSelectedShape(±1)` で 45° 単位回転、indicator は 8 種 (→↘↓↙←↖↑↗)
   - kind directional ↔ non-directional 切替時の bbox 整合性も処理 (`updateShapeOverlay` 拡張)。旧 shape (β.100-103 で配置済、length/crossSize 無し) は bbox から `max(w,h) / min(w,h)` で互換 fallback
+- **β105** (2026-05-20): フォント select の文字化け解消 + テキスト挿入 / スタンプにも system フォント拡張
+  - 根因: Win 環境で PowerShell の既定出力エンコ (CP932/UTF-16LE) のまま `toString("utf-8")` で受けていた → 日本語フォント名 (MS UI Gothic / ヒラギノ / 游ゴシック等) が壊れる
+  - main.js `_collectSystemFonts` の PowerShell コマンド冒頭で `$OutputEncoding=[System.Text.Encoding]::UTF8; [Console]::OutputEncoding=...` を設定し UTF-8 に強制
+  - β.80 で form-text-font 専用だった system フォント append ロジックを `src/renderer/system-fonts.js` に共通化 (renderer.js / stamp-dialogs.js 双方で利用、循環 import 防止)
+  - 展開先: テキスト挿入 (#text-font) + スタンプ「フォント設定…」ダイアログの全角 / 半角 select
+  - fonts.js: `getStampFontStack` を system font fallback に拡張 (preset 名以外はそのまま CSS family へ)、`setStampFontDefaults` の validation を緩めて任意文字列受け入れ
+  - HANDOVER §17 #17「既存 text overlay の system font 選択拡張」を消化
+- **β106** (2026-05-20): Adobe 印刷後の cleanup 経路に診断ログ + tasklist hang 防御
+  - β.105 までのユーザー報告: `pdfreader-dialog-finish` の後にあるはずの `pdfreader-cleanup` ログが「無い」事象 (= 経路に入って hang したのか、入っていないのか判別不能)
+  - `killNewPdfReaderProcesses` 冒頭に `pdfreader-cleanup-start` ログを追加 (経路に入ったか確実に記録)
+  - finish() 内の `.catch(() => {})` を `logCrash("pdfreader-cleanup-error", err)` に置換 (fire-and-forget の例外を可視化)
+  - `listAdobeRelatedProcesses` / `getProcessPidsByName` に 5 秒 timeout 追加 + `logCrash("...-timeout", ...)` で記録 (cleanup 全体が tasklist hang で止まる事故を構造防御)
+- **β107** (2026-05-20): 選択 UX 4 件まとめて投入 (法律実務ユーザー要望)
+  - **① 群移動 D&D**: viewer.js の pointerdown/move/up/cancel に group drag ロジック追加。`getSelectedOverlayIds` callback と `onOverlayDragEndGroup` callback を viewer opts に追加し、primary が selection に含まれかつ複数なら他選択 overlay も同じ delta で動く。pointerup で `CompositeCommand` 1 step に commit
+  - **② Ctrl+A 全選択**: overlay-selection.js に `selectAllOverlays(ids)` を新設 (set を 1 まとめで構築 → reapplySelectionDom 1 回)。renderer.js keydown で `projectStore.list()` の id 配列を渡す (← β.109 でバグ判明、`snapshot()` に修正)
+  - **③ 同種 form_field の一括フォント等変更**: `_buildFormFieldPatch(ov, fk)` で patch 構築を ov 単位に分離、`applyFormFieldStyleToEditingOrSelected` を「同じ fieldKind の selection 全体に同じ patch を ライブ適用」に拡張。`populateFormFieldOptionsBar` / `refreshModeOptionsBar` も multi-select 同種 OK に緩和 (異種混在なら hidden)
+  - **④ 矢印キー微移動**: keydown で ArrowUp/Down/Left/Right を捕捉、`nudgeSelectionBy(dx, dy)` で selection 全体を 1pt 単位 (Shift で 10pt) 移動。`CompositeCommand` で 1 keystroke = 1 undo。input/contentEditable フォーカス中は browser default
+- **β108** (2026-05-20): 矢印キー clamp を group-aware に (β.107 hotfix)
+  - β.107 の `nudgeSelectionBy` は overlay 個別に `Math.max(0, ov.x+dx)` で clamp していたため、Ctrl+A 状態で左矢印連打すると左端 overlay が x=0 で止まり他は移動継続 → 相対位置が崩れる UX バグ
+  - 修正: selection 全体の min(x), min(y) を計算し、負方向 delta を `dx' = max(dx, -minX)` で抑制 → 端到達で全体が同期して停止
+- **β109** (2026-05-20): `projectStore.list()` を `snapshot()` に修正 (β.107 Ctrl+A の TypeError 根治 + Shift+click range 復活)
+  - β.107 の Ctrl+A hander が `projectStore.list()` を呼んでいたが、`ProjectStore` にこのメソッドは存在しない (正しくは `snapshot()`) → 即 TypeError で全選択が動いていなかった (実機検証漏れの私のミス)
+  - overlay-selection.js の Shift+click range 経路 (`_overlayIdsInReadingOrderBetween`) も同じバグで、B2 リファクタ (5ff6cfc) 以来ずっと壊れていた事実が判明 → 同時に修正
+- **β110** (2026-05-20): 書き出しダイアログに「白黒で書き出す」チェックを追加
+  - ユーザー指摘: 「白黒モード」(β.88 ツールバートグル) は印刷ボタン押下時のみ作用し、「PDF として書き出し」した PDF は元カラーが残る → 別アプリ印刷で意味なしの問題
+  - file-browser.js に `monoExportToggle` オプションを追加 (secureExportToggle と同パターン)。save mode で secure / mono の両 toggle 状態を payload object に集約、両方 false なら従来の string 戻り値
+  - folder mode (分割保存) でも monoExportToggle が立てば object 返却 (secure 側は qpdf 等の複雑性から save mode 限定を維持)
+  - 4 経路に `monoOverlays` を伝搬: actionExport / actionExportRange / actionSavePagesAsPdf / 分割保存
+- **β111** (2026-05-20): 上書き保存の確定ダイアログに「白黒で上書き」チェックを追加
+  - dialogs.js の `customConfirm` に `checkbox: { label, defaultChecked, storageKey }` オプションを追加 (resolve を { ok, checked } に切替、未指定なら従来通り boolean)
+  - HTML に `confirm-checkbox-row` を追加 (普段は hidden、checkbox オプション指定時のみ表示)
+  - actionSave の確定ダイアログで checkbox: { label: "白黒で上書き...", storageKey: "kpdf3.saveMono" } を渡し、result.checked を `actionExportToPath` に monoExport として伝搬
+  - 既存 customConfirm 呼出 (~25 箇所) は全て checkbox 未指定 → 後方互換 OK
+- **β112** (2026-05-20): 墨消しを sticky 化 (連続配置)
+  - ユーザー要望: 墨消しを連続で行えるよう、1 回置くたびに mode が "none" に戻る挙動を撤廃
+  - `startRedactionDrag` 内の `_setPlacementMode("none")` 3 箇所 (fallback / onUp / onCancel) を削除し、marker mode と同じ sticky 動作に揃える (β5 以来の marker パターンを継承)
+  - 抜けるには別モードボタン / 同じ墨消しボタン再押下 / Esc キー
+- **β113** (2026-05-20): mupdf に OS native CJK font fallback を導入 (Adobe 互換寄せ)
+  - ユーザー報告: WEB から DL した PDF を Adobe で開くと MS ゴシック相当だが、K-PDF3 (mupdf) で開くと中華系フォント (NotoSansCJK 系) になる
+  - Adobe プロパティ確認で PDF 内の MS-Gothic / Bold が「埋め込みなし」と判明 → Adobe は OS の MS ゴシックで自動代替、mupdf は内部 bundled CJK fallback
+  - `src/backend/mupdf-font-fallback.js` を新設、`mupdf.installLoadFontFunction((name, script, bold, italic) => Font|null)` で fallback を登録
+  - 判定は script タグ (Han/Hira/Kana/Hang/Bopo/Hrkt/Jpan/Kore/Hans/Hant) **か** font name (MS-Gothic / MS-Mincho / HeiseiKakuGo / YuGothic / Adobe-Japan1 / 小塚 等) の OR (CID font で script タグが薄いケースの保険)
+  - bold は callback 引数 + font name の ",Bold" / "Bold" 末尾検出
+  - Win: msgothic.ttc / YuGothB.ttc、Linux: NotoSansCJK 系。Mac は将来 (一旦 null で mupdf default に委ねる)
+  - フォントは `readFileSync` で 1 度読んで Buffer をキャッシュ + Font オブジェクトも name+path 単位でキャッシュ
+  - logFn (= logCrash) を受け取り最初 10 回の callback 発火を `font-fallback-callback` ログに残す (= 実機で効いているか追跡可能)
+  - main.js の whenReady より前 (mupdf import 直後) に `registerFontFallback(logCrash)` を実行
+  - ユーザー確認結果: 銀行明細 PDF などで日本語フォントが Adobe と同等の MS ゴシック相当に変わって視認性が劇的に改善
+- **β114** (2026-05-20): 「罫線抑制」トグル — 薄罫線を画面表示時のみ白化 (書き出し不変、β.113 ユーザー残課題)
+  - ユーザー報告: フォント問題は β.113 で解消したが、Adobe では非表示の薄いグレー罫線が mupdf rendering で anti-aliasing により可視化される
+  - `src/renderer/line-suppress.js` を新設: 候補ピクセル (`max-min<=chroma`、`min>=loGray`、alpha 十分) を水平/垂直 run で N px 以上連続のみ白に置換。文字輪郭は色階調変化で連続せず守られる
+  - viewer.js の renderPage 結果適用直前で pageNo>0 限定で in-place 適用
+  - ツールバーに「罫線抑制」トグル追加、デフォ OFF、localStorage 永続化
+- **β115** (2026-05-20): 罫線抑制ボタン撤去 (ユーザー判断、メニュー簡素化) — 内部 API は残置
+  - 実測 (オリジナル PDF には触れず /tmp 複製で検証): 効果が「ヘッダ背景の薄グレーが白になる」程度で、肝心の細罫線は連続性検出が破れて残る + 文字輪郭への副作用リスク
+  - HTML から btn-suppress-lines を削除、renderer.js の state / event listener / disabled 連動を全削除
+  - `src/renderer/line-suppress.js` / `viewer.setSuppressLines` は将来「ツール」「詳細設定」経由での再公開に備えて残置 (= 隠し API)
+- **β116** (2026-05-20): 3 件まとめて (ページ番号中央寄せ修正 + フォント選択 + Adobe 検出強化)
+  - (1) ページ番号「中央」配置のテキストが左寄りに見える問題 — 固定 W = max(60, fontSize*8) で中央配置していたが、テキストは left-align で短い番号がボックス内で左に偏っていた。`measureTextOverlaySize` で実テキスト幅を測って W に反映するよう変更
+  - (2) ページ番号にもフォント select 追加 — page-numbers-dialog にフォント行 (preset 4 種 + 「システム」optgroup)。system-fonts.js の共通ロジックを流用、選択値は fontId として overlay properties に保存
+  - (3) Adobe 検出パターン拡張 + 詳細診断 — β.115 報告で `acrotray.exe` しか拾えなかった事象に対応:
+    * `listAdobeRelatedProcesses` を `{kill, wide}` の 2 配列を返す形に拡張
+    * KILL パターン: 中間マッチ許容 + `RdrCEF` / `AcroRd` を追加 — Reader CEF も巻き添え kill 対象に
+    * WIDE パターン: Adobe/Acro/Reader を含む全プロセスを診断専用に列挙
+    * pdfreader-cleanup ログに `adobeRelatedAtCleanupWide` / `survivorsExtraWide` を追加 → 次回 Adobe 残留時にユーザー環境固有のプロセス名が判明する想定
+- **β117** (2026-05-20): ページ番号「配置」ボタン無反応 hotfix + 印刷経路に temp PDF 診断ログ
+  - β.116 で `measureTextOverlaySize` を **オブジェクト引数** で呼んでいた (正しくは positional `(text, fontSize, fontFamily, currentW, maxW)`) → 第 1 引数 text に object が入って `text.split()` で TypeError → for ループ abort → 何も配置されず、ダイアログも閉じない (ローカル動作確認漏れの私のミス)
+  - positional 呼出に直す + `getTextFontStack(fontId, {digitsHanko: false})` で CSS family を生成 + try-catch で囲み measure 失敗時は固定 W (= 旧 fontSize*8) で fallback
+  - `print-via-reader-dialog-start` ログに `tempPath` / `tempBytes` / `tempBytesHuman` を追加 → 016-721 等の切り分けで「この temp PDF を Adobe で直接開いて印刷」テストが可能に
+- **β118** (2026-05-20): 印刷 3 改善まとめ
+  - **(a) 印刷ジョブ drain 待ち**: ユーザー報告「52 枚印刷で 7 枚目まで出て切れる」に対応。tick で新規ジョブ ID を `submittedJobIds` に蓄積、finish 後の `killNewPdfReaderProcesses` を「submitted ジョブが queue から drain するまで」遅延 (2 秒間隔 polling、最大 5 分)。`pdfreader-jobs-drained` ログに drained / elapsedMs / 残ジョブ ID を記録
+  - **(b) 送信中 busy modal の中止ボタン**: ユーザー報告「Adobe が hand-off で hang、kpdf3 の送信中ダイアログが固まる、手動で × 押すしかない」に対応。3 経路 (通常印刷 / 下敷き印刷 / FAX 送信) の showBusy に onCancel を追加し、`kpdf3:cancel-print` IPC を `cancelInFlightPrint()` に拡張 (Sumatra + Adobe + Chromium 全経路で kill)。renderer の await 復帰 → busy modal 解除
+  - **(c) NEVER_KILL_PREFIX 拡張**: `Adobe Desktop Service` / `Adobe Genuine Service` / `Adobe Sync` / `AdobeGCClient` / `CCXProcess` / `CCLibrary` / `Creative Cloud` / `CoreSync` を追加 → Adobe CC 常駐サービスを kill しない保証強化 (印刷無関係なため)
+- **β119** (2026-05-20): ページ番号ダイアログのプリセット永続化
+  - localStorage キー `kpdf3.pageNumbers.{position,format,start,fontSize,font}` を追加
+  - openPageNumbersDialog で `_restorePageNumbersPresets` で全フィールド復元、applyPageNumbers で配置完了直後に `_savePageNumbersPresets` で保存
+  - system フォント名も option 値として保存可 → 次回も同じ system フォント名で復元 (page-numbers-font の append タイミングと整合)
+- **β120** (2026-05-20): ページ番号ダイアログに太字オプション追加 (印刷時のかすれ解消…直後にユーザー嗜好で β.121 で再調整)
+  - β.116/.117 で `bold: false` 固定にしていたため、印刷時に薄く出るユーザー報告
+  - 「太字」チェック追加 (デフォ ON)、prop `bold` に反映 → β.73 の overstroke が効いて印刷濃く
+  - プリセット永続化 (β.119) にも `kpdf3.pageNumbers.bold` を追加
+- **β121** (2026-05-20): ページ番号は「細字デフォ」+ enforceHairline で印刷時のみ濃く
+  - ユーザー指摘: 「ページ数が太字はいや。細字の場合も濃くして」
+  - 太字デフォを OFF に戻し、ページ番号 overlay に新 property `enforceHairline: true` を埋め込み (太字 OFF のときだけ)
+  - exporter.js の text 経路で `_hairline = !props.bold && (!!props.enforceHairline || _needsHairlineStroke(fontId))` に拡張 → ページ番号は太字 OFF + Gothic/Sans でも β.76 の hairline 補強 (0.02×fontSize) が効く
+  - 副作用評価: enforceHairline はページ番号配置時のみ埋め込むので、テキスト挿入や form_field 等 他の text overlay には影響なし
 
 **当面の残課題 / 未解決事項** (優先順):
 
-1. **β.96 Adobe 残留拡張 kill の実機検証** — β.95 で全 PID kill 方針に切替えても `preExistingPidsByExe` 全空 = `Acrobat.exe` 等の名前で見つからなかった事象を、β.96 で `listAdobeRelatedProcesses` の名前パターン拡張で対応。**次回また Adobe が消えない場合は `pdfreader-cleanup` ログ内の `adobeRelatedAtCleanup` フィールドを共有してもらう** → 実際の exe 名が判明するので、whitelist / kill 対象を精密化できる
-2. **印刷後 temp PDF が K-PDF3 に open される副次現象** (β.95 ログ調査で発見) — Adobe 印刷後に `X:\K-system\ksystemz\temp_print\*.pdf` (K-PDF3 が作った temp ファイル) が K-PDF3 自身に「開け」と渡される。second-instance-received → os-open-received → 新セッション起動の流れで temp ファイルがダブルクリックされたかのように扱われる。実害は軽微 (新セッションが一瞬立ち上がる程度) だが余計な動作。Adobe の「印刷後にデフォルト PDF ビューアで開く」挙動が悪さしている可能性、Windows のファイル関連付けが絡む可能性。**低優先で要調査**
-3. **下敷き印刷の精度キャリブレーション** (β.80 で本体実装済、未検証) — 用紙送り誤差で X/Y 数 mm ズレる可能性。スキャン取込が傾きなければ実用範囲という D1 仮説を立てて MVP では精度補正なし。実機で「申請書原本を下敷きに、白紙申請書をプリンタにセットして印刷」検証 → ズレ量から (a) プリンタ別 X/Y オフセットだけで十分か (b) 倍率補正 / トレイ別 / 申請書別まで要るかを判断
-4. **β.83 annotation proxy の実機検証** — annotation 入り PDF を開いて (a) 種別ごとの見た目、(b) 位置精度 (canonical 変換)、(c) ツールチップ表示、(d) ズーム/回転追従、(e) PDF 切替時の残留無しを確認待ち
-5. **β.84/β.85/β.86 セキュア書き出し + 真の墨消しの実機検証** — (a) Adobe で「文書のプロパティ」を見て Author/Producer が消えているか、(b) しおりが保持されているか、(c) 墨消しを置いたページで Adobe テキスト選択 / 検索 / 抽出できないこと、(d) 警告ダイアログが出ないか (qpdf 同梱済の確認)、(e) β.86 で可視化したチェックボックスが業務的に気付きやすいかを実機で確認待ち
-6. **β.87 画像スタンプ濃度 ramp の実機検証** — カラー印影 (赤・青等) 画像を 1 つ登録するだけで押印 / 印刷の濃度が白黒版と同等になるか。中間グレーの色が濃くなりすぎていないか。閾値 LO=0.5 / HI=0.85 が業務印影をカバーしているか (パステル系で物足りなければ調整余地あり)
-7. **β.88-β.93 FAX 経路 + 白黒モードの実機検証** — (a) 白黒トグル ON 時に通常印刷で overlay 色が黒に projection されるか、(b) FAX ボタン左クリックで Adobe ダイアログが FAX 選択済で開くか、(c) Adobe で「実際のサイズ」を 1 度選べば次回以降記憶されるか、(d) FAX 送信後の宛先記憶が消えているか (β.93)、(e) 通常印刷では 100% scale で出るか
-8. **β.94 タブ切替バグの実機検証** — Tab A でしおりクリック後 Tab B に切替 → (a) Tab B が前回位置 (or 先頭) に開くこと、(b) Tab B のしおりパネルに Tab A のしおりが混在しないこと
-9. **β.90 zombie 自己復旧の実機検証** — primary window 閉じ + B3 子ウインドウ alive の状態で PDF ダブルクリック → 新しい primary window が立ち上がって PDF が開くか (= 「一瞬開いて閉じる」が解消されているか)。HANDOVER §15 の「J5 過剰 kill」仮説は β.90 で副次的に解消したはず (= 通常経路では J5 が発火しなくなる) ので、子ウインドウのとばっちり kill 報告が止まるか
-9b. **β.97 画像書き出しの実機検証** — (a) 全/現/カスタム範囲 (`1-3,5,7-10`) のパースが期待通りか、(b) 連番ファイル名 `<base>_p001.png` の桁数が業務的に合理的か、(c) 300 dpi デフォルトが送付用に適切か、(d) 範囲選択の crosshair / drag UX、(e) 白黒モードでの overlay 黒変換
-9c. **β.100-104 オートシェイプの実機検証** — (a) 9 種類 (直線/矢印/双方矢印/ブロック矢印/双方ブロック/四角/角丸/楕円/楕円+×) が業務想定をカバーするか、(b) ↻↺ ボタンで 45° 回転時に太さ・長さが完全に不変か (β.104 で根治した core 改修)、(c) 斜め方向で bbox 切れがないか、(d) popup と選択 shape の値同期が直感的か、(e) kind を directional ↔ non-directional 切替時に寸法が破綻しないか、(f) 配置直後の自動選択が UX 的に自然か
-10. **明朝保険の再設計** (β.88 Phase 3 を 900dpi 過剰実装で撤回した経緯) — β.92 で Adobe `/p` 経路に統一したことで明朝 hairline 品質も担保される (Adobe vector レンダラ使用) → 当面再設計の必要性なし。実機で「Adobe 経由 FAX で明朝が痩せて読めない」報告が出た時に限って 400dpi 限定 raster を再検討
-11. **分割保存にもセキュア書き出し UI** — β.84 で導入の `secureExportToggle` は通常書き出し / 範囲書き出し / N ページ保存の 3 経路のみで、分割保存は folder picker 経由のため未提供。提出版を分割保存で作る業務シナリオが想定されるなら追加検討 (現状は metadata 残る)
-12. **「後で」仮説の恒久対応** — autoUpdater 「ダウンロードしますか?」で「後で」を選ぶと中間ダウンロード残留 → 後続バージョン取得時に整合性破壊の仮説。対応案: (a) ダイアログから「後で」撤去、(b) キャンセル時の差分ファイル cleanup
-13. **CI release matrix race** — β タグでは案 B-2 (Win 単独) で構造的に解消、stable v2.0.0 リリース時に手動シーケンシャル trigger or `needs:` 化を検討
-14. **stable リリース時の cleanup**: β51 で追加したクラッシュ診断ロガー一式 + β75 D&D 診断ログ + β.85 Adobe 残留診断 (`pdfreader-cleanup` の `survivors`/`killDetails` + `pdfreader-process-closed`) + β.90 `primary-window-closed` + β.96 `adobeRelatedAtCleanup`/`extraKilled`/`survivorsExtra` を撤去 (`crashLogPath()` / `logCrash()` / `kpdf3:log-diag` IPC 等)。**β78 の `addpdf-*` 系 + β.79 の `page-bar-drop` 系診断は撤去済**、`kpdf3:insert-pdf-progress` は実用 UI なので残置
-15. **Wayland ショートカット + renderer auto-reload** — F5 / Ctrl+R / F12 が Ubuntu Wayland で発火しない (β.74 で記録)。加えて β.81 dev で electronmon の renderer auto-reload が反映されないケースを確認 (完全 kill + 再起動で解消)。バージョン情報ダイアログのリロード / 開発者ツールボタンで代替可
-16. **既存 workspace の leftover synth (300 dpi image_blob) 削減** (低優先) — β78 以前に挿入された synth は 300 dpi の image_blob を持つ。新規挿入分は 96 dpi。混在は問題ないが、storage 圧縮目的で migration を打つなら考慮余地
-17. **既存 text overlay の system font 選択拡張** (β.81 form field 限定で先行実装) — 実利用で問題なければ通常の text overlay にも展開する方針 (UI 統合 + getTextFontStack は既に system font 名対応済なので、UI ロジックだけ拡張で済む)
-18. **qpdf Mac/Linux バンドル** (β.84 で Windows のみ同梱) — stable v2.0.0 で Mac/Linux のセキュア書き出しも動かすなら、vendor/qpdf/{mac,linux}/ にバイナリ追加 + package.json mac/linux の extraResources 設定追加
-19. **shape ADR の起草** (β.100-104) — overlay type "shape" 追加 + length/crossSize モデルは ADR 起草対象。実装は完了しているが、設計判断 (bbox AABB 派生 / 中心基準描画 + rotate / 8 方向のみ) のドキュメント化は stable リリース前に。ADR-0023 候補
-20. **shape の発展余地** (低優先、ユーザー要望次第) — (a) shape にテキスト埋込 (現状 callout が独占)、(b) 任意角度回転 (現状 45° 単位)、(c) 線種 (dash/dot)、(d) ハンドルで両端を独立に動かす UI (現状 bbox AABB のため両端独立は不可)。MVP では現状で十分という判断
+1. **β.118 印刷ジョブ drain 待ち + busy modal 中止の実機検証** — (a) 大量ページ印刷時に全ページ送信し切るか (`pdfreader-jobs-drained: drained=true` ログ確認)、(b) Adobe が hand-off で固まる事象で busy modal の「中止」ボタンが効くか、(c) DRAIN_TIMEOUT_MS=5min が業務的に適切か
+2. **β.116/.118 Adobe 検出パターン拡張の実機検証** — `adobeRelatedAtCleanupWide` で未知の Adobe 関連プロセスが見えた場合の対応。CC 常駐サービス (Adobe Desktop Service / Genuine 等) は NEVER_KILL_PREFIX に追加済、それ以外の取り漏れがあれば共有してもらって反映
+3. **β.117 印刷 temp PDF 診断の活用** — 016-721 等の再発時に `print-via-reader-dialog-start` ログの `tempPath` をユーザーが取り出し、Adobe で直接開いて印刷 → K-PDF3 が書き出す PDF 自体の問題か、起動経路の問題かを切り分け
+4. **印刷後 temp PDF が K-PDF3 に open される副次現象** (β.95 ログで発見) — Adobe 印刷後に temp PDF が K-PDF3 に「開け」と渡される (second-instance-received → os-open-received)。実害は軽微 (新セッションが一瞬立ち上がる程度) だが余計な動作。Adobe / Windows ファイル関連付けが絡む可能性。**低優先で要調査**
+5. **下敷き印刷の精度キャリブレーション** (β.80 で本体実装済、未検証) — 用紙送り誤差で X/Y 数 mm ズレる可能性。実機で「申請書原本を下敷きに、白紙申請書をプリンタにセットして印刷」検証 → ズレ量から (a) プリンタ別 X/Y オフセットだけで十分か (b) 倍率補正 / トレイ別 / 申請書別まで要るかを判断
+6. **β.83 annotation proxy の実機検証** — annotation 入り PDF を開いて (a) 種別ごとの見た目、(b) 位置精度 (canonical 変換)、(c) ツールチップ表示、(d) ズーム/回転追従、(e) PDF 切替時の残留無しを確認待ち
+7. **β.84/β.85/β.86 セキュア書き出し + 真の墨消しの実機検証** — (a) Adobe で「文書のプロパティ」を見て Author/Producer が消えているか、(b) しおりが保持されているか、(c) 墨消しを置いたページで Adobe テキスト選択 / 検索 / 抽出できないこと、(d) 警告ダイアログが出ないか、(e) β.86 で可視化したチェックボックスが業務的に気付きやすいか
+8. **β.87 画像スタンプ濃度 ramp の実機検証** — カラー印影 (赤・青等) 画像を 1 つ登録するだけで押印 / 印刷の濃度が白黒版と同等になるか。閾値 LO=0.5 / HI=0.85 が業務印影をカバーするか
+9. **β.94 タブ切替バグの実機検証** — Tab A でしおりクリック後 Tab B に切替 → (a) Tab B が前回位置 (or 先頭) に開くこと、(b) Tab B のしおりパネルに Tab A のしおりが混在しないこと
+10. **β.90 zombie 自己復旧の実機検証** — primary window 閉じ + B3 子ウインドウ alive の状態で PDF ダブルクリック → 新 primary window が立ち上がって PDF が開くか
+11. **β.97 画像書き出しの実機検証** — (a) 全/現/カスタム範囲のパースが期待通りか、(b) 連番ファイル名の桁数が業務的に合理的か、(c) 300 dpi デフォルトが送付用に適切か、(d) 白黒モードでの overlay 黒変換
+12. **β.100-104 オートシェイプの実機検証** — (a) 9 種類が業務想定をカバーするか、(b) ↻↺ ボタンで 45° 回転時に太さ・長さが完全に不変か、(c) 斜め方向で bbox 切れがないか、(d) popup と選択 shape の値同期が直感的か
+13. **β.107-109 選択 UX (群移動 / Ctrl+A / 矢印キー / 一括変更) の実機検証** — (a) 複数選択時の D&D 同期移動、(b) Ctrl+A 全選択 + 矢印キーで全体ズラし (β.108 で端到達 clamp 修正済)、(c) 同種 form_field 複数選択時の options bar 一括変更、(d) Shift+click range も β.109 で復活
+14. **β.110/.111 書き出し / 上書き保存の白黒オプションの実機検証** — 各書き出しダイアログのチェック + 上書き保存の確定ダイアログでの「白黒で上書き」が業務想定通り効くか
+15. **β.113 OS native CJK font fallback の継続実機検証** — 銀行明細以外の未埋め込み CJK フォント PDF でも Adobe 互換の表示になるか。crash.log の `font-fallback-callback` を時々確認して取り漏れフォント名がないか
+16. **明朝保険の再設計** (β.88 Phase 3 を 900dpi 過剰実装で撤回した経緯) — β.92 で Adobe `/p` 経路に統一したことで明朝 hairline 品質も担保される (Adobe vector レンダラ使用) → 当面再設計の必要性なし
+17. **分割保存にもセキュア書き出し UI** — β.84 / β.110 で通常書き出し系 + 上書き保存 + 分割保存 (mono のみ) に提供済。secure 側は qpdf 等の複雑性から folder picker 系では未提供 (提出版を分割保存で作る業務シナリオが想定されるなら追加検討)
+18. **「後で」仮説の恒久対応** — autoUpdater 「ダウンロードしますか?」で「後で」を選ぶと中間ダウンロード残留 → 後続バージョン取得時に整合性破壊の仮説
+19. **CI release matrix race** — β タグでは案 B-2 (Win 単独) で構造的に解消、stable v2.0.0 リリース時に手動シーケンシャル trigger or `needs:` 化を検討
+20. **stable リリース時の cleanup**: β51 で追加したクラッシュ診断ロガー一式 + β75 D&D 診断ログ + β.85 Adobe 残留診断 + β.90 primary-window-closed + β.96 adobeRelated* + β.106 cleanup-start/cleanup-error + β.113 font-fallback-callback + β.116 adobeRelatedAtCleanupWide / survivorsExtraWide + β.117 tempPath/tempBytes + β.118 pdfreader-jobs-drained / print-cancel-by-user を撤去 (`crashLogPath()` / `logCrash()` / `kpdf3:log-diag` IPC 等)
+21. **Wayland ショートカット + renderer auto-reload** — F5 / Ctrl+R / F12 が Ubuntu Wayland で発火しない (β.74 で記録)。dev で electronmon の renderer auto-reload が反映されないケースもあり (完全 kill + 再起動で解消)
+22. **既存 workspace の leftover synth (300 dpi image_blob) 削減** (低優先) — β78 以前に挿入された synth は 300 dpi、新規分は 96 dpi。混在は問題ないが storage 圧縮目的で migration を打つなら考慮余地
+23. **罫線抑制ツールの再公開検討** (β.114/.115 で導入 → ボタン撤去、内部 API 残置) — 「ツール」or「詳細設定」メニュー経由で必要時にオプトイン公開する案。`src/renderer/line-suppress.js` / `viewer.setSuppressLines` は既に存在
+24. **qpdf Mac/Linux バンドル** (β.84 で Windows のみ同梱) — stable v2.0.0 で Mac/Linux のセキュア書き出しも動かすなら、vendor/qpdf/{mac,linux}/ にバイナリ追加 + package.json extraResources 設定
+25. **shape ADR の起草** (β.100-104) — overlay type "shape" 追加 + length/crossSize モデルは ADR 起草対象。ADR-0023 候補
+26. **shape の発展余地** (低優先、ユーザー要望次第) — (a) shape にテキスト埋込、(b) 任意角度回転 (現状 45° 単位)、(c) 線種 (dash/dot)、(d) ハンドルで両端を独立に動かす UI
+27. **font-fallback の Mac 対応** (β.113 で Win + Linux のみ実装) — macOS の OS native CJK font path (例: `/System/Library/Fonts/...`) を pickFontFile に追加すれば動く。Mac ビルド配布時に対応
 
-**β.51 以来追跡されてきた「一瞬開いてすぐ閉じる」は β.90 で根治済** (旧 §8.2 #1)。zombie 化した main プロセスの second-instance ハンドラが pendingOpens に push するだけで何もウインドウを作らなかったのが真の機序で、`createMainWindow()` 呼出を追加して自己復旧経路を完成させた。**β.85 で診断強化した「印刷後 Adobe 残留」は β.95-96 で構造解消の試みを実施** (旧 §8.2 #2)、実機検証待ち。
+**β.51 以来追跡されてきた「一瞬開いてすぐ閉じる」は β.90 で根治済** (旧 §8.2 #1)。**「印刷後 Adobe 残留」は β.95-96-116-118 と段階的に対策を重ねて構造解消**、β.118 では Adobe CC whitelist 拡張 + 詳細診断ログで「未知の Adobe 関連プロセス」も追跡可能に。**「印刷の途中打ち切り」は β.118 のジョブ drain 待ちで構造解消**、実機検証待ち。**「ページ番号の印刷時かすれ」は β.121 で `enforceHairline` 導入により細字 + Gothic でも 0.02pt の hairline stroke で濃く印刷される**。
 
 **HANDOVER 更新ルール**: HANDOVER.md は **ユーザーが明示的に依頼した時だけ** 書き換える。β タグを切る毎に勝手に refresh しない (2026-05-12 にユーザーから明示)。
 
