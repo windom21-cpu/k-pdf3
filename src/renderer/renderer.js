@@ -5568,9 +5568,10 @@ window.addEventListener("keydown", (e) => {
 
   // β.107: Ctrl+A — アクティブタブ全 overlay を一括選択 (input フォーカス
   // 中は browser default の「文字列全選択」に委ねる)。
+  // β.109 hotfix: projectStore.list() は存在しない。正しくは snapshot()。
   if (key === "a" && !e.shiftKey && !inText) {
     e.preventDefault();
-    const all = projectStore.list();
+    const all = projectStore.snapshot();
     if (all.length) selectAllOverlays(all.map((o) => o.id));
     return;
   }

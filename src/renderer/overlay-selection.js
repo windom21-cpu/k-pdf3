@@ -198,10 +198,14 @@ export function clearSelection() {
 
 /** Compute the set of overlay ids between (inclusive) anchor and target
  *  in document reading order — page order first, then top-to-bottom +
- *  left-to-right within a page. */
+ *  left-to-right within a page.
+ *  β.109 hotfix: projectStore.list() は存在しない。正しくは snapshot()。
+ *  β5 §17.13 で導入された Shift+click range は B2 リファクタ (commit
+ *  5ff6cfc) 以降ずっと TypeError で死んでいた経路 (実用機能としては
+ *  あまり使われていなかったため気付かれず)。Ctrl+A 実装の調査で発覚。 */
 function _overlayIdsInReadingOrderBetween(anchorId, targetId) {
   const projectStore = _projectStore();
-  const overlays = projectStore.list();
+  const overlays = projectStore.snapshot();
   const ordered = overlays.slice().sort((a, b) => {
     // Page order via PageRegistry positions (sparse / inserted pages
     // make raw pageNo unreliable).
