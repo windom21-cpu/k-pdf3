@@ -6581,25 +6581,43 @@ function applyFontSizeToEditingOverlay() {
  *  これにより、ユーザがハンドルで自由変形した後に size select だけ
  *  触ったときも意図通りリサイズされ、フォント等を変えただけのときは
  *  bbox を勝手に書き戻さない。 */
-/** β.107: 矢印キーで選択中の overlay を delta だけ移動する。1 keystroke =
- *  1 undo step (CompositeCommand で全 selection を 1 まとめ)。マイナス
- *  座標は (0, 0) で clamp する。inline-edit 中はそもそも上位ハンドラで
- *  矢印キーを受け取らない (browser default に委ねる) ので、ここに来る
- *  時点で selection は valid。 */
+/** β.107 → β.108: 矢印キーで選択中の overlay を delta だけ移動する。
+ *  1 keystroke = 1 undo step (CompositeCommand で全 selection を 1 まとめ)。
+ *
+ *  β.108 hotfix: clamp を overlay 個別 (= 各自 max(0, ov.x+dx)) から
+ *  selection 全体の minX/minY を見る group-aware clamp に変更。これに
+ *  より「Ctrl+A して左矢印連打」したときに左端の overlay が x=0 で止
+ *  まり、それ以外が動き続けて相対位置がズレる事故を防ぐ。負方向の
+ *  delta は selection の最端に到達した瞬間に全体が同期して止まる。
+ *
+ *  inline-edit 中はそもそも上位ハンドラで矢印キーを受け取らない
+ *  (browser default に委ねる) ので、ここに来る時点で selection は valid。 */
 function nudgeSelectionBy(dx, dy) {
   if (!isOpen) return;
   const ids = getSelectedIds();
   if (!ids.length) return;
-  const subs = [];
+  // 1 周目: 実在 overlay 収集 + minX/minY 計算 (group-aware clamp 用)
+  const ovs = [];
+  let minX = Infinity;
+  let minY = Infinity;
   for (const id of ids) {
     const ov = projectStore.get(id);
     if (!ov) continue;
-    const newX = Math.max(0, ov.x + dx);
-    const newY = Math.max(0, ov.y + dy);
-    if (newX === ov.x && newY === ov.y) continue;
-    subs.push(new UpdateOverlayCommand(projectStore, id, { x: newX, y: newY }));
+    ovs.push(ov);
+    if (ov.x < minX) minX = ov.x;
+    if (ov.y < minY) minY = ov.y;
   }
-  if (!subs.length) return;
+  if (!ovs.length) return;
+  // 負方向の delta は selection 全体の最端に合わせて抑制 (= 0 を割らない
+  // 最大の負移動)。正方向は上限を設けない (page 境界の縛りは別途必要なら
+  // のちに追加。現状は法律実務的に「画面外まで押し出されないこと」が要件)。
+  if (dx < 0) dx = Math.max(dx, -minX);
+  if (dy < 0) dy = Math.max(dy, -minY);
+  if (dx === 0 && dy === 0) return;
+  const subs = [];
+  for (const ov of ovs) {
+    subs.push(new UpdateOverlayCommand(projectStore, ov.id, { x: ov.x + dx, y: ov.y + dy }));
+  }
   if (subs.length === 1) {
     history.execute(subs[0]);
   } else {
