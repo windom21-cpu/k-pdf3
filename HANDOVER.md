@@ -14,7 +14,7 @@
 
 **フェーズ**: M5 + M6 大半完了、**β テスト継続中** (法律実務家本人 + スタッフ数名で実利用)。M6 残: 「後で」仮説恒久対応 / 診断ロガー撤去 (annotation read-only proxy + qpdf sanitize は β.83 / β.84 で完了、真の墨消しは β.85 で完了)。**β.97 画像書き出し / β.100-104 オートシェイプ / β.105-121 では選択 UX 強化 (群移動/Ctrl+A/矢印キー/同種一括変更) + Adobe ハンドオフ強化 + OS native CJK font fallback + 印刷ジョブ drain 待ちなど運用面を仕上げ**。
 
-**直近完了 (β71〜β121、2026-05-14〜20)**:
+**直近完了 (β71〜β122、2026-05-14〜21)**:
 - **β71** — B2 renderer.js モジュール分離完結 (8631→4472 行 / -48.2% / 12 モジュール) + B3 タブ別ウインドウ完成 (右クリック / ツールバー / File menu / drag tearout / drag dock-back の 5 経路)
 - **β72** — 印刷経路を**案 D に再々設計**: K-PDF3 自前ダイアログを skip して Adobe `/p` でネイティブ印刷ダイアログ直接起動。**FAX freeze バグ根治** (β54-β70 の構造的問題、Adobe `/t` silent flag が driver UI 抑止する仕様 + β70 SW_HIDE 併発が原因)。案 X 印刷キュー監視 (`Win32_PrintJob` PowerShell) で Pro DC を 3 秒バッファ後 auto-kill
 - **β73** — テキスト太字化バグ修正 (β34 の 0.03×fontSize overstroke を bold OFF 時 skip)。Adobe spawn の preamble を `Promise.all` で並列化 (~1 秒短縮)
@@ -216,6 +216,13 @@
   - 太字デフォを OFF に戻し、ページ番号 overlay に新 property `enforceHairline: true` を埋め込み (太字 OFF のときだけ)
   - exporter.js の text 経路で `_hairline = !props.bold && (!!props.enforceHairline || _needsHairlineStroke(fontId))` に拡張 → ページ番号は太字 OFF + Gothic/Sans でも β.76 の hairline 補強 (0.02×fontSize) が効く
   - 副作用評価: enforceHairline はページ番号配置時のみ埋め込むので、テキスト挿入や form_field 等 他の text overlay には影響なし
+- **β122** (2026-05-21): 図形 palette 整列 + メニューバー再編 + PDF プロパティダイアログ — 3 件まとめ
+  - **(1) 図形 palette popup の 9 ラジオを 3×3 grid 整列**: ユーザー報告「縦方向にがたつき」を解消。`.shape-palette-kinds` を新設して 4 行に分けていた `.shape-palette-row` (3+2+2+2) を 1 つの grid container に統合、`grid-template-columns: repeat(3, 1fr)` で均等 3 列。popup の min/max-width を 300/380 → 340/400 に拡張 (6 文字ラベル「双方ブロック」「ブロック矢印」が 1 列に収まる余裕確保)
+  - **(1) 罠**: 98.css は `<input type="radio">` を `opacity: 0; position: fixed` で隠して `label::before` 擬似要素でラジオの絵を描画している (`left: -18px` の absolute 配置)。最初 cell の label に `overflow: hidden + text-overflow: ellipsis` を付けたら ::before が overflow で切り取られて**ラジオが表示されなくなる事故**を踏んだ → 撤去で解決。98.css と grid を組み合わせる時は label に overflow を付けないルールを確立 (file CSS のコメントに明記)
+  - **(2) メニューバーに「挿入(I)」追加** + ツールバー全ボタンを必ずどこかのメニューに配置するよう再編。配置モード系 (テキスト/スタンプ/墨消し/マーカー/吹き出し) を「ツール」から「挿入」へ移動、新規追加: 図形/フォーム/ページ番号。「ファイル」に印刷の下に白黒印刷モード/FAX 送信/下敷き印刷/プロパティを追加、「編集」に検索を追加、「表示」に左右回転 ↺/↻/ページを別ウインドウで表示/タブを別ウインドウに分離を追加。「ツール」は表示解像度/スタンプ管理/フォント設定の設定系専用に整理。actions 配線は (a) 既存関数 (actionRotateLeft / actionOpenPagePopup 等) は直接、(b) Toggle button (btnMonoPrint 等) は `$("btn-...")?.click()` で fallback、で簡素化。`refreshMenuState` の setEnabled / setChecked に新規アクション追加、MENU_HINTS にステータスバー hint 追加、hint for ループに menu-insert を追加。mono-print click handler に `refreshMenuState()` 追加でメニュー側 checkmark が同期
+  - **(3) ファイル > プロパティ ダイアログ新設** (Adobe Acrobat「文書のプロパティ」流のタブ切替)。タブ: 概要 / セキュリティ / フォント / 規格。`src/backend/mupdf-pdf-info.js` に `extractPdfProperties(data)` を追加 — mupdf 経由で metadata (info:Title〜ModDate) + PDF version + ページ数 + ページサイズ集計 + 暗号化 (needsPassword + /Encrypt dict 検査) + フォント一覧を抽出。フォント一覧は全ページの /Resources/Font を巡回、Type0 は /DescendantFonts[0] の FontDescriptor を見る、ユニークキー = baseFont + subtype + encoding + embedded。embedded 判定は FontFile/FontFile2/FontFile3 の存在、subset 判定は `XXXXXX+` prefix 検出
+  - **(3) 経路**: main `kpdf3:get-pdf-properties` IPC → active source PDF を `readFile` + `stat` → `extractPdfProperties` → file 情報 (path/size/mtimeMs/birthtimeMs) を付加して返す。preload `getPdfProperties()` bridge。renderer `actionShowProperties` で loading 表示 → IPC fetch → `populatePropertiesDialog` で 4 タブ populate。フォント表は埋め込みあり/なしを青/赤で目立たせる
+  - **副次強化**: mono-print toggle 状態を menuBar に setChecked で同期 (上記 (2) の click handler 修正に含む)
 
 **当面の残課題 / 未解決事項** (優先順):
 
