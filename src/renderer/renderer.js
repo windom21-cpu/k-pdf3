@@ -2318,11 +2318,23 @@ function refreshMenuState() {
     "export-region-image": isOpen,
     "split-save": isOpen,
     print: isOpen,
+    "mono-print-toggle": isOpen,
+    "fax-send": isOpen,
+    "overlay-only-print": isOpen,
+    properties: isOpen,
+    find: isOpen,
+    "rotate-left": isOpen,
+    "rotate-right": isOpen,
+    "page-popup": isOpen,
+    "detach-tab": isOpen,
     "mode-text": isOpen,
     "mode-stamp": isOpen,
     "mode-redaction": isOpen,
     "mode-marker": isOpen,
     "mode-callout": isOpen,
+    "shape-palette": isOpen,
+    "form-palette": isOpen,
+    "page-numbers": isOpen,
     // Future tools — kept disabled until M6 (placeholder slots)
     "stamp-manager": isOpen,
     "font-settings": true, // available even with no PDF open (workspace-wide)
@@ -2338,6 +2350,8 @@ function refreshMenuState() {
     "mode-redaction": placementMode === "redaction",
     "mode-marker": placementMode === "marker",
     "mode-callout": placementMode === "callout",
+    "shape-palette": placementMode === "shape",
+    "mono-print-toggle": _monoPrintMode === true,
     "quality-standard": q === "standard",
     "quality-high": q === "high",
     "quality-max": q === "max",
@@ -5508,6 +5522,187 @@ function actionExit() {
   window.close();
 }
 
+// ---- β.122 PDF プロパティダイアログ -----------------------------------
+// ファイル > プロパティ。Adobe Acrobat 流の「文書のプロパティ」と同等の
+// タブ切替 UI (概要 / セキュリティ / フォント / 規格)。main 側で mupdf
+// 経由で metadata + ページサイズ集計 + 暗号化 + フォント一覧を抽出する
+// (kpdf3:get-pdf-properties)。
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return "—";
+  const KB = 1024, MB = KB * 1024, GB = MB * 1024;
+  if (n >= GB) return `${(n / GB).toFixed(2)} GB (${n.toLocaleString()} バイト)`;
+  if (n >= MB) return `${(n / MB).toFixed(2)} MB (${n.toLocaleString()} バイト)`;
+  if (n >= KB) return `${(n / KB).toFixed(1)} KB (${n.toLocaleString()} バイト)`;
+  return `${n.toLocaleString()} バイト`;
+}
+
+function formatTimestamp(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// PDF metadata の CreationDate / ModDate は "D:YYYYMMDDHHmmSS+09'00'" 形式。
+// 1 つだけ pretty に。失敗したら生のまま返す。
+function formatPdfDate(s) {
+  if (typeof s !== "string" || s.length === 0) return "";
+  const m = /^D:(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?/.exec(s);
+  if (!m) return s;
+  const [, Y, M = "01", D = "01", h = "00", mi = "00", se = "00"] = m;
+  return `${Y}/${M}/${D} ${h}:${mi}:${se}`;
+}
+
+function fillKvTable(tbody, rows) {
+  tbody.innerHTML = "";
+  for (const [k, v] of rows) {
+    const tr = document.createElement("tr");
+    const tdK = document.createElement("td");
+    tdK.className = "k";
+    tdK.textContent = k;
+    const tdV = document.createElement("td");
+    tdV.className = v ? "v" : "v empty";
+    tdV.textContent = v || "(なし)";
+    tr.appendChild(tdK);
+    tr.appendChild(tdV);
+    tbody.appendChild(tr);
+  }
+}
+
+function populatePropertiesDialog(props) {
+  // 概要
+  const meta = props.metadata || {};
+  const file = props.file || {};
+  fillKvTable($("properties-tbody-summary"), [
+    ["ファイル名", file.path ? file.path.split(/[\\/]/).pop() : ""],
+    ["保存場所", file.path || ""],
+    ["ファイルサイズ", formatBytes(file.size)],
+    ["タイトル", meta.Title || ""],
+    ["作成者", meta.Author || ""],
+    ["題名", meta.Subject || ""],
+    ["キーワード", meta.Keywords || ""],
+    ["アプリケーション", meta.Creator || ""],
+    ["PDF 制作元", meta.Producer || ""],
+    ["PDF 作成日", formatPdfDate(meta.CreationDate)],
+    ["PDF 更新日", formatPdfDate(meta.ModDate)],
+    ["ファイル更新日時", formatTimestamp(file.mtimeMs)],
+  ]);
+  // セキュリティ
+  fillKvTable($("properties-tbody-security"), [
+    ["暗号化", props.encrypted ? "あり (パスワード保護 or 権限制限)" : "なし"],
+    ["セキュア書き出し", "「名前を付けて保存」「上書き保存」のチェックで個人情報・編集履歴・墨消し下の文字を除去できます (qpdf 経由)"],
+  ]);
+  // フォント
+  const fontTbody = $("properties-tbody-fonts");
+  fontTbody.innerHTML = "";
+  const fonts = Array.isArray(props.fonts) ? props.fonts : [];
+  if (fonts.length === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.style.padding = "8px";
+    td.style.color = "#888";
+    td.textContent = "フォント情報なし (画像主体の PDF か、フォント情報が読み取れません)";
+    tr.appendChild(td);
+    fontTbody.appendChild(tr);
+  } else {
+    for (const f of fonts) {
+      const tr = document.createElement("tr");
+      const tdName = document.createElement("td");
+      tdName.textContent = f.baseFont || "—";
+      const tdType = document.createElement("td");
+      tdType.textContent = f.subtype || "—";
+      const tdEmbed = document.createElement("td");
+      tdEmbed.textContent = f.embedded ? "あり" : "なし";
+      tdEmbed.className = f.embedded ? "col-embed-yes" : "col-embed-no";
+      const tdSubset = document.createElement("td");
+      tdSubset.textContent = f.subset ? "あり" : "なし";
+      tr.appendChild(tdName);
+      tr.appendChild(tdType);
+      tr.appendChild(tdEmbed);
+      tr.appendChild(tdSubset);
+      fontTbody.appendChild(tr);
+    }
+  }
+  // 規格
+  const sizeStrs = (props.pageSizes || []).map((s) => {
+    const mm = (pt) => Math.round((pt * 25.4) / 72);
+    const tag = s.count === props.pageCount ? "" : ` (${s.count} ページ)`;
+    return `${s.widthPt} × ${s.heightPt} pt = ${mm(s.widthPt)} × ${mm(s.heightPt)} mm${tag}`;
+  });
+  fillKvTable($("properties-tbody-spec"), [
+    ["PDF バージョン", props.pdfVersion ? props.pdfVersion.toFixed(1) : "—"],
+    ["ページ数", String(props.pageCount ?? "—")],
+    ["ページサイズ", sizeStrs.length > 0 ? sizeStrs.join(" / ") : "—"],
+  ]);
+}
+
+function setupPropertiesTabs() {
+  const tabs = $("properties-tabs");
+  if (!tabs || tabs._wired) return;
+  tabs._wired = true;
+  tabs.addEventListener("click", (e) => {
+    const li = e.target instanceof HTMLElement ? e.target.closest("li[data-tab]") : null;
+    if (!li) return;
+    e.preventDefault();
+    const key = li.dataset.tab;
+    for (const t of tabs.querySelectorAll("li[data-tab]")) {
+      const active = t === li;
+      t.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    for (const id of ["summary", "security", "fonts", "spec"]) {
+      const pane = $(`properties-pane-${id}`);
+      if (pane) pane.hidden = id !== key;
+    }
+  });
+}
+
+async function actionShowProperties() {
+  const dlg = $("properties-dialog");
+  if (!dlg) return;
+  setupPropertiesTabs();
+  // Reset to summary tab each open
+  const tabs = $("properties-tabs");
+  for (const t of tabs.querySelectorAll("li[data-tab]")) {
+    t.setAttribute("aria-selected", t.dataset.tab === "summary" ? "true" : "false");
+  }
+  for (const id of ["summary", "security", "fonts", "spec"]) {
+    const pane = $(`properties-pane-${id}`);
+    if (pane) pane.hidden = id !== "summary";
+  }
+  // Show with loading state, then populate.
+  $("properties-tbody-summary").innerHTML =
+    '<tr><td class="k">読み込み中...</td><td class="v">フォント解析中 — 大きな PDF だと数秒かかります</td></tr>';
+  $("properties-tbody-security").innerHTML = "";
+  $("properties-tbody-fonts").innerHTML = "";
+  $("properties-tbody-spec").innerHTML = "";
+  dlg.hidden = false;
+  try {
+    const props = await kpdf3.getPdfProperties();
+    populatePropertiesDialog(props);
+  } catch (err) {
+    console.error("[properties] failed:", err);
+    fillKvTable($("properties-tbody-summary"), [
+      ["エラー", String(err?.message || err)],
+    ]);
+  }
+}
+
+// Wire close handlers once at module load.
+{
+  const dlg = $("properties-dialog");
+  if (dlg) {
+    const closeBtn = $("properties-close");
+    const closeX = $("properties-close-x");
+    const close = () => { dlg.hidden = true; };
+    if (closeBtn) closeBtn.addEventListener("click", close);
+    if (closeX) closeX.addEventListener("click", close);
+    dlg.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") close();
+    });
+  }
+}
+
 // ---- Menu bar ---------------------------------------------------------
 const menuBar = new MenuBar({
   menuBar: $("menu-bar"),
@@ -5515,6 +5710,7 @@ const menuBar = new MenuBar({
     file: $("menu-file"),
     edit: $("menu-edit"),
     view: $("menu-view"),
+    insert: $("menu-insert"),
     tools: $("menu-tools"),
     help: $("menu-help"),
   },
@@ -5531,12 +5727,17 @@ const menuBar = new MenuBar({
       setPlacementMode(placementMode === "region-image" ? "none" : "region-image"),
     "split-save": actionSplitSave,
     print: actionPrint,
+    "mono-print-toggle": () => $("btn-mono-print")?.click(),
+    "fax-send": () => $("btn-fax-send")?.click(),
+    "overlay-only-print": () => $("btn-print-overlay-only")?.click(),
+    properties: actionShowProperties,
     exit: actionExit,
     about: actionAbout,
     "check-update": actionCheckForUpdates,
     "open-crash-log": actionOpenCrashLog,
     undo: actionUndo,
     redo: actionRedo,
+    find: () => $("menu-search-btn")?.click(),
     "zoom-in": actionZoomIn,
     "zoom-out": actionZoomOut,
     "zoom-100": actionZoom100,
@@ -5545,7 +5746,11 @@ const menuBar = new MenuBar({
     "page-prev": actionPagePrev,
     "page-next": actionPageNext,
     "page-goto": actionPageGoto,
+    "rotate-left": actionRotateLeft,
+    "rotate-right": actionRotateRight,
     "toggle-bookmarks": actionToggleBookmarks,
+    "page-popup": actionOpenPagePopup,
+    "detach-tab": () => $("btn-detach-tab")?.click(),
     "mode-text": () =>
       setPlacementMode(placementMode === "text" ? "none" : "text"),
     "mode-stamp": () =>
@@ -5556,6 +5761,10 @@ const menuBar = new MenuBar({
       setPlacementMode(placementMode === "marker" ? "none" : "marker"),
     "mode-callout": () =>
       setPlacementMode(placementMode === "callout" ? "none" : "callout"),
+    "shape-palette": () =>
+      setPlacementMode(placementMode === "shape" ? "none" : "shape"),
+    "form-palette": () => $("btn-form-palette")?.click(),
+    "page-numbers": () => $("btn-page-numbers")?.click(),
     "stamp-manager": () => openStampManagerDialog(),
     "font-settings": () => openStampFontDialog(),
     "quality-standard": () => setRenderQuality("standard"),
@@ -5955,7 +6164,20 @@ const MENU_HINTS = {
   "mode-text": "テキスト配置モードに切替",
   "mode-stamp": "印影配置モードに切替",
   "mode-redaction": "墨消し配置モードに切替",
-  "mode-marker": "マーカー配置モード — 将来対応",
+  "mode-marker": "マーカー配置モードに切替 (ドラッグで半透明マーカー)",
+  "mode-callout": "吹き出し配置モードに切替 (クリック → ドラッグで矢印付き吹き出し)",
+  "shape-palette": "図形を配置します (直線・矢印・四角・楕円)",
+  "form-palette": "申請書テンプレ用フォームフィールドを配置します",
+  "page-numbers": "全ページのフッターにページ番号を一括追加します",
+  "mono-print-toggle": "ON にすると印刷時に overlay (テキスト/スタンプ/印影/形/フォーム枠) の色を黒に変換します",
+  "fax-send": "既定の FAX プリンタへ直送 (白黒強制)",
+  "overlay-only-print": "申請書原本に重ね印刷 (背景なし、フィールドの値だけ印字)",
+  properties: "この PDF の情報を表示 (メタデータ・ページサイズ・フォント一覧など)",
+  "rotate-left": "現在のページを左に 90° 回転します",
+  "rotate-right": "現在のページを右に 90° 回転します",
+  "page-popup": "現在のページを別ウインドウで表示します (比較用)",
+  "detach-tab": "現在のタブを別ウインドウに分離します",
+  find: "PDF 内のテキストを検索します (Ctrl+F)",
   "quality-standard": "PDF 表示解像度: 標準 (軽量)",
   "quality-high": "PDF 表示解像度: 高 (推奨)",
   "quality-max": "PDF 表示解像度: 最高 (重め)",
@@ -5986,7 +6208,7 @@ for (const [id, text] of Object.entries(STATUS_HINTS)) {
   el.addEventListener("mouseenter", () => showStatusHint(text));
   el.addEventListener("mouseleave", clearStatusHint);
 }
-for (const dropdownId of ["menu-file", "menu-edit", "menu-view", "menu-tools", "menu-help"]) {
+for (const dropdownId of ["menu-file", "menu-edit", "menu-view", "menu-insert", "menu-tools", "menu-help"]) {
   const dd = document.getElementById(dropdownId);
   if (!dd) continue;
   for (const item of dd.querySelectorAll(".menu-item[data-action]")) {
@@ -6216,6 +6438,7 @@ if (btnMonoPrint) {
     try { localStorage.setItem("kpdf3.monoPrintMode", _monoPrintMode ? "1" : "0"); }
     catch { /* ignore */ }
     _syncMonoPrintBtn();
+    refreshMenuState();
     wsStatus.textContent = _monoPrintMode
       ? "白黒印刷モード ON — overlay の色を黒に変換して印刷します (マーカーは除外)"
       : "白黒印刷モード OFF — 通常のカラーで印刷します";

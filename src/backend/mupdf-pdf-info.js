@@ -184,3 +184,225 @@ function convertOutline(items) {
     children: convertOutline(item.down),
   }));
 }
+
+/**
+ * @typedef {object} PdfPropertiesFont
+ * @property {string} baseFont      e.g. "MS-Gothic" or "ABCDEF+TimesNewRoman"
+ * @property {string} subtype       e.g. "Type1" / "TrueType" / "CIDFontType0" / "CIDFontType2" / "Type0"
+ * @property {boolean} embedded     true if FontFile / FontFile2 / FontFile3 present
+ * @property {boolean} subset       true if BaseFont has the XXXXXX+ prefix
+ * @property {string} encoding      Encoding name (or "" if not a name object)
+ */
+/**
+ * @typedef {object} PdfPropertiesPageSize
+ * @property {number} widthPt
+ * @property {number} heightPt
+ * @property {number} count          number of pages with this size
+ */
+/**
+ * @typedef {object} PdfProperties
+ * @property {Record<string, string>} metadata       info: Title/Author/Subject/Keywords/Creator/Producer/CreationDate/ModDate
+ * @property {number} pdfVersion                      e.g. 1.7
+ * @property {number} pageCount
+ * @property {PdfPropertiesPageSize[]} pageSizes      grouped by (widthPt, heightPt), descending count
+ * @property {boolean} encrypted
+ * @property {PdfPropertiesFont[]} fonts              unique by baseFont + subtype + embedded
+ */
+
+const META_KEYS = [
+  "Title",
+  "Author",
+  "Subject",
+  "Keywords",
+  "Creator",
+  "Producer",
+  "CreationDate",
+  "ModDate",
+];
+
+/**
+ * Extract the "document properties" of a PDF (Adobe Acrobat 流の一覧用)。
+ * メタデータ + PDF バージョン + ページサイズ集計 + 暗号化 + フォント一覧。
+ *
+ * @param {Buffer | Uint8Array | ArrayBuffer} data
+ * @returns {PdfProperties}
+ */
+export function extractPdfProperties(data) {
+  const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const doc = mupdf.Document.openDocument(buf, "application/pdf");
+  try {
+    /** @type {Record<string, string>} */
+    const metadata = {};
+    for (const key of META_KEYS) {
+      try {
+        const v = doc.getMetaData(`info:${key}`);
+        if (typeof v === "string" && v.length > 0) metadata[key] = v;
+      } catch { /* ignore */ }
+    }
+
+    const pdfDoc = typeof doc.asPDF === "function" ? doc.asPDF() : null;
+    const pdfVersion = pdfDoc && typeof pdfDoc.getVersion === "function"
+      ? pdfDoc.getVersion() / 10
+      : 0;
+
+    const pageCount = doc.countPages();
+
+    /** @type {Map<string, PdfPropertiesPageSize>} */
+    const sizeMap = new Map();
+    for (let i = 0; i < pageCount; i++) {
+      const page = doc.loadPage(i);
+      try {
+        const b = page.getBounds();
+        const w = Math.round((b[2] - b[0]) * 10) / 10;
+        const h = Math.round((b[3] - b[1]) * 10) / 10;
+        const key = `${w}x${h}`;
+        const existing = sizeMap.get(key);
+        if (existing) existing.count += 1;
+        else sizeMap.set(key, { widthPt: w, heightPt: h, count: 1 });
+      } finally {
+        page.destroy();
+      }
+    }
+    const pageSizes = [...sizeMap.values()].sort((a, b) => b.count - a.count);
+
+    let encrypted = false;
+    try {
+      encrypted = doc.needsPassword();
+    } catch { /* ignore */ }
+    if (!encrypted && pdfDoc) {
+      // PDF にパスワードはないが /Encrypt dict はあるケース (権限制限のみ)
+      try {
+        const trailer = pdfDoc.getTrailer();
+        const enc = trailer && trailer.get("Encrypt");
+        if (enc && !enc.isNull()) encrypted = true;
+      } catch { /* ignore */ }
+    }
+
+    /** @type {PdfPropertiesFont[]} */
+    const fonts = pdfDoc ? collectFonts(pdfDoc, pageCount) : [];
+
+    return { metadata, pdfVersion, pageCount, pageSizes, encrypted, fonts };
+  } finally {
+    doc.destroy();
+  }
+}
+
+/**
+ * 全ページの /Resources/Font を巡回してユニークなフォント一覧を作る。
+ * Type0 (CID) の場合は /DescendantFonts[0] の埋め込み状況を見る。
+ *
+ * @param {any} pdfDoc                 mupdf PDFDocument
+ * @param {number} pageCount
+ * @returns {PdfPropertiesFont[]}
+ */
+function collectFonts(pdfDoc, pageCount) {
+  /** @type {Map<string, PdfPropertiesFont>} */
+  const fontMap = new Map();
+  for (let i = 0; i < pageCount; i++) {
+    let page = null;
+    try {
+      page = pdfDoc.loadPage(i);
+      const pageDict = typeof page.getObject === "function" ? page.getObject() : null;
+      if (!pageDict) continue;
+      const resources = readResourcesInherited(pageDict);
+      if (!resources) continue;
+      const fontDict = resources.get("Font");
+      if (!fontDict || fontDict.isNull() || !fontDict.isDictionary()) continue;
+      fontDict.forEach((fontObj) => {
+        try {
+          const resolved = fontObj.resolve();
+          if (!resolved || !resolved.isDictionary()) return;
+          const info = describeFont(resolved);
+          if (!info) return;
+          const key = `${info.baseFont}|${info.subtype}|${info.encoding}|${info.embedded ? 1 : 0}`;
+          if (!fontMap.has(key)) fontMap.set(key, info);
+        } catch { /* ignore individual font errors */ }
+      });
+    } catch { /* ignore page errors */ } finally {
+      if (page && typeof page.destroy === "function") {
+        try { page.destroy(); } catch { /* ignore */ }
+      }
+    }
+  }
+  return [...fontMap.values()].sort((a, b) => a.baseFont.localeCompare(b.baseFont));
+}
+
+/**
+ * Walk a font dict (PDF Font Resource) and surface BaseFont / Subtype /
+ * embedded / subset / encoding.
+ *
+ * @param {any} fontDict
+ * @returns {PdfPropertiesFont | null}
+ */
+function describeFont(fontDict) {
+  const subtype = readName(fontDict.get("Subtype")) ?? "";
+  let baseFont = readName(fontDict.get("BaseFont")) ?? readName(fontDict.get("Name")) ?? "";
+  const encoding = readName(fontDict.get("Encoding")) ?? "";
+
+  // Type0 composite font: data lives on /DescendantFonts[0]
+  let descriptorOwner = fontDict;
+  if (subtype === "Type0") {
+    try {
+      const desc = fontDict.get("DescendantFonts");
+      if (desc && desc.isArray() && desc.length > 0) {
+        const inner = desc.get(0).resolve();
+        if (inner && inner.isDictionary()) {
+          descriptorOwner = inner;
+          if (!baseFont) baseFont = readName(inner.get("BaseFont")) ?? "";
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  let embedded = false;
+  try {
+    const fd = descriptorOwner.get("FontDescriptor");
+    if (fd && !fd.isNull()) {
+      const fdResolved = fd.resolve();
+      for (const key of ["FontFile", "FontFile2", "FontFile3"]) {
+        try {
+          const ff = fdResolved.get(key);
+          if (ff && !ff.isNull()) { embedded = true; break; }
+        } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+
+  if (!baseFont) return null;
+  const subset = /^[A-Z]{6}\+/.test(baseFont);
+  return { baseFont, subtype, embedded, subset, encoding };
+}
+
+/**
+ * /Resources is inheritable from /Parent in the page tree.
+ *
+ * @param {any} pageDict
+ * @returns {any | null}
+ */
+function readResourcesInherited(pageDict) {
+  let cur = pageDict;
+  let safety = 16;
+  while (cur && safety-- > 0) {
+    try {
+      const r = cur.get("Resources");
+      if (r && !r.isNull() && r.isDictionary()) return r;
+      const parent = cur.get("Parent");
+      cur = parent && !parent.isNull() ? parent : null;
+    } catch {
+      cur = null;
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {any} obj
+ * @returns {string | null}
+ */
+function readName(obj) {
+  if (!obj || obj.isNull()) return null;
+  try {
+    if (obj.isName()) return obj.asName();
+  } catch { /* ignore */ }
+  return null;
+}

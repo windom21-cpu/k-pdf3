@@ -23,6 +23,7 @@
     <div class="menu-bar-item" data-menu="file">ファイル(<u>F</u>)</div>
     <div class="menu-bar-item" data-menu="edit">編集(<u>E</u>)</div>
     <div class="menu-bar-item" data-menu="view">表示(<u>V</u>)</div>
+    <div class="menu-bar-item" data-menu="insert">挿入(<u>I</u>)</div>
     <div class="menu-bar-item" data-menu="tools">ツール(<u>T</u>)</div>
     <div class="menu-bar-item" data-menu="help">ヘルプ(<u>H</u>)</div>
   </div>
@@ -39,7 +40,13 @@
     <div class="menu-item disabled" data-action="export-image">画像として保存... (PNG/JPEG)</div>
     <div class="menu-item disabled" data-action="export-region-image">選んだ範囲を画像で保存...</div>
     <div class="menu-item disabled" data-action="split-save">分割保存...</div>
+    <div class="menu-separator"></div>
     <div class="menu-item disabled" data-action="print">印刷... (Ctrl+P)</div>
+    <div class="menu-item disabled" data-action="mono-print-toggle">白黒印刷モード</div>
+    <div class="menu-item disabled" data-action="fax-send">FAX 送信</div>
+    <div class="menu-item disabled" data-action="overlay-only-print">下敷き印刷 (申請書テンプレ)</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="properties">プロパティ... (この PDF の情報)</div>
     <div class="menu-separator"></div>
     <div class="menu-item" data-action="exit">終了</div>
   </div>
@@ -51,6 +58,8 @@
     <div class="menu-item disabled" data-action="cut">切り取り</div>
     <div class="menu-item disabled" data-action="copy">コピー</div>
     <div class="menu-item disabled" data-action="paste">貼り付け</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="find">検索... (Ctrl+F)</div>
   </div>
 
   <div class="menu-dropdown" id="menu-view" hidden>
@@ -64,16 +73,29 @@
     <div class="menu-item disabled" data-action="page-next">次のページ (PageDown)</div>
     <div class="menu-item disabled" data-action="page-goto">ページ移動... (Ctrl+G)</div>
     <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="rotate-left">左に 90° 回転 ↺</div>
+    <div class="menu-item disabled" data-action="rotate-right">右に 90° 回転 ↻</div>
+    <div class="menu-separator"></div>
     <div class="menu-item disabled" data-action="toggle-bookmarks">しおり (F4)</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="page-popup">ページを別ウインドウで表示 (比較用)</div>
+    <div class="menu-item disabled" data-action="detach-tab">タブを別ウインドウに分離</div>
   </div>
 
-  <div class="menu-dropdown" id="menu-tools" hidden>
+  <div class="menu-dropdown" id="menu-insert" hidden>
     <div class="menu-item disabled" data-action="mode-text">テキスト</div>
     <div class="menu-item disabled" data-action="mode-stamp">スタンプ</div>
     <div class="menu-item disabled" data-action="mode-redaction">墨消し</div>
     <div class="menu-item disabled" data-action="mode-marker">マーカー</div>
     <div class="menu-item disabled" data-action="mode-callout">吹き出し</div>
     <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="shape-palette">図形... (直線・矢印・四角・楕円)</div>
+    <div class="menu-item disabled" data-action="form-palette">フォーム... (申請書テンプレ枠)</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item disabled" data-action="page-numbers">ページ番号...</div>
+  </div>
+
+  <div class="menu-dropdown" id="menu-tools" hidden>
     <div class="menu-item" data-action="quality-standard">表示解像度: 標準</div>
     <div class="menu-item" data-action="quality-high">表示解像度: 高</div>
     <div class="menu-item" data-action="quality-max">表示解像度: 最高</div>
@@ -240,6 +262,72 @@
 
   <!-- β.97 機能 2: 範囲選択ガイダンス (mode-options-bar に統合済) -->
 
+  <!-- β.122 PDF プロパティダイアログ (ファイル > プロパティ)。
+       Adobe Acrobat 流のタブ切替 (概要 / セキュリティ / フォント / 規格)。
+       内容は main 側 kpdf3:get-pdf-properties で取得して populate する。 -->
+  <div class="busy-modal" id="properties-dialog" hidden>
+    <div class="window properties-window">
+      <div class="title-bar">
+        <div class="title-bar-text">PDF プロパティ</div>
+        <div class="title-bar-controls">
+          <button id="properties-close-x" aria-label="Close" title="閉じる"></button>
+        </div>
+      </div>
+      <div class="window-body">
+        <menu role="tablist" class="properties-tabs" id="properties-tabs">
+          <li role="tab" aria-selected="true" aria-controls="properties-pane-summary" data-tab="summary"><a href="#properties-pane-summary">概要</a></li>
+          <li role="tab" aria-selected="false" aria-controls="properties-pane-security" data-tab="security"><a href="#properties-pane-security">セキュリティ</a></li>
+          <li role="tab" aria-selected="false" aria-controls="properties-pane-fonts" data-tab="fonts"><a href="#properties-pane-fonts">フォント</a></li>
+          <li role="tab" aria-selected="false" aria-controls="properties-pane-spec" data-tab="spec"><a href="#properties-pane-spec">規格</a></li>
+        </menu>
+        <div class="window properties-pane-host" role="tabpanel">
+          <div class="window-body">
+            <div class="properties-pane" id="properties-pane-summary">
+              <table class="properties-kv">
+                <tbody id="properties-tbody-summary">
+                  <tr><td class="k">読み込み中...</td><td class="v"></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="properties-pane" id="properties-pane-security" hidden>
+              <table class="properties-kv">
+                <tbody id="properties-tbody-security"></tbody>
+              </table>
+            </div>
+            <div class="properties-pane" id="properties-pane-fonts" hidden>
+              <p class="properties-fonts-hint" id="properties-fonts-hint">
+                PDF 内で使われているフォント一覧。<strong>埋め込みなし</strong>のフォントが
+                ある場合は、別環境で表示するとフォントが置換されて見た目が変わる
+                ことがあります。
+              </p>
+              <div class="sunken-panel properties-fonts-panel">
+                <table class="properties-fonts-table">
+                  <thead>
+                    <tr>
+                      <th>フォント名</th>
+                      <th>タイプ</th>
+                      <th>埋め込み</th>
+                      <th>サブセット</th>
+                    </tr>
+                  </thead>
+                  <tbody id="properties-tbody-fonts"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="properties-pane" id="properties-pane-spec" hidden>
+              <table class="properties-kv">
+                <tbody id="properties-tbody-spec"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="properties-buttons">
+          <button id="properties-close" class="default">閉じる</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Page-jump dialog (replaces window.prompt for goto-page) -->
   <div class="busy-modal" id="goto-dialog" hidden>
     <div class="window range-window">
@@ -311,35 +399,44 @@
       </div>
     </div>
     <div class="window-body">
-      <!-- 線 / 矢印 系 -->
-      <div class="shape-palette-row">
-        <input type="radio" id="shape-kind-line" name="shape-kind" value="line">
-        <label for="shape-kind-line" title="直線 (矢じりなし)">／ 直線</label>
-        <input type="radio" id="shape-kind-arrow" name="shape-kind" value="arrow" checked>
-        <label for="shape-kind-arrow" title="細線矢印 (片端に塗り三角)">↗ 矢印</label>
-        <input type="radio" id="shape-kind-double-arrow" name="shape-kind" value="double-arrow">
-        <label for="shape-kind-double-arrow" title="細線の双方矢印 (両端に矢じり)">⇄ 双方矢印</label>
-      </div>
-      <!-- ブロック矢印 系 -->
-      <div class="shape-palette-row">
-        <input type="radio" id="shape-kind-block-arrow" name="shape-kind" value="block-arrow">
-        <label for="shape-kind-block-arrow" title="中空ブロック矢印 (枠線で縁取られた幅広矢印)">⇨ ブロック矢印</label>
-        <input type="radio" id="shape-kind-double-block-arrow" name="shape-kind" value="double-block-arrow">
-        <label for="shape-kind-double-block-arrow" title="両端に矢じりがあるブロック矢印">⇔ 双方ブロック</label>
-      </div>
-      <!-- 矩形 系 -->
-      <div class="shape-palette-row">
-        <input type="radio" id="shape-kind-rect" name="shape-kind" value="rect">
-        <label for="shape-kind-rect" title="四角 (長方形枠)">▭ 四角</label>
-        <input type="radio" id="shape-kind-rounded-rect" name="shape-kind" value="rounded-rect">
-        <label for="shape-kind-rounded-rect" title="角丸四角">▢ 角丸四角</label>
-      </div>
-      <!-- 円 系 -->
-      <div class="shape-palette-row">
-        <input type="radio" id="shape-kind-ellipse" name="shape-kind" value="ellipse">
-        <label for="shape-kind-ellipse" title="楕円 (枠線、中は透過)">◯ 楕円</label>
-        <input type="radio" id="shape-kind-ellipse-x" name="shape-kind" value="ellipse-x">
-        <label for="shape-kind-ellipse-x" title="楕円の中に × 印を描画 (禁止・不可・却下 等の指示)">⊗ 楕円+×</label>
+      <!-- 図形 9 種を 3×3 グリッドで整列 (β.122) -->
+      <div class="shape-palette-kinds">
+        <div class="shape-kind-cell">
+          <input type="radio" id="shape-kind-line" name="shape-kind" value="line">
+          <label for="shape-kind-line" title="直線 (矢じりなし)">／ 直線</label>
+        </div>
+        <div class="shape-kind-cell">
+          <input type="radio" id="shape-kind-arrow" name="shape-kind" value="arrow" checked>
+          <label for="shape-kind-arrow" title="細線矢印 (片端に塗り三角)">↗ 矢印</label>
+        </div>
+        <div class="shape-kind-cell">
+          <input type="radio" id="shape-kind-double-arrow" name="shape-kind" value="double-arrow">
+          <label for="shape-kind-double-arrow" title="細線の双方矢印 (両端に矢じり)">⇄ 双方矢印</label>
+        </div>
+        <div class="shape-kind-cell">
+          <input type="radio" id="shape-kind-block-arrow" name="shape-kind" value="block-arrow">
+          <label for="shape-kind-block-arrow" title="中空ブロック矢印 (枠線で縁取られた幅広矢印)">⇨ ブロック矢印</label>
+        </div>
+        <div class="shape-kind-cell">
+          <input type="radio" id="shape-kind-double-block-arrow" name="shape-kind" value="double-block-arrow">
+          <label for="shape-kind-double-block-arrow" title="両端に矢じりがあるブロック矢印">⇔ 双方ブロック</label>
+        </div>
+        <div class="shape-kind-cell">
+          <input type="radio" id="shape-kind-rect" name="shape-kind" value="rect">
+          <label for="shape-kind-rect" title="四角 (長方形枠)">▭ 四角</label>
+        </div>
+        <div class="shape-kind-cell">
+          <input type="radio" id="shape-kind-rounded-rect" name="shape-kind" value="rounded-rect">
+          <label for="shape-kind-rounded-rect" title="角丸四角">▢ 角丸四角</label>
+        </div>
+        <div class="shape-kind-cell">
+          <input type="radio" id="shape-kind-ellipse" name="shape-kind" value="ellipse">
+          <label for="shape-kind-ellipse" title="楕円 (枠線、中は透過)">◯ 楕円</label>
+        </div>
+        <div class="shape-kind-cell">
+          <input type="radio" id="shape-kind-ellipse-x" name="shape-kind" value="ellipse-x">
+          <label for="shape-kind-ellipse-x" title="楕円の中に × 印を描画 (禁止・不可・却下 等の指示)">⊗ 楕円+×</label>
+        </div>
       </div>
       <hr class="shape-palette-sep">
       <div class="shape-palette-row">

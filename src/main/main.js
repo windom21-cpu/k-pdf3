@@ -20,7 +20,7 @@ import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
 import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
-import { computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
+import { computePdfFingerprint, extractPdfProperties } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
 import { findQpdfBinary, sanitizePdfBytes } from "./qpdf-sanitize.js";
@@ -3452,6 +3452,28 @@ ipcMain.handle("kpdf3:get-all-annotations", async (event) => {
   }
   h.annotations = map;
   return map;
+});
+
+// PDF properties dialog (Adobe Acrobat 流の「文書のプロパティ」): metadata +
+// PDF version + page count + page sizes + encrypted + font list。
+// active tab の source PDF を読み直して mupdf 経由で抽出する。フォント情報
+// まで含めるので 数十MB の PDF でも 数秒〜10秒程度。
+ipcMain.handle("kpdf3:get-pdf-properties", async (event) => {
+  const { sourcePdfPath } = activeForEvent(event);
+  const path = sourcePdfPath ?? activeSourcePdfPath;
+  if (!path) throw new Error("No active PDF");
+  const { readFile, stat } = await import("node:fs/promises");
+  const [bytes, st] = await Promise.all([readFile(path), stat(path)]);
+  const props = extractPdfProperties(bytes);
+  return {
+    ...props,
+    file: {
+      path,
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+      birthtimeMs: st.birthtimeMs,
+    },
+  };
 });
 
 ipcMain.handle("kpdf3:set-page-deleted", async (_, pageNo, deleted) => {

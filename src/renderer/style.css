@@ -1267,8 +1267,8 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   top: 160px;
   right: 24px;
   z-index: 5000;
-  min-width: 300px;
-  max-width: 380px;
+  min-width: 340px;
+  max-width: 400px;
   max-height: calc(100vh - 200px);
   overflow-y: auto;
   user-select: none;
@@ -1296,6 +1296,25 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   cursor: pointer;
   vertical-align: middle;
   margin-right: 8px;
+}
+/* β.122 図形 9 種の 3×3 グリッド整列 (98.css は label::before でラジオの絵を
+   描画するため、label に overflow:hidden を付けると ::before が切れて
+   ラジオが表示されなくなる。overflow / text-overflow は使わない) */
+.shape-palette-kinds {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.shape-kind-cell {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  min-width: 0;
+}
+.shape-kind-cell label {
+  cursor: pointer;
 }
 .shape-palette-label {
   min-width: 64px;
@@ -2063,6 +2082,105 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
 /* Confirm dialog — multi-line messages preserve "\n". */
 .confirm-message {
   white-space: pre-line;
+}
+
+/* β.122 PDF プロパティダイアログ (ファイル > プロパティ) */
+.properties-window {
+  width: 560px;
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+}
+.properties-window > .window-body {
+  padding: 10px 12px 8px 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.properties-tabs {
+  margin-bottom: -2px;
+}
+.properties-pane-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.properties-pane-host > .window-body {
+  margin: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.properties-pane {
+  font-size: 12px;
+}
+.properties-pane[hidden] {
+  display: none !important;
+}
+.properties-kv {
+  border-collapse: collapse;
+  width: 100%;
+  background: transparent;
+}
+.properties-kv td {
+  padding: 4px 8px;
+  vertical-align: top;
+  border-bottom: 1px dotted #b5b5b5;
+  height: auto;
+}
+.properties-kv td.k {
+  font-weight: bold;
+  width: 140px;
+  white-space: nowrap;
+  color: #333;
+}
+.properties-kv td.v {
+  word-break: break-all;
+}
+.properties-kv td.v.empty {
+  color: #888;
+  font-style: italic;
+}
+.properties-fonts-hint {
+  margin: 0 0 8px 0;
+  font-size: 11px;
+  color: #444;
+  line-height: 1.5;
+}
+.properties-fonts-panel {
+  height: 240px;
+}
+.properties-fonts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.properties-fonts-table thead th {
+  text-align: left;
+  padding: 2px 6px;
+  font-weight: bold;
+}
+.properties-fonts-table tbody td {
+  padding: 2px 6px;
+  border-bottom: 1px dotted #d5d5cf;
+}
+.properties-fonts-table .col-embed-yes {
+  color: #1f4ea1;
+  font-weight: bold;
+}
+.properties-fonts-table .col-embed-no {
+  color: #cc0000;
+  font-weight: bold;
+}
+.properties-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 /* β.97 機能 1: 画像書き出しダイアログ */
