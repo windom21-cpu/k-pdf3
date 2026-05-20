@@ -127,15 +127,20 @@ const LS_FULL = "kpdf3.stampFontFull";
 const LS_HALF = "kpdf3.stampFontHalf";
 
 /** Read the current stamp-font defaults from localStorage. Falls back
- *  to the module-level defaults when storage is empty / unavailable. */
+ *  to the module-level defaults when storage is empty / unavailable.
+ *
+ *  β.105: preset 名 (mincho/gothic/numeric/serif/sans) に加え、OS イン
+ *  ストール済フォント名 (任意文字列) も受け入れる。preset 不一致でも
+ *  非空文字列ならそのまま採用 — getStampFontStack 側で system font の
+ *  CSS stack に解決する。 */
 export function getStampFontDefaults() {
   let full = STAMP_FONT_DEFAULT_FULL;
   let half = STAMP_FONT_DEFAULT_HALF;
   try {
     const f = localStorage?.getItem(LS_FULL);
     const h = localStorage?.getItem(LS_HALF);
-    if (f && STAMP_FONT_STACKS[f]) full = f;
-    if (h && STAMP_FONT_STACKS[h]) half = h;
+    if (f && typeof f === "string") full = f;
+    if (h && typeof h === "string") half = h;
   } catch {
     // localStorage may be unavailable in tests — defaults are fine.
   }
@@ -144,14 +149,27 @@ export function getStampFontDefaults() {
 
 export function setStampFontDefaults({ full, half }) {
   try {
-    if (full && STAMP_FONT_STACKS[full]) localStorage.setItem(LS_FULL, full);
-    if (half && STAMP_FONT_STACKS[half]) localStorage.setItem(LS_HALF, half);
+    // β.105: preset 名 (mincho/gothic/...) でも system font 名でも保存可。
+    // 検証は getStampFontStack 側に任せる (未知名でも family quote で
+    // 流すだけなので壊れない)。
+    if (full && typeof full === "string") localStorage.setItem(LS_FULL, full);
+    if (half && typeof half === "string") localStorage.setItem(LS_HALF, half);
   } catch {
     // best-effort; no-op on failure
   }
 }
 
+/**
+ * β.105: preset 名以外 (= system font 名) は CSS font-family にそのまま
+ * 引き渡す。form-text 系と同じ流儀 (getTextFontStack の system font
+ * fallback と同パターン)。fallback chain は serif 系 (印影は明朝が
+ * デフォルト) に寄せる。
+ */
 export function getStampFontStack(fontId) {
+  if (fontId && !Object.prototype.hasOwnProperty.call(STAMP_FONT_STACKS, fontId)) {
+    const family = `"${String(fontId).replace(/"/g, '\\"')}"`;
+    return `${family}, "MS 明朝", "Hiragino Mincho ProN", serif`;
+  }
   return STAMP_FONT_STACKS[fontId] ?? STAMP_FONT_STACKS.mincho;
 }
 

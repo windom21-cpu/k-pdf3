@@ -25,6 +25,7 @@ import {
   setStampFontDefaults,
   getStampFontStack,
 } from "./fonts.js";
+import { appendSystemFontsToSelect } from "./system-fonts.js";
 import { customConfirm } from "./dialogs.js";
 import { showFileBrowser } from "./file-browser.js";
 import {
@@ -177,6 +178,9 @@ function populateStampFontSelects() {
   if (!stampFontFullSel || !stampFontHalfSel) return;
   for (const sel of [stampFontFullSel, stampFontHalfSel]) {
     sel.innerHTML = "";
+    // β.105: dialog 開く毎に rebuild。system フォント append guard を
+    // リセットするため _systemFontsAppended フラグを落とす。
+    sel._systemFontsAppended = false;
     for (const id of Object.keys(STAMP_FONT_STACKS)) {
       const opt = document.createElement("option");
       opt.value = id;
@@ -185,9 +189,16 @@ function populateStampFontSelects() {
     }
   }
 }
-export function openStampFontDialog() {
+export async function openStampFontDialog() {
   populateStampFontSelects();
+  // β.105: OS インストール済フォントを optgroup「システム」として末尾に追加
+  // (await 完了前に dialog 表示しても preset は描画済なので UX 上問題なし)。
+  await Promise.all([
+    appendSystemFontsToSelect(stampFontFullSel),
+    appendSystemFontsToSelect(stampFontHalfSel),
+  ]);
   const cur = getStampFontDefaults();
+  // system font 名は append 完了後に setValue (append 前だと option 不在で reset)
   stampFontFullSel.value = cur.full;
   stampFontHalfSel.value = cur.half;
   paintStampFontPreview();

@@ -24,6 +24,7 @@ import {
   TEXT_FONT_DEFAULT_SIZE,
   getTextFontStack,
 } from "./fonts.js";
+import { appendSystemFontsToSelect } from "./system-fonts.js";
 import { showBusy, updateBusy, hideBusy } from "./busy-modal.js";
 import { customConfirm } from "./dialogs.js";
 import { showFileBrowser } from "./file-browser.js";
@@ -5400,40 +5401,14 @@ const menuBar = new MenuBar({
   },
 });
 
-// ---- β.80 Phase E: form-text-font select に system フォントを動的追加 ----
-//   既存 4 preset (明朝/ゴシック/Serif/Sans) は <optgroup label="プリセット">
-//   に集約し、main から取得した OS インストール済フォントを
-//   <optgroup label="システム"> として末尾に追加する。フォント値は
-//   そのまま form_field.fontFace に保存され、viewer / 印刷経路で
-//   getTextFontStack(fontFace) が解決する (preset 名以外は CSS の
-//   font-family にダイレクトに引き渡す、fonts.js 参照)。
+// ---- β.80 Phase E + β.105: 各種 font-select に system フォントを動的追加 ----
+//   form-text-font (β.80 で導入) に加え、β.105 でテキスト挿入 (#text-font)
+//   にも展開。共通ロジックは system-fonts.js、stamp-dialogs.js も同関数を
+//   利用する (循環 import 防止のため renderer 配下の独立モジュール化)。
 (async () => {
-  const sel = document.getElementById("form-text-font");
-  if (!sel || !kpdf3?.listSystemFonts) return;
-  try {
-    const fonts = await kpdf3.listSystemFonts();
-    if (!Array.isArray(fonts) || fonts.length === 0) return;
-    const oldValue = sel.value;
-    const presetGroup = document.createElement("optgroup");
-    presetGroup.label = "プリセット";
-    const existing = [...sel.querySelectorAll("option")];
-    for (const opt of existing) presetGroup.appendChild(opt);
-    sel.innerHTML = "";
-    sel.appendChild(presetGroup);
-    const sysGroup = document.createElement("optgroup");
-    sysGroup.label = "システム";
-    for (const name of fonts) {
-      const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = name;
-      // option のスタイルにそのフォントを当てるとプレビュー風になる
-      opt.style.fontFamily = `"${name.replace(/"/g, '\\"')}"`;
-      sysGroup.appendChild(opt);
-    }
-    sel.appendChild(sysGroup);
-    sel.value = oldValue || "mincho";
-  } catch (err) {
-    console.warn("[form-text-font] system fonts load failed:", err);
+  for (const id of ["form-text-font", "text-font"]) {
+    const sel = document.getElementById(id);
+    if (sel) await appendSystemFontsToSelect(sel);
   }
 })();
 

@@ -3882,7 +3882,13 @@ async function _collectSystemFonts() {
       return [...set].sort((a, b) => a.localeCompare(b, "ja"));
     }
     if (platform === "win32") {
+      // β.105: 日本語フォント名 (MS UI Gothic, ヒラギノ, 游ゴシック等) が
+      // 文字化けする問題対応。PowerShell の既定出力エンコは Win 環境で
+      // CP932 or UTF-16LE になるため、明示的に UTF-8 を強制してから
+      // toString("utf-8") に渡す。
       const ps =
+        "$OutputEncoding=[System.Text.Encoding]::UTF8; " +
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " +
         "Add-Type -AssemblyName System.Drawing; " +
         "(New-Object System.Drawing.Text.InstalledFontCollection).Families | " +
         "ForEach-Object { $_.Name }";
