@@ -705,8 +705,60 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
 
 const pageNumDialog = () => $("page-numbers-dialog");
 
+// β.119: ページ番号ダイアログのプリセット永続化。前回入力した
+// position / format / start / fontSize / font を localStorage に
+// 保存し、次回ダイアログを開いた時に各 select / input を復元する。
+// fontSize は number input、他は select 値。値が select の有効
+// option (or system フォントとして追加された値) と一致しない場合は
+// 何もせず HTML 既定値のままにする。
+const PAGE_NUMBERS_LS = {
+  position: "kpdf3.pageNumbers.position",
+  format:   "kpdf3.pageNumbers.format",
+  start:    "kpdf3.pageNumbers.start",
+  fontSize: "kpdf3.pageNumbers.fontSize",
+  font:     "kpdf3.pageNumbers.font",
+};
+
+function _restorePageNumbersPresets() {
+  const setSel = (id, key) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const v = localStorage.getItem(key);
+    if (v == null) return;
+    // option リストに該当があれば設定 (system フォントは page-numbers-font に
+    // 動的追加されているはずなので、await tick 後の呼出で hit する)。
+    if (el.tagName === "SELECT") {
+      if (Array.from(el.options).some((o) => o.value === v)) el.value = v;
+    } else {
+      el.value = v;
+    }
+  };
+  setSel("page-numbers-position", PAGE_NUMBERS_LS.position);
+  setSel("page-numbers-format",   PAGE_NUMBERS_LS.format);
+  setSel("page-numbers-start",    PAGE_NUMBERS_LS.start);
+  setSel("page-numbers-fontsize", PAGE_NUMBERS_LS.fontSize);
+  setSel("page-numbers-font",     PAGE_NUMBERS_LS.font);
+}
+
+function _savePageNumbersPresets() {
+  const save = (id, key) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const v = String(el.value ?? "");
+    if (v) {
+      try { localStorage.setItem(key, v); } catch { /* ignore */ }
+    }
+  };
+  save("page-numbers-position", PAGE_NUMBERS_LS.position);
+  save("page-numbers-format",   PAGE_NUMBERS_LS.format);
+  save("page-numbers-start",    PAGE_NUMBERS_LS.start);
+  save("page-numbers-fontsize", PAGE_NUMBERS_LS.fontSize);
+  save("page-numbers-font",     PAGE_NUMBERS_LS.font);
+}
+
 function openPageNumbersDialog() {
   if (!isOpen) return;
+  _restorePageNumbersPresets();
   pageNumDialog().hidden = false;
 }
 function closePageNumbersDialog() {
@@ -798,6 +850,8 @@ async function applyPageNumbers() {
     added += 1;
   }
   wsStatus.textContent = `${added} ページにページ番号を追加`;
+  // β.119: プリセットとして次回開く時に復元できるよう localStorage に保存。
+  _savePageNumbersPresets();
   closePageNumbersDialog();
 }
 
