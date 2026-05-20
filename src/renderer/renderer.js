@@ -717,6 +717,7 @@ const PAGE_NUMBERS_LS = {
   start:    "kpdf3.pageNumbers.start",
   fontSize: "kpdf3.pageNumbers.fontSize",
   font:     "kpdf3.pageNumbers.font",
+  bold:     "kpdf3.pageNumbers.bold",
 };
 
 function _restorePageNumbersPresets() {
@@ -738,6 +739,12 @@ function _restorePageNumbersPresets() {
   setSel("page-numbers-start",    PAGE_NUMBERS_LS.start);
   setSel("page-numbers-fontsize", PAGE_NUMBERS_LS.fontSize);
   setSel("page-numbers-font",     PAGE_NUMBERS_LS.font);
+  // β.120: 太字チェックの復元 (checkbox は value ではなく checked を見る)。
+  const boldEl = document.getElementById("page-numbers-bold");
+  if (boldEl) {
+    const v = localStorage.getItem(PAGE_NUMBERS_LS.bold);
+    if (v != null) boldEl.checked = v === "1";
+  }
 }
 
 function _savePageNumbersPresets() {
@@ -754,6 +761,13 @@ function _savePageNumbersPresets() {
   save("page-numbers-start",    PAGE_NUMBERS_LS.start);
   save("page-numbers-fontsize", PAGE_NUMBERS_LS.fontSize);
   save("page-numbers-font",     PAGE_NUMBERS_LS.font);
+  // β.120: 太字チェック (checkbox は checked を 1/0 で保存)。
+  const boldEl = document.getElementById("page-numbers-bold");
+  if (boldEl) {
+    try {
+      localStorage.setItem(PAGE_NUMBERS_LS.bold, boldEl.checked ? "1" : "0");
+    } catch { /* ignore */ }
+  }
 }
 
 function openPageNumbersDialog() {
@@ -783,6 +797,9 @@ async function applyPageNumbers() {
   const fontSize = Math.max(6, Math.min(36, Number($("page-numbers-fontsize").value) || 11));
   // β.116: フォントを page-numbers-font select から取得 (preset + system フォント)
   const fontId = $("page-numbers-font")?.value || currentTextFontId();
+  // β.120: 太字 ON で β.73 の 0.03×fontSize 同色 overstroke が効き、印刷時
+  // もパリッと出る。デフォ ON。
+  const boldOn = $("page-numbers-bold")?.checked ?? true;
   const allPages = await kpdf3.getPages();
   const visible  = allPages.filter((p) => !pendingDeletedPages.has(p.pageNo));
   if (visible.length === 0) {
@@ -819,7 +836,10 @@ async function applyPageNumbers() {
     try {
       const fontFamily = getTextFontStack(fontId, { digitsHanko: false });
       const measured = measureTextOverlaySize(text, fontSize, fontFamily, 0);
-      W = Math.max(20, Math.ceil(measured.w) + 4);
+      // β.120: 太字 ON で overstroke ぶんわずかに横に広がる可能性があるため
+      // measured.w + 太字補正で余裕を持たせる (1pt 程度の overstroke 想定)。
+      const pad = boldOn ? 6 : 4;
+      W = Math.max(20, Math.ceil(measured.w) + pad);
       H = Math.max(fontSize, Math.ceil(measured.h));
     } catch (err) {
       console.warn("[applyPageNumbers] measureTextOverlaySize failed, using fixed W:", err);
@@ -842,7 +862,9 @@ async function applyPageNumbers() {
         color: "#000000",
         fontId,
         digitsHanko: false, // ページ番号は数字主体なので hanko は OFF (= 明示)
-        bold: false,
+        // β.120: 太字 ON で β.73 の同色 overstroke が効き、印刷時もパリッと
+        // 出る (ユーザー報告: 印刷時に薄く出ていた)。
+        bold: boldOn,
         rotation: 0,
       },
     });
