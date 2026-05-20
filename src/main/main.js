@@ -2264,12 +2264,31 @@ function listAdobeRelatedProcesses() {
     const NEVER_KILL_PREFIX = /^(AdobeARM|AdobeCollabSync|AdobeNotificationClient|AdobeIPCBroker|AdobeUpdateService|Adobe Update Service|Adobe Updater)/i;
     // Adobe / Acrobat 系として検出対象とするパターン
     const ADOBE_PATTERN = /^(Acro|Adobe Acrobat|AdobeAcrobat|adcef|acrobat)/i;
+    let settled = false;
+    let sp = null;
+    // β.106: tasklist が hang したまま cleanup 全体が止まる事象の保険。
+    // 5 秒で諦めて空配列を返す (kill 対象が空 = 副作用なし、ログだけ残る)。
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { sp?.kill(); } catch { /* ignore */ }
+      try { logCrash("listAdobeRelatedProcesses-timeout", { timeoutMs: 5000 }); } catch { /* ignore */ }
+      resolve([]);
+    }, 5000);
     try {
-      const sp = spawn("tasklist", ["/FO", "CSV", "/NH"], { windowsHide: true });
+      sp = spawn("tasklist", ["/FO", "CSV", "/NH"], { windowsHide: true });
       let out = "";
       sp.stdout?.on("data", (d) => { out += d.toString(); });
-      sp.on("error", () => resolve([]));
+      sp.on("error", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve([]);
+      });
       sp.on("close", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         const items = [];
         for (const line of out.split(/\r?\n/)) {
           // CSV: "Image","PID","Session","Session#","MemUsage"
@@ -2287,6 +2306,9 @@ function listAdobeRelatedProcesses() {
         resolve(items);
       });
     } catch {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       resolve([]);
     }
   });
@@ -2300,16 +2322,34 @@ function getProcessPidsByName(exeName) {
       resolve([]);
       return;
     }
+    let settled = false;
+    let sp = null;
+    // β.106: 同上、tasklist hang の保険。空配列で resolve。
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { sp?.kill(); } catch { /* ignore */ }
+      try { logCrash("getProcessPidsByName-timeout", { exeName, timeoutMs: 5000 }); } catch { /* ignore */ }
+      resolve([]);
+    }, 5000);
     try {
-      const sp = spawn(
+      sp = spawn(
         "tasklist",
         ["/FI", `IMAGENAME eq ${exeName}`, "/FO", "CSV", "/NH"],
         { windowsHide: true },
       );
       let out = "";
       sp.stdout?.on("data", (d) => { out += d.toString(); });
-      sp.on("error", () => resolve([]));
+      sp.on("error", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve([]);
+      });
       sp.on("close", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         const pids = [];
         for (const line of out.split(/\r?\n/)) {
           // CSV: "Image","PID","Session","Session#","MemUsage"
@@ -2322,6 +2362,9 @@ function getProcessPidsByName(exeName) {
         resolve(pids);
       });
     } catch {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       resolve([]);
     }
   });
@@ -2357,6 +2400,18 @@ const PDF_READER_HELPER_EXES = {
  *  @param {Record<string, number[]>} beforePidsByExe  exe 名ごとの PID 一覧 (診断用)
  */
 async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
+  // β.106: 「cleanup 経路に入ったか」を切り分けるための入口ログ。
+  // β.105 までは pdfreader-dialog-finish の後に必ず出るはずの
+  // pdfreader-cleanup ログが「無い」ユーザー報告があり、関数冒頭から
+  // 最初の await まで logCrash 呼出が無いせいで「cleanup に入って hang
+  // した」のか「そもそも入っていない」のか判別できなかった。
+  try {
+    logCrash("pdfreader-cleanup-start", {
+      engine: readerInfo?.engine,
+      beforePidsByExe,
+    });
+  } catch { /* ignore */ }
+
   const killedCounts = {};
   /** β.85: per-PID outcome trace for diagnostics. taskkill exit code (0 =
    *  成功 / 128 = 既に終了 / 1 = アクセス拒否 / その他は OS message)。 */
@@ -2599,7 +2654,12 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
           elapsedMs: Date.now() - startMs,
         });
       } catch { /* ignore */ }
-      killNewPdfReaderProcesses(readerInfo, beforePidsByExe).catch(() => {});
+      // β.106: 例外を完全握りつぶしていたのを logCrash で可視化。fire-and-
+      // forget 自体は維持 (cleanup の完了を待つと IPC ハンドラの resolve
+      // が遅れる)、ただし throw が起きたら crash.log に残す。
+      killNewPdfReaderProcesses(readerInfo, beforePidsByExe).catch((err) => {
+        try { logCrash("pdfreader-cleanup-error", err); } catch { /* ignore */ }
+      });
       resolve({ success: true, reason });
     };
 
