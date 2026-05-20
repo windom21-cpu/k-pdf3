@@ -75,9 +75,12 @@ export function currentTextBold() {
  * leaving an invisible 0×0 redaction.
  */
 export function startRedactionDrag(pageNo, startX, startY, downEvt, div) {
+  // β.112: redaction mode を marker mode と同じ sticky 動作に統一。
+  // 墨消しは複数箇所を連続で置きたい用途が多く、1 回ごとに mode が
+  // 抜けて「もう一度ボタンを押す」のは煩雑というユーザー要望に対応。
+  // 抜けるには別モードボタン押下 / Esc / 同じ墨消しボタン再押下のいずれか。
   if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
     placeRedaction(pageNo, startX - 100, startY - 15, 200, 30);
-    _setPlacementMode("none");
     return;
   }
   const pointerId = downEvt.pointerId;
@@ -139,13 +142,13 @@ export function startRedactionDrag(pageNo, startX, startY, downEvt, div) {
     } else {
       placeRedaction(pageNo, x, y, w, h);
     }
-    _setPlacementMode("none");
+    // β.112: sticky 維持 (marker と同様)。setPlacementMode("none") を呼ばない。
   }
 
   function onCancel(e) {
     if (e.pointerId !== pointerId) return;
     cleanup();
-    _setPlacementMode("none");
+    // β.112: cancel でも sticky 維持 (marker と同じ流儀)。
   }
 
   div.addEventListener("pointermove", onMove);
