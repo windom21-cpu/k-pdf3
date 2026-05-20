@@ -22,6 +22,7 @@ import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
 import { computePdfFingerprint } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
+import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
 import { findQpdfBinary, sanitizePdfBytes } from "./qpdf-sanitize.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
@@ -135,6 +136,17 @@ app.on("child-process-gone", (_event, details) => {
 app.whenReady().then(() => {
   logCrash("session-start", `pid=${process.pid} version=${app.getVersion()}`);
 });
+// β.113: mupdf に CJK 用 OS native font fallback を登録。renderer が
+// 初めて render-page を呼ぶ前に installLoadFontFunction が登録済である
+// 必要があるので、whenReady の前に同期実行 (mupdf module は import 時点で
+// ready)。エラーは握りつぶす — fallback 未登録でも従来の見た目に戻るだけ。
+// logFn として logCrash を渡し、最初の N 回 callback 発火を crash.log
+// に残す (= 実機検証で「fallback が効いたか」をユーザー報告から追跡可能)。
+try {
+  registerFontFallback(logCrash);
+} catch (err) {
+  logCrash("font-fallback-register-failed", err);
+}
 // β75 diag: renderer から fire-and-forget でログを残せるチャンネル。
 // D&D 経路の追跡 (drop event 発火 / path 解決 / openPdfSmart 結果) に使う。
 ipcMain.on("kpdf3:log-diag", (_event, label, data) => {
