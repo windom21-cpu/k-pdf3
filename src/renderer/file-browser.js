@@ -29,6 +29,10 @@ const openCancelBtn = document.getElementById("open-cancel");
 const openTitlebarCloseBtn = document.getElementById("open-titlebar-close");
 const openSecureExportRow = document.getElementById("open-row-secure-export");
 const openSecureExportCheckbox = document.getElementById("open-secure-export");
+// β.110: 「白黒で書き出す」チェック (secure と独立、書き出し系経路に
+// monoOverlays を伝搬する)。ツールバー印刷時の「白黒」トグルとは別状態。
+const openMonoExportRow = document.getElementById("open-row-mono-export");
+const openMonoExportCheckbox = document.getElementById("open-mono-export");
 
 const fileBrowserState = {
   mode: "open", // "open" | "save" | "folder"
@@ -42,6 +46,9 @@ const fileBrowserState = {
   // "セキュア書き出し" checkbox row and resolves to { path, secureExport }
   // instead of just a path string.
   secureExportToggle: false,
+  // β.110: 同様に「白黒で書き出す」チェック。両方 true なら resolve
+  // 値は { path, secureExport, monoExport } の合算。
+  monoExportToggle: false,
   // β.97 画像書き出し: ".pdf" 既定だと "契約書" → "契約書.pdf" に
   // 強制されてしまい、image save で .png が消える。caller が拡張子を
   // 指定できるようにする (デフォは ".pdf" で後方互換)。
@@ -215,6 +222,10 @@ function fileBrowserConfirm(value) {
   if (fileBrowserState.secureExportToggle && openSecureExportCheckbox) {
     localStorage.setItem("kpdf3.secureExport", openSecureExportCheckbox.checked ? "1" : "0");
   }
+  // β.110: 白黒書き出しチェックの永続化。
+  if (fileBrowserState.monoExportToggle && openMonoExportCheckbox) {
+    localStorage.setItem("kpdf3.monoExport", openMonoExportCheckbox.checked ? "1" : "0");
+  }
   openDialog.hidden = true;
   if (fileBrowserState.resolve) {
     const r = fileBrowserState.resolve;
@@ -227,7 +238,17 @@ async function handleFileBrowserConfirm() {
   const mode = fileBrowserState.mode;
   if (mode === "folder") {
     if (fileBrowserState.currentPath) {
-      fileBrowserConfirm(fileBrowserState.currentPath);
+      // β.110: monoExportToggle が立っていれば payload を object 化して
+      // monoExport を返す (分割保存経路用)。何も立っていなければ従来通り
+      // string (folder path) を返して後方互換。
+      if (fileBrowserState.monoExportToggle) {
+        fileBrowserConfirm({
+          path: fileBrowserState.currentPath,
+          monoExport: !!openMonoExportCheckbox?.checked,
+        });
+      } else {
+        fileBrowserConfirm(fileBrowserState.currentPath);
+      }
     }
     return;
   }
@@ -258,11 +279,18 @@ async function handleFileBrowserConfirm() {
       });
       if (!ok) return;
     }
-    if (fileBrowserState.secureExportToggle) {
-      fileBrowserConfirm({
-        path: target,
-        secureExport: !!openSecureExportCheckbox?.checked,
-      });
+    if (fileBrowserState.secureExportToggle || fileBrowserState.monoExportToggle) {
+      // β.110: secure / mono の各 toggle が立っているかで含めるキーを切替
+      // (どちらか 1 つでも true ならオブジェクトを返す)。両方 false の
+      // 場合は従来通り string を返す (後方互換)。
+      const payload = { path: target };
+      if (fileBrowserState.secureExportToggle) {
+        payload.secureExport = !!openSecureExportCheckbox?.checked;
+      }
+      if (fileBrowserState.monoExportToggle) {
+        payload.monoExport = !!openMonoExportCheckbox?.checked;
+      }
+      fileBrowserConfirm(payload);
     } else {
       fileBrowserConfirm(target);
     }
@@ -296,19 +324,33 @@ export async function showFileBrowser({
   filterDefault = "pdf",
   confirmLabel,
   secureExportToggle = false,
+  monoExportToggle = false,
   defaultExt = ".pdf",
 } = {}) {
   fileBrowserState.mode = mode;
   fileBrowserState.secureExportToggle = !!secureExportToggle && mode === "save";
+  // β.110: 白黒書き出しチェックは save / folder 両方で出せる (分割保存は
+  // folder picker 経由のため)。secure 側は qpdf 必須等で複雑なので一旦
+  // save 限定を維持 (§17 #11 で別途検討予定)。
+  fileBrowserState.monoExportToggle = !!monoExportToggle && (mode === "save" || mode === "folder");
   fileBrowserState.defaultExt = defaultExt || ".pdf";
   if (openSecureExportRow) {
     openSecureExportRow.hidden = !fileBrowserState.secureExportToggle;
+  }
+  if (openMonoExportRow) {
+    openMonoExportRow.hidden = !fileBrowserState.monoExportToggle;
   }
   // Default checked when the row first appears; persist across invocations
   // via localStorage so a tester who switched it off stays off.
   if (fileBrowserState.secureExportToggle && openSecureExportCheckbox) {
     const stored = localStorage.getItem("kpdf3.secureExport");
     openSecureExportCheckbox.checked = stored == null ? true : stored === "1";
+  }
+  // β.110: 白黒書き出しチェックは既定 OFF (= 現状動作維持)。明示的に
+  // ユーザが ON にしたときだけ localStorage で記憶する。
+  if (fileBrowserState.monoExportToggle && openMonoExportCheckbox) {
+    const stored = localStorage.getItem("kpdf3.monoExport");
+    openMonoExportCheckbox.checked = stored === "1";
   }
   await populateQuickSelector();
 

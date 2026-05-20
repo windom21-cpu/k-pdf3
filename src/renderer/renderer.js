@@ -1326,9 +1326,10 @@ async function actionSavePagesAsPdf(pageNos) {
     initialName,
     defaultDir: defaults.sourceDir,
     secureExportToggle: true,
+    monoExportToggle: true,
   });
   if (!choice) return;
-  const { path: savePath, secureExport } = choice;
+  const { path: savePath, secureExport, monoExport } = choice;
   showBusy("保存", `${rows.length} ページを書き出し中...`, 0);
   try {
     const composed = await composePagesForExport({
@@ -1337,6 +1338,7 @@ async function actionSavePagesAsPdf(pageNos) {
       renderPage: kpdf3.renderPage,
       renderSyntheticPage: renderSyntheticPagePixels,
       rasterRedactionPages: true,
+      monoOverlays: !!monoExport,
       onProgress: ({ done, total }) => {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
@@ -3029,12 +3031,18 @@ splitConfirmBtn.addEventListener("click", async () => {
   const pages = await fetchVisiblePages();
   const parts = computeParts(pages.length, splitState.splitAfter);
   const defaults = await kpdf3.getExportDefaults();
-  const folder = await showFileBrowser({
+  const choice = await showFileBrowser({
     mode: "folder",
     title: "分割した PDF を保存するフォルダ",
     defaultDir: defaults.sourceDir,
+    monoExportToggle: true,
   });
-  if (!folder) return;
+  if (!choice) return;
+  // β.110: monoExportToggle ON のとき choice は object 化されている
+  // (folder path + monoExport)。folder picker は他の呼出側 (例: 一般の
+  // フォルダ選択) でも使われるので string fallback も維持。
+  const folder = typeof choice === "string" ? choice : choice.path;
+  const monoExport = typeof choice === "string" ? false : !!choice.monoExport;
 
   setSplitMode(false);
   showBusy("分割保存", `0 / ${parts.length} パート`, 0);
@@ -3057,6 +3065,7 @@ splitConfirmBtn.addEventListener("click", async () => {
         renderPage: kpdf3.renderPage,
         renderSyntheticPage: renderSyntheticPagePixels,
         rasterRedactionPages: true,
+        monoOverlays: monoExport,
         onProgress: ({ done, total }) => {
           const partProgress = done / total;
           updateBusy(
@@ -3101,9 +3110,10 @@ async function actionExportRange() {
     initialName: defaults.defaultName ?? "export.pdf",
     defaultDir: defaults.sourceDir,
     secureExportToggle: true,
+    monoExportToggle: true,
   });
   if (!choice) return;
-  const { path: savePath, secureExport } = choice;
+  const { path: savePath, secureExport, monoExport } = choice;
 
   const filteredPages = pages.slice(range.start - 1, range.end);
   showBusy("書き出し準備", `ページ ${range.start}-${range.end} を描画しています...`, 0);
@@ -3114,6 +3124,7 @@ async function actionExportRange() {
       renderPage: kpdf3.renderPage,
       renderSyntheticPage: renderSyntheticPagePixels,
       rasterRedactionPages: true,
+      monoOverlays: !!monoExport,
       onProgress: ({ done, total: t }) => {
         updateBusy(`${done} / ${t} ページを描画中...`, (done / t) * 80);
       },
@@ -3154,9 +3165,13 @@ async function actionExport() {
     initialName: defaults.defaultName ?? "export.pdf",
     defaultDir: defaults.sourceDir,
     secureExportToggle: true,
+    monoExportToggle: true,
   });
   if (!choice) return;
-  await actionExportToPath(choice.path, { secureExport: choice.secureExport });
+  await actionExportToPath(choice.path, {
+    secureExport: choice.secureExport,
+    monoExport: choice.monoExport,
+  });
 }
 
 // ---- β.97 機能 2: 範囲選択して画像保存 -----------------------------------
@@ -3614,7 +3629,7 @@ async function actionSave() {
  */
 async function actionExportToPath(
   savePath,
-  { verb: verbOverride, secureExport = false } = {},
+  { verb: verbOverride, secureExport = false, monoExport = false } = {},
 ) {
   if (!isOpen) return;
   const pages = await fetchVisiblePages();
@@ -3641,6 +3656,7 @@ async function actionExportToPath(
         renderPage: kpdf3.renderPage,
         renderSyntheticPage: renderSyntheticPagePixels,
         rasterRedactionPages: true,
+        monoOverlays: !!monoExport,
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
