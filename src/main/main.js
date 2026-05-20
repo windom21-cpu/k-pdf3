@@ -3125,12 +3125,25 @@ ipcMain.handle("kpdf3:print-via-reader-dialog", async (_, payload) => {
   const reader = findPdfReader();
   if (!reader) throw new Error("No PDF Reader detected");
 
+  // β.117: 書き出した temp PDF のパスとサイズを診断ログに残す。Xerox 系の
+  // 016-721 (PDL 処理エラー) は K-PDF3 側の責任範囲外で発火するが、その
+  // 切り分けに「Adobe に渡した PDF 自体を取り出して Adobe で直接印刷
+  // できるか」のテストが要る。temp ファイルは pdfreader-cleanup の数秒
+  // 後に削除されない (現状仕様) ので、ユーザーがこのパスをコピーして
+  // 手動印刷検証できる。
+  let tempBytes = -1;
+  try { tempBytes = pdfBytes?.length ?? -1; } catch { /* ignore */ }
   logCrash("print-via-reader-dialog-start", {
     source,
     pageCount: Array.isArray(pages) ? pages.length : 0,
     engine: reader.engine,
     exe: reader.exePath,
     defaultPrinterHint: defaultPrinterHint ?? null,
+    tempPath,
+    tempBytes,
+    tempBytesHuman: tempBytes > 0
+      ? `${(tempBytes / 1024 / 1024).toFixed(2)} MB`
+      : "(unknown)",
   });
   // OS 規定プリンタ切替 (Win + hint あり時のみ)。失敗しても続行 (best-effort)
   let defaultToken = null;

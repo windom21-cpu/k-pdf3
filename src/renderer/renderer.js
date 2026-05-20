@@ -757,11 +757,23 @@ async function applyPageNumbers() {
     // ボックス左寄せのため視覚的に左寄りになっていた (ユーザー報告)。
     // measureTextOverlaySize で実テキスト幅を測定 → ボックス幅をそれに
     // 合わせると、テキスト自体が中央に座る。
-    const measured = measureTextOverlaySize({
-      text, fontSize, fontId, digitsHanko: false, bold: false,
-    });
-    const W = Math.max(20, Math.ceil(measured.w) + 4);
-    const H = Math.max(fontSize, Math.ceil(measured.h));
+    // β.117 hotfix: β.116 で measureTextOverlaySize を object 引数で呼んで
+    // いた (実際は positional: (text, fontSize, fontFamily, currentW))。
+    // 第 1 引数 text に object が入って split で TypeError → ループ abort
+    // → 「配置」ボタン無反応の原因。getTextFontStack で CSS family を
+    // 生成して positional に渡し、measure 失敗時は固定 W で fallback。
+    let W;
+    let H;
+    try {
+      const fontFamily = getTextFontStack(fontId, { digitsHanko: false });
+      const measured = measureTextOverlaySize(text, fontSize, fontFamily, 0);
+      W = Math.max(20, Math.ceil(measured.w) + 4);
+      H = Math.max(fontSize, Math.ceil(measured.h));
+    } catch (err) {
+      console.warn("[applyPageNumbers] measureTextOverlaySize failed, using fixed W:", err);
+      W = Math.max(60, fontSize * 8);
+      H = Math.max(fontSize, Math.round(fontSize * 1.4));
+    }
     // x by alignment; y from bottom.
     let x;
     if (position === "left")        x = 36;
