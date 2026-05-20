@@ -44,6 +44,7 @@ import {
   handleOverlayDblclick,
   selectOverlay,
   setSelectedOverlay,
+  selectAllOverlays,
   clearSelection,
   reapplySelectionDom,
   syncPrimaryFromSet,
@@ -225,6 +226,25 @@ const viewer = new Viewer(viewerContainer, {
   onOverlayDblclick: handleOverlayDblclick,
   onTextEditCommit: handleTextEditCommit,
   onOverlayDragEnd: handleOverlayDragEnd,
+  // β.107: 群移動 — viewer は selection 状態を持たないので、selection 中
+  // 全 id を返す callback を渡し、群移動 commit 用 callback で 1 undo に
+  // まとめる (CompositeCommand)。
+  getSelectedOverlayIds: () => getSelectedIds(),
+  onOverlayDragEndGroup: (updates) => {
+    const subs = [];
+    for (const u of updates) {
+      const ov = projectStore.get(u.id);
+      if (!ov) continue;
+      if (ov.x === u.x && ov.y === u.y) continue;
+      subs.push(new UpdateOverlayCommand(projectStore, u.id, { x: u.x, y: u.y }));
+    }
+    if (!subs.length) return;
+    if (subs.length === 1) {
+      history.execute(subs[0]);
+    } else {
+      history.execute(new CompositeCommand(subs, `Move ${subs.length} overlays`));
+    }
+  },
   onOverlayResizeEnd: handleOverlayResizeEnd,
   onCalloutArrowEnd: handleCalloutArrowEnd,
   onOverlayContextMenu: showOverlayContextMenu,
@@ -1990,16 +2010,29 @@ function refreshModeOptionsBar() {
     which = "text";
   } else if (placementMode !== "none") {
     which = placementMode;
-  } else if (!formFillMode && getSelectionSize() === 1) {
+  } else if (!formFillMode && getSelectionSize() >= 1) {
+    // β.107: multi-select 時も「全部同種 form_field」なら専用パネル表示
+    // (= 一括変更可能)。異種混在 or 非 form_field 単独 なら hide。
     const selId = getPrimarySelectedId();
-    const ov = selId ? projectStore.get(selId) : null;
-    if (ov?.type === "form_field") {
-      const kind = ov.properties?.fieldKind;
-      which =
+    const primary = selId ? projectStore.get(selId) : null;
+    if (primary?.type === "form_field") {
+      const kind = primary.properties?.fieldKind;
+      let homogeneous = true;
+      if (getSelectionSize() > 1) {
+        for (const id of getSelectedIds()) {
+          const ov = projectStore.get(id);
+          if (!ov || ov.type !== "form_field" || ov.properties?.fieldKind !== kind) {
+            homogeneous = false;
+            break;
+          }
+        }
+      }
+      which = homogeneous ? (
         kind === "text"   ? "form-text"   :
         kind === "check"  ? "form-check"  :
         kind === "circle" ? "form-circle" :
-        kind === "radio"  ? "form-radio"  : null;
+        kind === "radio"  ? "form-radio"  : null
+      ) : null;
     } else {
       which = null;
     }
@@ -5510,9 +5543,37 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
+  // β.107: 矢印キーで選択中の overlay を微移動。1pt 単位、Shift で 10pt。
+  // input/contentEditable フォーカス中はブラウザ default に委ねる
+  // (カーソル移動を奪わない)。
+  if (
+    !inText && hasSelection() && !e.ctrlKey && !e.metaKey && !e.altKey &&
+    (e.key === "ArrowUp" || e.key === "ArrowDown" ||
+     e.key === "ArrowLeft" || e.key === "ArrowRight")
+  ) {
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 1;
+    let dx = 0, dy = 0;
+    if (e.key === "ArrowUp") dy = -step;
+    else if (e.key === "ArrowDown") dy = step;
+    else if (e.key === "ArrowLeft") dx = -step;
+    else if (e.key === "ArrowRight") dx = step;
+    nudgeSelectionBy(dx, dy);
+    return;
+  }
+
   const ctrlOrCmd = e.ctrlKey || e.metaKey;
   if (!ctrlOrCmd) return;
   const key = e.key.toLowerCase();
+
+  // β.107: Ctrl+A — アクティブタブ全 overlay を一括選択 (input フォーカス
+  // 中は browser default の「文字列全選択」に委ねる)。
+  if (key === "a" && !e.shiftKey && !inText) {
+    e.preventDefault();
+    const all = projectStore.list();
+    if (all.length) selectAllOverlays(all.map((o) => o.id));
+    return;
+  }
 
   if (key === "s" && !e.shiftKey) {
     // Ctrl+S works even inside text edit — commit the edit first via blur,
@@ -6520,16 +6581,35 @@ function applyFontSizeToEditingOverlay() {
  *  これにより、ユーザがハンドルで自由変形した後に size select だけ
  *  触ったときも意図通りリサイズされ、フォント等を変えただけのときは
  *  bbox を勝手に書き戻さない。 */
-function applyFormFieldStyleToEditingOrSelected(kind = null) {
-  const editId = viewer._editingId;
-  const selId = !editId ? getPrimarySelectedId() : null;
-  const targetId = editId || selId;
-  if (!targetId) return;
-  const ov = projectStore.get(targetId);
-  if (!ov || ov.type !== "form_field") return;
-  const fk = ov.properties?.fieldKind;
-  // kind が指定されていれば一致確認。指定なしなら overlay 側の fk を採用。
-  if (kind && fk !== kind) return;
+/** β.107: 矢印キーで選択中の overlay を delta だけ移動する。1 keystroke =
+ *  1 undo step (CompositeCommand で全 selection を 1 まとめ)。マイナス
+ *  座標は (0, 0) で clamp する。inline-edit 中はそもそも上位ハンドラで
+ *  矢印キーを受け取らない (browser default に委ねる) ので、ここに来る
+ *  時点で selection は valid。 */
+function nudgeSelectionBy(dx, dy) {
+  if (!isOpen) return;
+  const ids = getSelectedIds();
+  if (!ids.length) return;
+  const subs = [];
+  for (const id of ids) {
+    const ov = projectStore.get(id);
+    if (!ov) continue;
+    const newX = Math.max(0, ov.x + dx);
+    const newY = Math.max(0, ov.y + dy);
+    if (newX === ov.x && newY === ov.y) continue;
+    subs.push(new UpdateOverlayCommand(projectStore, id, { x: newX, y: newY }));
+  }
+  if (!subs.length) return;
+  if (subs.length === 1) {
+    history.execute(subs[0]);
+  } else {
+    history.execute(new CompositeCommand(subs, `Nudge ${subs.length} overlays`));
+  }
+}
+
+/** β.107: ov ごとに UI 値から patch を組み立てる。circle の size 判定
+ *  のように overlay の現在状態を見る分岐があるので ov 単位で。 */
+function _buildFormFieldPatch(ov, fk) {
   if (fk === "text") {
     const fontFace = document.getElementById("form-text-font")?.value || "mincho";
     const fontSize =
@@ -6537,39 +6617,24 @@ function applyFormFieldStyleToEditingOrSelected(kind = null) {
     const color = document.getElementById("form-text-color")?.value || "#000000";
     const alignH = document.getElementById("form-text-align-h")?.value || "left";
     const alignV = document.getElementById("form-text-align-v")?.value || "middle";
-    projectStore.update(targetId, {
-      properties: { ...ov.properties, fontFace, fontSize, color, alignH, alignV },
-    });
-    // 編集中なら inline-edit 要素の見た目もすぐ追従させる (text overlay
-    // と同じ仕組みを流用、digitsHanko/bold は form_field では未使用)。
-    if (editId) {
-      viewer.applyEditingTextStyle?.({
-        fontId: fontFace, fontSize, color, digitsHanko: false, bold: false,
-      });
-    }
-    return;
+    return { properties: { ...ov.properties, fontFace, fontSize, color, alignH, alignV } };
   }
   if (fk === "check") {
     const checkStyle = document.getElementById("form-check-style")?.value || "✓";
     const sizeRaw = parseInt(document.getElementById("form-check-size")?.value ?? "", 10);
-    const patch = {
-      properties: { ...ov.properties, checkStyle },
-    };
+    const patch = { properties: { ...ov.properties, checkStyle } };
     if (!Number.isNaN(sizeRaw) && sizeRaw > 0) {
       patch.w = sizeRaw;
       patch.h = sizeRaw;
     }
-    projectStore.update(targetId, patch);
-    return;
+    return patch;
   }
   if (fk === "circle") {
     const strokeWidth =
       parseFloat(document.getElementById("form-circle-stroke")?.value ?? "1.2") || 1.2;
     const color = document.getElementById("form-circle-color")?.value || "#000000";
     const sizeRaw = parseInt(document.getElementById("form-circle-size")?.value ?? "", 10);
-    const patch = {
-      properties: { ...ov.properties, strokeWidth, color },
-    };
+    const patch = { properties: { ...ov.properties, strokeWidth, color } };
     // circle は配置後に楕円化される可能性が高い (四隅ハンドルで自由変形)。
     // size select は MIN(w,h) と一致するときだけ「未変更」と見なし、それ
     // 以外は「ユーザが意図的に元のサイズに戻したい」と解釈して w=h=size
@@ -6581,22 +6646,55 @@ function applyFormFieldStyleToEditingOrSelected(kind = null) {
         patch.h = sizeRaw;
       }
     }
-    projectStore.update(targetId, patch);
-    return;
+    return patch;
   }
   if (fk === "radio") {
     const groupRaw = (document.getElementById("form-radio-group")?.value ?? "").trim();
     const radioGroupId = groupRaw || "default";
     const checkStyle = document.getElementById("form-radio-style")?.value || "●";
     const sizeRaw = parseInt(document.getElementById("form-radio-size")?.value ?? "", 10);
-    const patch = {
-      properties: { ...ov.properties, radioGroupId, checkStyle },
-    };
+    const patch = { properties: { ...ov.properties, radioGroupId, checkStyle } };
     if (!Number.isNaN(sizeRaw) && sizeRaw > 0) {
       patch.w = sizeRaw;
       patch.h = sizeRaw;
     }
-    projectStore.update(targetId, patch);
+    return patch;
+  }
+  return null;
+}
+
+function applyFormFieldStyleToEditingOrSelected(kind = null) {
+  const editId = viewer._editingId;
+  // β.107: multi-select 対応。編集中は単一 (editId)、それ以外は selection
+  // 全体を target にして同種 form_field (同じ fieldKind) に同じ patch を
+  // ライブ適用する。projectStore.update を直接呼ぶのは β.81 以来の方針
+  // (history に毎 keystroke を積まないため) を維持。
+  const targetIds = editId ? [editId] : getSelectedIds();
+  if (!targetIds.length) return;
+  const primaryId = editId || getPrimarySelectedId();
+  const primary = primaryId ? projectStore.get(primaryId) : null;
+  if (!primary || primary.type !== "form_field") return;
+  const fk = primary.properties?.fieldKind;
+  if (kind && fk !== kind) return;
+
+  for (const id of targetIds) {
+    const ov = projectStore.get(id);
+    if (!ov || ov.type !== "form_field") continue;
+    if (ov.properties?.fieldKind !== fk) continue;
+    const patch = _buildFormFieldPatch(ov, fk);
+    if (patch) projectStore.update(id, patch);
+  }
+
+  // text は inline-edit 要素の見た目もすぐ追従させる (text overlay
+  // と同じ仕組みを流用、digitsHanko/bold は form_field では未使用)。
+  if (editId && fk === "text") {
+    const fontFace = document.getElementById("form-text-font")?.value || "mincho";
+    const fontSize =
+      Math.max(6, parseInt(document.getElementById("form-text-size")?.value ?? "12", 10) || 12);
+    const color = document.getElementById("form-text-color")?.value || "#000000";
+    viewer.applyEditingTextStyle?.({
+      fontId: fontFace, fontSize, color, digitsHanko: false, bold: false,
+    });
   }
 }
 
@@ -6610,10 +6708,22 @@ const applyFormTextStyleToEditingOrSelected = applyFormFieldStyleToEditingOrSele
  *  event を発火しないので、入力ループにはならない。 */
 function populateFormFieldOptionsBar() {
   if (formFillMode) return;
-  if (getSelectionSize() !== 1) return;
+  // β.107: multi-select 対応。1 個でも複数でも、selection が全て同種
+  // form_field のときは primary の値で populate する (= 変更で全選択に
+  // 一括反映される)。異種混在のときは populate しない (options bar は
+  // refreshModeOptionsBar 側で hidden になる)。
+  const selSize = getSelectionSize();
+  if (selSize < 1) return;
   const selId = getPrimarySelectedId();
   const ov = selId ? projectStore.get(selId) : null;
   if (!ov || ov.type !== "form_field") return;
+  if (selSize > 1) {
+    const fkPrimary = ov.properties?.fieldKind;
+    for (const id of getSelectedIds()) {
+      const o = projectStore.get(id);
+      if (!o || o.type !== "form_field" || o.properties?.fieldKind !== fkPrimary) return;
+    }
+  }
   const p = ov.properties || {};
   const fk = p.fieldKind;
   const setVal = (id, val) => {

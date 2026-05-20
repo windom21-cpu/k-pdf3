@@ -62,6 +62,20 @@ export function clearSelectionState() {
   selectedOverlayId = null;
 }
 
+/** β.107: Ctrl+A — id 配列を 1 まとめで selection に置き換える。
+ *  個別 selectOverlay(id, "add") を loop すると毎回 reapplySelectionDom
+ *  + onSelectionChanged が走るので、ここでは set を 1 回構築してから
+ *  最終 reapply で締める。
+ *  @param {string[]} ids 全選択対象 (空配列なら clearSelection と等価) */
+export function selectAllOverlays(ids) {
+  selectedOverlayIds.clear();
+  for (const id of ids) selectedOverlayIds.add(id);
+  // anchor は配列末尾 (Shift+click range の起点として直近選択を採用)
+  lastClickedOverlayId = ids.length ? ids[ids.length - 1] : null;
+  syncPrimaryFromSet();
+  reapplySelectionDom();
+}
+
 // ---- Internal helpers --------------------------------------------------
 
 function _ovCssEscape(s) {
