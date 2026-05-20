@@ -472,8 +472,17 @@ async function actionPrintViaReader(pages, preselected, preselectedSource, opts 
   // FAX 経路では byte-copy は使わない (mono 化のため必ず再合成が必要)
   const isCopy = !forceMono && overlayCount === 0 && allPagesSelected;
 
-  // 中止ボタンは出さない (Adobe ダイアログを × で閉じれば中止)
-  showBusy(`${labelPrefix}準備`, "ページを描画中...", 0);
+  // β.118: 中止ボタンを表示する (旧コメント: 「Adobe ダイアログを × で
+  // 閉じれば中止」だったが、Adobe が hand-off で固まる / 印刷ダイアログが
+  // 出ない事象が報告された。ユーザーが busy modal から逃げ出せるよう
+  // cancelPrint で Adobe launcher を kill して resolve させる)。
+  showBusy(`${labelPrefix}準備`, "ページを描画中...", 0, {
+    onCancel: () => {
+      try { kpdf3.cancelPrint?.(); } catch { /* ignore */ }
+      hideBusy();
+      _wsStatus.textContent = "印刷を中止しました";
+    },
+  });
   let composed = null;
   try {
     if (!isCopy) {
@@ -735,7 +744,14 @@ export async function actionPrintOverlayOnly() {
   }
 
   const projectStore = _projectStore();
-  showBusy("下敷き印刷", "ページを描画中...", 0);
+  // β.118: 中止ボタンを表示 (Adobe ダイアログが出ない事象救済)。
+  showBusy("下敷き印刷", "ページを描画中...", 0, {
+    onCancel: () => {
+      try { kpdf3.cancelPrint?.(); } catch { /* ignore */ }
+      hideBusy();
+      _wsStatus.textContent = "下敷き印刷を中止しました";
+    },
+  });
   try {
     const composed = await composePagesForExport({
       pages: filteredPages,
@@ -1078,7 +1094,14 @@ export async function actionFaxSend(opts = {}) {
   // 1 度「実際のサイズ」を選べば記憶されるので、以降は手数ほぼ同等。
   // 副次効果として Adobe の vector レンダラを使うので明朝の hairline 品質
   // も保たれる (β.88 Phase 3 が達成しようとした目的を別経路で実現)。
-  showBusy("FAX 送信", `送信先 ${faxDevice} — ページを描画中...`, 0);
+  // β.118: 中止ボタンを表示 (FAX 経路でも Adobe が固まる可能性)。
+  showBusy("FAX 送信", `送信先 ${faxDevice} — ページを描画中...`, 0, {
+    onCancel: () => {
+      try { kpdf3.cancelPrint?.(); } catch { /* ignore */ }
+      hideBusy();
+      _wsStatus.textContent = "FAX 送信を中止しました";
+    },
+  });
   let composed = null;
   try {
     composed = await composePagesForExport({

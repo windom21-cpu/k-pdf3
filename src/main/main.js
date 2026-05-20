@@ -2273,7 +2273,10 @@ function listAdobeRelatedProcesses() {
       return;
     }
     // 名前が以下のいずれかで始まる exe は kill しない (Adobe 業務継続に必要)
-    const NEVER_KILL_PREFIX = /^(AdobeARM|AdobeCollabSync|AdobeNotificationClient|AdobeIPCBroker|AdobeUpdateService|Adobe Update Service|Adobe Updater)/i;
+    // β.118: Adobe Desktop Service / Genuine / Sync 等の Adobe CC 常駐
+    // サービスを追加。これらは印刷無関係なので kill すると CC が壊れる。
+    // 既に wide list には出る可能性があるが、kill 対象には絶対に入れない。
+    const NEVER_KILL_PREFIX = /^(AdobeARM|AdobeCollabSync|AdobeNotificationClient|AdobeIPCBroker|AdobeUpdateService|Adobe Update Service|Adobe Updater|Adobe Desktop Service|Adobe Genuine Service|Adobe Sync|AdobeGCClient|CCXProcess|CCLibrary|Creative Cloud|CoreSync)/i;
     // β.116: ADOBE_PATTERN を緩める。
     //   - 旧 /^(Acro|Adobe Acrobat|AdobeAcrobat|adcef|acrobat)/i は ^ (先頭)
     //     固定だったため、prefix 付き exe 名 (`Some_Acrobat.exe` 等) や
@@ -2681,6 +2684,39 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
     const POST_JOB_BUFFER_MS = 3000;
     const SAFETY_TIMEOUT_MS = 5 * 60 * 1000;
     const startMs = Date.now();
+    // β.118: tick で新規ジョブ ID を集めておき、finish 後の cleanup を
+    // 「これらのジョブが queue から drain するまで」遅延する。これに
+    // より「印刷ジョブを Adobe がプリンタへ送信中に kill されて途中で
+    // 打ち切られる」事象 (ユーザー報告) を解消。timeout は印刷大量
+    // ページ用に 5 分 (DRAIN_TIMEOUT_MS)、polling は 2 秒間隔。
+    /** @type {Set<number>} */
+    const submittedJobIds = new Set();
+    const DRAIN_POLL_MS = 2000;
+    const DRAIN_TIMEOUT_MS = 5 * 60 * 1000;
+
+    async function waitForJobsToDrain() {
+      if (submittedJobIds.size === 0) return { drained: true, elapsedMs: 0, reason: "no-jobs" };
+      const start = Date.now();
+      while (Date.now() - start < DRAIN_TIMEOUT_MS) {
+        try {
+          const current = await snapshotPrintJobs();
+          const currentSet = new Set(current);
+          for (const id of [...submittedJobIds]) {
+            if (!currentSet.has(id)) submittedJobIds.delete(id);
+          }
+        } catch { /* keep polling */ }
+        if (submittedJobIds.size === 0) {
+          return { drained: true, elapsedMs: Date.now() - start, reason: "drained" };
+        }
+        await new Promise((r) => setTimeout(r, DRAIN_POLL_MS));
+      }
+      return {
+        drained: false,
+        elapsedMs: Date.now() - start,
+        reason: "timeout",
+        remaining: [...submittedJobIds],
+      };
+    }
 
     const finish = (reason) => {
       if (settled) return;
@@ -2691,14 +2727,26 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
           engine: readerInfo.engine,
           reason,
           elapsedMs: Date.now() - startMs,
+          submittedJobCount: submittedJobIds.size,
         });
       } catch { /* ignore */ }
-      // β.106: 例外を完全握りつぶしていたのを logCrash で可視化。fire-and-
-      // forget 自体は維持 (cleanup の完了を待つと IPC ハンドラの resolve
-      // が遅れる)、ただし throw が起きたら crash.log に残す。
-      killNewPdfReaderProcesses(readerInfo, beforePidsByExe).catch((err) => {
-        try { logCrash("pdfreader-cleanup-error", err); } catch { /* ignore */ }
-      });
+      // β.118: ジョブ drain 待ち。fire-and-forget は維持 (IPC ハンドラの
+      // resolve は即時)、ただし内部では submitted ジョブが queue から
+      // 消えるまで cleanup を遅延 → Adobe が転送し切る前に kill されて
+      // 印刷が途中で打ち切られる事象を防ぐ。
+      // reason='reader-closed' (= ユーザー × 等で submitted が無い場合)
+      // は drain せず即 cleanup (= 既存挙動を維持)。
+      (async () => {
+        try {
+          if (submittedJobIds.size > 0) {
+            const drainResult = await waitForJobsToDrain();
+            try { logCrash("pdfreader-jobs-drained", drainResult); } catch { /* ignore */ }
+          }
+          await killNewPdfReaderProcesses(readerInfo, beforePidsByExe);
+        } catch (err) {
+          try { logCrash("pdfreader-cleanup-error", err); } catch { /* ignore */ }
+        }
+      })();
       resolve({ success: true, reason });
     };
 
@@ -2738,6 +2786,9 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
         const currentJobs = await snapshotPrintJobs();
         const newJobs = currentJobs.filter((id) => !beforeJobIds.includes(id));
         if (newJobs.length > 0) {
+          // β.118: 新規ジョブを submittedJobIds に積む (cleanup 段階で
+          // queue から drain するのを待つため)。
+          for (const id of newJobs) submittedJobIds.add(id);
           // 新規ジョブ検出 = ユーザが Adobe ダイアログで「印刷」を押した
           // → 3 秒バッファ後に Reader を kill (spool 投入完了待ち)
           setTimeout(() => finish("job-detected"), POST_JOB_BUFFER_MS);
@@ -2829,12 +2880,25 @@ function sumatraPrintPdf(pdfPath, opts) {
  * and we silently ignore it.
  */
 ipcMain.handle("kpdf3:cancel-print", async () => {
-  if (_activeSumatraProcess) {
-    try { _activeSumatraProcess.kill(); } catch { /* ignore */ }
-    _activeSumatraProcess = null;
-    return { ok: true, killed: "sumatra" };
+  // β.118: 「送信中」busy modal の中止ボタンから呼ばれる経路を追加。
+  // 旧実装は Sumatra のみ kill していたが、Adobe `/p` ダイアログが表示
+  // されない / 表示されたまま固まる事象 (ユーザー報告) で busy modal が
+  // 永遠に解除されない問題に対応するため、cancelInFlightPrint() で
+  // Sumatra + Adobe (_activePdfReaderProcess) + Chromium (printWindow)
+  // を統一的に kill する。Adobe を kill すると sp.on("close") で
+  // finish("reader-closed") に流れ、printViaReaderDialog の Promise が
+  // resolve されて renderer の await が復帰 → busy modal が解除される。
+  const killed = [];
+  if (_activeSumatraProcess) killed.push("sumatra");
+  if (_activePdfReaderProcess) killed.push("pdf-reader");
+  if (printWindow && !printWindow.isDestroyed()) killed.push("chromium");
+  try {
+    cancelInFlightPrint();
+    logCrash("print-cancel-by-user", { killed });
+  } catch (err) {
+    logCrash("print-cancel-failed", err);
   }
-  return { ok: true, killed: null };
+  return { ok: true, killed };
 });
 
 /**
