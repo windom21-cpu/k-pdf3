@@ -729,6 +729,8 @@ async function applyPageNumbers() {
   const format   = $("page-numbers-format").value;
   const start    = Math.max(1, Number($("page-numbers-start").value) || 1);
   const fontSize = Math.max(6, Math.min(36, Number($("page-numbers-fontsize").value) || 11));
+  // β.116: フォントを page-numbers-font select から取得 (preset + system フォント)
+  const fontId = $("page-numbers-font")?.value || currentTextFontId();
   const allPages = await kpdf3.getPages();
   const visible  = allPages.filter((p) => !pendingDeletedPages.has(p.pageNo));
   if (visible.length === 0) {
@@ -739,8 +741,6 @@ async function applyPageNumbers() {
   // Footer y = paper height − margin. Margin held to ~24pt so the
   // number sits inside the bottom margin without pushing into body.
   const FOOTER_MARGIN = 24;
-  const W = Math.max(60, fontSize * 8); // wider than placeText default — page-numbers tend to be longer ("23 / 312")
-  const H = Math.max(fontSize, Math.round(fontSize * 1.4));
 
   let added = 0;
   for (let i = 0; i < visible.length; i++) {
@@ -752,13 +752,22 @@ async function applyPageNumbers() {
     // Canonical (post-rotation) page extents.
     const pageW = swap ? ch : cw;
     const pageH = swap ? cw : ch;
+    const text = formatPageNumber(format, start + i, visible.length);
+    // β.116: 旧 W = max(60, fontSize*8) では「中央」配置時にテキストが
+    // ボックス左寄せのため視覚的に左寄りになっていた (ユーザー報告)。
+    // measureTextOverlaySize で実テキスト幅を測定 → ボックス幅をそれに
+    // 合わせると、テキスト自体が中央に座る。
+    const measured = measureTextOverlaySize({
+      text, fontSize, fontId, digitsHanko: false, bold: false,
+    });
+    const W = Math.max(20, Math.ceil(measured.w) + 4);
+    const H = Math.max(fontSize, Math.ceil(measured.h));
     // x by alignment; y from bottom.
     let x;
     if (position === "left")        x = 36;
     else if (position === "right")  x = pageW - 36 - W;
     else                            x = (pageW - W) / 2;
     const y = pageH - FOOTER_MARGIN - H;
-    const text = formatPageNumber(format, start + i, visible.length);
     const cmd = new AddOverlayCommand(projectStore, {
       pageNo: row.pageNo,
       type: "text",
@@ -767,9 +776,9 @@ async function applyPageNumbers() {
         text,
         fontSize,
         color: "#000000",
-        fontId: currentTextFontId(),
-        digitsHanko: currentTextDigitsHanko(),
-        bold: currentTextBold(),
+        fontId,
+        digitsHanko: false, // ページ番号は数字主体なので hanko は OFF (= 明示)
+        bold: false,
         rotation: 0,
       },
     });
@@ -5463,12 +5472,12 @@ const menuBar = new MenuBar({
   },
 });
 
-// ---- β.80 Phase E + β.105: 各種 font-select に system フォントを動的追加 ----
-//   form-text-font (β.80 で導入) に加え、β.105 でテキスト挿入 (#text-font)
-//   にも展開。共通ロジックは system-fonts.js、stamp-dialogs.js も同関数を
-//   利用する (循環 import 防止のため renderer 配下の独立モジュール化)。
+// ---- β.80 Phase E + β.105 + β.116: 各種 font-select に system フォントを動的追加 ----
+//   form-text-font (β.80) + text-font (β.105) + page-numbers-font (β.116)。
+//   共通ロジックは system-fonts.js、stamp-dialogs.js も同関数を利用する
+//   (循環 import 防止のため renderer 配下の独立モジュール化)。
 (async () => {
-  for (const id of ["form-text-font", "text-font"]) {
+  for (const id of ["form-text-font", "text-font", "page-numbers-font"]) {
     const sel = document.getElementById(id);
     if (sel) await appendSystemFontsToSelect(sel);
   }

@@ -2269,23 +2269,31 @@ let _activePdfReaderProcess = null;
 function listAdobeRelatedProcesses() {
   return new Promise((resolve) => {
     if (process.platform !== "win32") {
-      resolve([]);
+      resolve({ kill: [], wide: [] });
       return;
     }
     // 名前が以下のいずれかで始まる exe は kill しない (Adobe 業務継続に必要)
     const NEVER_KILL_PREFIX = /^(AdobeARM|AdobeCollabSync|AdobeNotificationClient|AdobeIPCBroker|AdobeUpdateService|Adobe Update Service|Adobe Updater)/i;
-    // Adobe / Acrobat 系として検出対象とするパターン
-    const ADOBE_PATTERN = /^(Acro|Adobe Acrobat|AdobeAcrobat|adcef|acrobat)/i;
+    // β.116: ADOBE_PATTERN を緩める。
+    //   - 旧 /^(Acro|Adobe Acrobat|AdobeAcrobat|adcef|acrobat)/i は ^ (先頭)
+    //     固定だったため、prefix 付き exe 名 (`Some_Acrobat.exe` 等) や
+    //     Reader DC の `RdrCEF.exe` を取り逃していた可能性 (β.115 ユーザー
+    //     報告で acrotray.exe しか拾えなかった事象)。
+    //   - 中間マッチ許容 + Reader / RdrCEF を含める。
+    const ADOBE_KILL_PATTERN = /(Acro|Adobe\s?Acrobat|AdobeAcrobat|adcef|acrobat|RdrCEF|AcroRd)/i;
+    // 診断用の wide net: 上記より更に広く、Adobe/Acro/Reader を含む全プロセス
+    // を whitelist 適用前に列挙。ユーザー環境固有の真のプロセス名を特定する
+    // ためにのみ使う (kill 対象には使わない)。
+    const ADOBE_WIDE_PATTERN = /(Acro|Adobe|acrobat|Reader|RdrCEF)/i;
     let settled = false;
     let sp = null;
     // β.106: tasklist が hang したまま cleanup 全体が止まる事象の保険。
-    // 5 秒で諦めて空配列を返す (kill 対象が空 = 副作用なし、ログだけ残る)。
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       try { sp?.kill(); } catch { /* ignore */ }
       try { logCrash("listAdobeRelatedProcesses-timeout", { timeoutMs: 5000 }); } catch { /* ignore */ }
-      resolve([]);
+      resolve({ kill: [], wide: [] });
     }, 5000);
     try {
       sp = spawn("tasklist", ["/FO", "CSV", "/NH"], { windowsHide: true });
@@ -2295,13 +2303,14 @@ function listAdobeRelatedProcesses() {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve([]);
+        resolve({ kill: [], wide: [] });
       });
       sp.on("close", () => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        const items = [];
+        const killList = [];
+        const wideList = [];
         for (const line of out.split(/\r?\n/)) {
           // CSV: "Image","PID","Session","Session#","MemUsage"
           const m = line.match(/^"([^"]*)","(\d+)",/);
@@ -2310,18 +2319,21 @@ function listAdobeRelatedProcesses() {
             const pid = parseInt(m[2], 10);
             if (!Number.isFinite(pid)) continue;
             if (NEVER_KILL_PREFIX.test(name)) continue;
-            if (ADOBE_PATTERN.test(name)) {
-              items.push({ name, pid });
+            if (ADOBE_WIDE_PATTERN.test(name)) {
+              wideList.push({ name, pid });
+              if (ADOBE_KILL_PATTERN.test(name)) {
+                killList.push({ name, pid });
+              }
             }
           }
         }
-        resolve(items);
+        resolve({ kill: killList, wide: wideList });
       });
     } catch {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve([]);
+      resolve({ kill: [], wide: [] });
     }
   });
 }
@@ -2430,12 +2442,19 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
   const killDetails = {};
   const newPidsByExe = {};
   const preExistingPidsByExe = {};
-  // β.96: 拡張検出 — 旧 fixed list (Acrobat.exe + 3 helpers) では捕捉でき
-  // ない Adobe DC 2024+ 系プロセスを名前パターンで全列挙。kill 対象に
-  // 加える。診断ログにも残して次回ユーザ環境を確認しやすくする。
+  // β.96 + β.116: 拡張検出 — 旧 fixed list (Acrobat.exe + 3 helpers) では
+  // 捕捉できない Adobe DC 2024+ 系プロセスを名前パターンで全列挙。
+  // β.116 で listAdobeRelatedProcesses は {kill, wide} を返すように拡張。
+  //   - kill: ADOBE_KILL_PATTERN にマッチ (= 実際に kill するもの、Acro/
+  //     RdrCEF/Acrobat 系)
+  //   - wide: ADOBE_WIDE_PATTERN にマッチ (= 診断用、Adobe/Reader を含む
+  //     全プロセス、kill 対象に入らないものも含む)
   let adobeRelatedAtCleanup = [];
+  let adobeRelatedAtCleanupWide = [];
   try {
-    adobeRelatedAtCleanup = await listAdobeRelatedProcesses();
+    const r = await listAdobeRelatedProcesses();
+    adobeRelatedAtCleanup = r.kill ?? [];
+    adobeRelatedAtCleanupWide = r.wide ?? [];
   } catch { /* ignore */ }
   for (const [exeName, beforePids] of Object.entries(beforePidsByExe)) {
     try {
@@ -2527,6 +2546,7 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
   // 失敗」が確定。
   let survivors = {};
   let survivorsExtra = [];
+  let survivorsExtraWide = [];
   try {
     await new Promise((r) => setTimeout(r, 500));
     for (const exeName of Object.keys(beforePidsByExe)) {
@@ -2535,8 +2555,10 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
         survivors[exeName] = stillAlive;
       }
     }
-    // β.96: 拡張検出した Adobe 系プロセスの生存確認
-    survivorsExtra = await listAdobeRelatedProcesses();
+    // β.96 + β.116: 拡張検出した Adobe 系プロセスの生存確認 + 診断用 wide list
+    const sr = await listAdobeRelatedProcesses();
+    survivorsExtra = sr.kill ?? [];
+    survivorsExtraWide = sr.wide ?? [];
   } catch { /* ignore */ }
   try {
     logCrash("pdfreader-cleanup", {
@@ -2546,9 +2568,14 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
       newPidsByExe,
       preExistingPidsByExe,
       adobeRelatedAtCleanup,
+      // β.116: ADOBE_WIDE_PATTERN にマッチした全プロセスを診断用に同梱。
+      // ADOBE_KILL_PATTERN を素通りした「未知の Adobe 関連プロセス」を
+      // 次回ユーザー報告で特定するための情報源。
+      adobeRelatedAtCleanupWide,
       extraKilled,
       survivors,
       survivorsExtra,
+      survivorsExtraWide,
       survivorsCount: Object.keys(survivors).length,
     });
   } catch { /* ignore */ }
