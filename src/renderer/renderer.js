@@ -3582,7 +3582,9 @@ async function actionSave() {
       // edits live (workspace-only save, source PDF untouched). Wording
       // avoids the internal "workspace" term and uses the 下書き／確定
       // distinction that legal practitioners already use day-to-day.
-      const ok = await customConfirm({
+      // β.111: 「白黒で上書き」チェックを確定ダイアログに追加。
+      // ツールバーの「白黒」トグル (印刷専用) とは別状態で永続化。
+      const result = await customConfirm({
         title: "保存方法を選んでください",
         message:
           `「${activeSourceName || "(無名)"}」を保存します。\n`
@@ -3590,9 +3592,16 @@ async function actionSave() {
           + `あとから動かせなくなります。`,
         okLabel: "確定として PDF を上書き",
         cancelLabel: "下書きとして保存（あとで編集できる）",
+        checkbox: {
+          label: "白黒で上書き（カラースタンプ等を黒化して保存）",
+          storageKey: "kpdf3.saveMono",
+        },
       });
-      if (ok) {
-        await actionExportToPath(sourcePath, { verb: "上書き保存" });
+      if (result.ok) {
+        await actionExportToPath(sourcePath, {
+          verb: "上書き保存",
+          monoExport: result.checked,
+        });
         return;
       }
       // User picked 下書き — reinforce the choice in the status bar so
