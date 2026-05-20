@@ -166,6 +166,7 @@ const btnSave = $("btn-save");
 const btnExport = $("btn-export");
 const btnPrint = $("btn-print");
 const btnMonoPrint = $("btn-mono-print");
+const btnSuppressLines = $("btn-suppress-lines");
 const btnFaxSend = $("btn-fax-send");
 const btnPrintOverlayOnly = $("btn-print-overlay-only");
 const ctxFaxBtn = $("ctx-fax-btn");
@@ -385,6 +386,18 @@ function _syncMonoPrintBtn() {
   if (!btnMonoPrint) return;
   btnMonoPrint.classList.toggle("is-on", _monoPrintMode);
   btnMonoPrint.textContent = _monoPrintMode ? "白黒 ON" : "白黒";
+}
+
+// β.114: 罫線抑制トグル state。viewer の suppressLines を制御するだけで
+// 書き出し/印刷経路には作用しない (表示専用)。localStorage で永続化。
+let _suppressLinesMode = false;
+try {
+  _suppressLinesMode = localStorage.getItem("kpdf3.suppressLines") === "1";
+} catch { /* ignore */ }
+function _syncSuppressLinesBtn() {
+  if (!btnSuppressLines) return;
+  btnSuppressLines.classList.toggle("is-on", _suppressLinesMode);
+  btnSuppressLines.textContent = _suppressLinesMode ? "罫線抑制 ON" : "罫線抑制";
 }
 
 initPrintFlow({
@@ -2058,6 +2071,7 @@ function setOpen(open) {
   btnPrint.disabled = !open;
   if (btnModeRegionImage) btnModeRegionImage.disabled = !open;
   if (btnMonoPrint) btnMonoPrint.disabled = !open;
+  if (btnSuppressLines) btnSuppressLines.disabled = !open;
   if (btnFaxSend) btnFaxSend.disabled = !open;
   if (btnPrintOverlayOnly) btnPrintOverlayOnly.disabled = !open;
   zoomSelect.disabled = !open;
@@ -6114,6 +6128,24 @@ if (btnMonoPrint) {
     wsStatus.textContent = _monoPrintMode
       ? "白黒印刷モード ON — overlay の色を黒に変換して印刷します (マーカーは除外)"
       : "白黒印刷モード OFF — 通常のカラーで印刷します";
+  });
+}
+// β.114: 罫線抑制トグル。viewer 表示のみに作用し、書き出し / 印刷 / 保存
+// 経路は不変。起動時に保存値を viewer に反映、click で切替。
+_syncSuppressLinesBtn();
+if (_suppressLinesMode && viewer?.setSuppressLines) {
+  viewer.setSuppressLines(true);
+}
+if (btnSuppressLines) {
+  btnSuppressLines.addEventListener("click", () => {
+    _suppressLinesMode = !_suppressLinesMode;
+    try { localStorage.setItem("kpdf3.suppressLines", _suppressLinesMode ? "1" : "0"); }
+    catch { /* ignore */ }
+    _syncSuppressLinesBtn();
+    viewer.setSuppressLines?.(_suppressLinesMode);
+    wsStatus.textContent = _suppressLinesMode
+      ? "罫線抑制 ON — 画面の薄い罫線を白化 (書き出し/印刷には作用しません)"
+      : "罫線抑制 OFF — 元 PDF どおりに描画します";
   });
 }
 if (btnPrintOverlayOnly) {
