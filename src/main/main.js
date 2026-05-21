@@ -2680,6 +2680,37 @@ function snapshotPrintJobs() {
 }
 
 /**
+ * β.126: 案 X (Win32_PrintJob polling) の取りこぼし救済用 orthogonal 信号。
+ * Adobe Pro DC は印刷後に document tab を閉じる + 本体最小化、という挙動
+ * を取る (ユーザー証言: 「アドビが最小化、開くと中身は空」)。MainWindowTitle
+ * を polling して「temp PDF の名前を含む状態 → 含まない状態」への遷移を
+ * 「印刷完了」のシグナルとして検出する。指定 PID 1 つだけの軽量 query。
+ *
+ * 戻り値: title 文字列 (空 string も含む) / process 不在 or 取得失敗時は null。
+ */
+function snapshotAdobeTitle(pid) {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32" || !pid) { resolve(null); return; }
+    try {
+      const ps =
+        `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; `
+        + `if ($p) { $p.MainWindowTitle }`;
+      const sp = spawn(
+        "powershell.exe",
+        ["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+        { windowsHide: true },
+      );
+      let out = "";
+      sp.stdout?.on("data", (d) => { out += d.toString(); });
+      sp.on("error", () => resolve(null));
+      sp.on("close", () => resolve(out.replace(/\r?\n/g, "").trim()));
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
  * β72 (案 D + 案 X): PDF Reader を `/p` フラグで起動して印刷ダイアログを
  * 出させる。ユーザがプリンタ・部数・FAX 送信先を Adobe ダイアログで設定
  * してから「印刷」ボタンを押す → 印刷キュー監視で新規ジョブ投入を検知
@@ -2837,6 +2868,27 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
       finish("reader-closed");
     });
 
+    // β.126: 「印刷完了したのに K-PDF3 が検出できず Adobe が残る」事象の
+    // 構造対策。原因は Win32_PrintJob polling の race (POLL_MS=1000ms +
+    // PowerShell ~1.5s = 実効 ~2.5s 間隔、queue 滞在時間 < 2.5s のジョブを
+    // 取り逃す)。同じプリンタでも queue 滞在時間は揺らぐので、案 X 単独
+    // 依存をやめて 2 経路に分岐:
+    //   Path A: 既存の Win32_PrintJob diff + cumulative tracking で短命
+    //     ジョブも救済 (一度でも new と見えれば確定)
+    //   Path B (orthogonal 信号): Adobe MainWindowTitle が temp PDF 名を
+    //     含む状態から含まない状態へ遷移したら「印刷完了 + document
+    //     close」と判定。ユーザー証言「Adobe が印刷後最小化 / 開くと中身
+    //     空」は Adobe Pro DC が document tab を閉じる挙動の現れ → title
+    //     が変わるので signal として確実
+    // POLL_MS / POST_JOB_BUFFER_MS は既存値を維持 (実績ある値、新経路でも
+    // 同じ semantics で動く)。Path A / Path B どちらが先に発火しても
+    // settled-guard で安全。
+    /** @type {Set<number>} 観測した全ての new job ID (cumulative). */
+    const everSeenNewJobs = new Set();
+    // basename prefix のみマッチ (Adobe が長 title を truncate しても確実)。
+    const tempPdfMarker = "kpdf3-print";
+    let docOpenedSeen = false;
+
     const tick = async () => {
       if (settled) return;
       const elapsed = Date.now() - startMs;
@@ -2846,24 +2898,43 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
       }
       try {
         // β.124: beforeJobIdsPromise は spawn と並列に kick した PowerShell
-        // の結果。最初の tick (POLL_MS=1000ms 後) でも未完了の可能性は
-        // 残るが、await すれば確実に取れる (PowerShell 1.5s + Adobe 3-5s
-        // なので spawn 後の tick が POLL_MS=1000ms で起きた時点では概ね
-        // 完了している)。2 回目以降の tick は cache されているので await
-        // は即時 resolve。
-        const [beforeJobIds, currentJobs] = await Promise.all([
+        // の結果。最初の tick (POLL_MS=1000ms 後) でも未完了の可能性は残るが、
+        // await すれば確実に取れる。2 回目以降の tick は cache されているので
+        // await は即時 resolve。
+        // β.126: snapshotAdobeTitle も並列で取る (sp.pid が無ければ null)。
+        // 3 つ並列でも PowerShell startup は max(call) ≈ 1.5s でほぼ変わらず。
+        const pidForTitle = sp?.pid ?? null;
+        const [beforeJobIds, currentJobs, adobeTitle] = await Promise.all([
           beforeJobIdsPromise,
           snapshotPrintJobs(),
+          snapshotAdobeTitle(pidForTitle),
         ]);
+
+        // Path A: Win32_PrintJob diff + cumulative tracking
         const newJobs = currentJobs.filter((id) => !beforeJobIds.includes(id));
-        if (newJobs.length > 0) {
-          // β.118: 新規ジョブを submittedJobIds に積む (cleanup 段階で
-          // queue から drain するのを待つため)。
-          for (const id of newJobs) submittedJobIds.add(id);
-          // 新規ジョブ検出 = ユーザが Adobe ダイアログで「印刷」を押した
-          // → 3 秒バッファ後に Reader を kill (spool 投入完了待ち)
+        for (const id of newJobs) everSeenNewJobs.add(id);
+        if (everSeenNewJobs.size > 0) {
+          // β.118: submittedJobIds に積む (cleanup 段階で queue drain
+          // 待ちに使う)。
+          for (const id of everSeenNewJobs) submittedJobIds.add(id);
+          // ジョブ検出 = ユーザが Adobe で印刷を押した → 3 秒バッファ後
+          // に Reader を kill (spool 投入完了待ち)。
           setTimeout(() => finish("job-detected"), POST_JOB_BUFFER_MS);
           return;
+        }
+
+        // Path B (β.126): Adobe MainWindowTitle 変化検出
+        if (adobeTitle && adobeTitle.length > 0) {
+          if (adobeTitle.includes(tempPdfMarker)) {
+            // temp PDF (kpdf3-print-*) を開いている状態を確認
+            docOpenedSeen = true;
+          } else if (docOpenedSeen) {
+            // 開いていた document が title から消えた = Adobe 内で
+            // document tab がクローズされた = 印刷完了 (or 手動 close)
+            // → 3 秒バッファ後に Reader を kill。Path A と同じ semantics。
+            setTimeout(() => finish("doc-closed"), POST_JOB_BUFFER_MS);
+            return;
+          }
         }
       } catch { /* ignore — keep polling */ }
       setTimeout(tick, POLL_MS);
