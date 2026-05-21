@@ -2582,6 +2582,62 @@ async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
       survivorsCount: Object.keys(survivors).length,
     });
   } catch { /* ignore */ }
+
+  // β.125: cleanup-end の +5s / +15s / +30s に追跡 snapshot を記録。
+  // 既存の最終 survivors snapshot は cleanup 完了から 500ms 後の 1 回のみ
+  // → 「タスクバーに残った」報告に対し cleanup 後の挙動が観測できない
+  // 盲点があった。fire-and-forget で再 snapshot を 3 回出し、各 tick で
+  // 「前回 snapshot との差分 (= 新規 PID = 復活した可能性)」も併記する
+  // ことで「cleanup 直後は死亡 → N 秒後に Adobe が復活した」パターンを
+  // ログから直接特定可能にする。診断目的なので副作用ゼロ (kill しない)。
+  //
+  // 区別補助: 各 tick の `wide` リストにいる PID が直前 tick にも居れば
+  // 「ユーザー側が触っていない」、消えていれば「ユーザー手動 kill か
+  // Adobe 自然 exit」、新規出現すれば「外部要因で復活」と確定できる。
+  // exitCode (taskkill 0 vs 128) と組み合わせて「誰が消したか」が
+  // 復元しやすくなる。
+  const followupSchedule = [5000, 15000, 30000];
+  /** @type {Array<{name:string,pid:number}>} */
+  let prevWide = adobeRelatedAtCleanupWide.slice();
+  let prevKill = adobeRelatedAtCleanup.slice();
+  for (const offsetMs of followupSchedule) {
+    setTimeout(async () => {
+      try {
+        const r = await listAdobeRelatedProcesses();
+        const wide = r.wide ?? [];
+        const kill = r.kill ?? [];
+        const prevWidePids = new Set(prevWide.map((p) => p.pid));
+        const prevKillPids = new Set(prevKill.map((p) => p.pid));
+        const widePids = new Set(wide.map((p) => p.pid));
+        const killPids = new Set(kill.map((p) => p.pid));
+        const appeared = wide.filter((p) => !prevWidePids.has(p.pid));
+        const disappeared = prevWide.filter((p) => !widePids.has(p.pid));
+        const appearedKillable = kill.filter((p) => !prevKillPids.has(p.pid));
+        const disappearedKillable = prevKill.filter((p) => !killPids.has(p.pid));
+        logCrash("pdfreader-followup-snapshot", {
+          engine: readerInfo.engine,
+          offsetMs,
+          aliveCount: wide.length,
+          aliveKillCount: kill.length,
+          alive: wide,
+          aliveKill: kill,
+          appeared,            // 前回から増えた PID (復活 = 外部要因確定)
+          disappeared,         // 前回から消えた PID (ユーザー手動 kill or 自然 exit)
+          appearedKillable,    // appeared のうち KILL_PATTERN マッチ
+          disappearedKillable, // disappeared のうち KILL_PATTERN マッチ
+        });
+        prevWide = wide;
+        prevKill = kill;
+      } catch (err) {
+        try {
+          logCrash("pdfreader-followup-snapshot-error", {
+            offsetMs,
+            err: err?.message ?? String(err),
+          });
+        } catch { /* ignore */ }
+      }
+    }, offsetMs).unref();
+  }
 }
 
 /**
