@@ -2083,6 +2083,22 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
 .confirm-message {
   white-space: pre-line;
 }
+/* 保存ダイアログは okLabel/cancelLabel に \n を埋めた 2 行ラベル
+ * ("確定保存 / 画像として上書き" 等) を使うため、改行を保持しつつ
+ * 単語間で勝手に折り返さないよう white-space: pre。min-width は
+ * 一番長い "編集可能として上書き" を 1 行に収める幅。 */
+#confirm-ok,
+#confirm-cancel {
+  white-space: pre;
+  min-width: 140px;
+  padding: 4px 10px;
+  line-height: 1.3;
+}
+/* 「白黒で上書き」チェック行が表示されているときだけ、ボタン群との
+ * 間に余白を入れる (チェック文言とボタンが詰まって見える対策)。 */
+#confirm-checkbox-row:not([hidden]) + .range-buttons {
+  margin-top: 14px;
+}
 
 /* β.122 PDF プロパティダイアログ (ファイル > プロパティ) */
 .properties-window {

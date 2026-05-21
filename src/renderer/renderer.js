@@ -2889,29 +2889,91 @@ function defaultPartName() {
   return datePrefixToggle?.checked ? getDateYYMMDD() : "";
 }
 
-async function generateAllThumbnails(pages, onProgress) {
-  // Render each page at zoom 0.25 to a tiny canvas, cache by pageNo.
-  for (let i = 0; i < pages.length; i++) {
-    const row = pages[i];
-    const pageNo = row.pageNo;
-    if (splitState.thumbCache.has(pageNo)) continue;
-    try {
-      let result;
-      if (row.isSynthetic || pageNo < 0) {
-        result = await renderSyntheticPagePixels(row, 0.25);
-      } else {
-        result = await kpdf3.renderPage(pageNo, { zoom: 0.25 });
+async function generateAllThumbnails(pages, onProgress, onThumbReady) {
+  // β.123: 並列度 3 のワーカープール + 表示中ページ優先キュー + 1 枚
+  // できるごとに onThumbReady を呼ぶプログレッシブ経路に拡張。
+  // - onProgress({done,total}): 進捗カウンタ更新用 (任意)
+  // - onThumbReady(pageNo, canvas): 1 枚完成ごとに呼ぶ (任意)。
+  //   呼び側は placeholder → canvas のスワップ等に使う。
+  // 呼び側が `splitState.thumbPriorityBump(pageNo)` を呼ぶと、
+  // 該当ジョブが優先キュー側に昇格 (viewport 内のページを先に処理)。
+  // isSplitMode が false に落ちたら全ワーカーが次の周回で終了 — split
+  // を抜けたあとも mupdf を回し続けないためのキャンセル経路。
+  const todo = [];
+  for (const row of pages) {
+    if (splitState.thumbCache.has(row.pageNo)) {
+      // 既キャッシュは即スワップ (再表示経路では placeholder が並んで
+      // いるので、これで再開時のチラつきが消える)。
+      if (onThumbReady) {
+        onThumbReady(row.pageNo, splitState.thumbCache.get(row.pageNo));
       }
-      // compositePage handles userRotation + overlays so the split-save
-      // thumb matches what the page actually looks like (stamps / marks
-      // visible, rotated pages displayed in their rotated orientation).
-      const canvas = await compositePage(row, result, projectStore, 0.25);
-      splitState.thumbCache.set(pageNo, canvas);
-    } catch (err) {
-      console.error(`[split] thumb ${pageNo} failed:`, err);
+      continue;
     }
-    if (onProgress) onProgress({ done: i + 1, total: pages.length });
+    todo.push({ pageNo: row.pageNo, row, prio: 0 });
   }
+  const total = pages.length;
+  let done = total - todo.length;
+  if (onProgress) onProgress({ done, total });
+
+  splitState.thumbPriorityBump = (pageNo) => {
+    const idx = todo.findIndex((j) => j.pageNo === pageNo && j.prio === 0);
+    if (idx >= 0) todo[idx].prio = 1;
+  };
+
+  const takeNext = () => {
+    const pi = todo.findIndex((j) => j.prio === 1);
+    if (pi >= 0) return todo.splice(pi, 1)[0];
+    return todo.shift() ?? null;
+  };
+
+  const CONCURRENCY = 3;
+  const worker = async () => {
+    while (true) {
+      if (!isSplitMode) return;
+      const job = takeNext();
+      if (!job) return;
+      try {
+        let result;
+        if (job.row.isSynthetic || job.pageNo < 0) {
+          result = await renderSyntheticPagePixels(job.row, 0.25);
+        } else {
+          result = await kpdf3.renderPage(job.pageNo, { zoom: 0.25 });
+        }
+        // compositePage handles userRotation + overlays so the split-save
+        // thumb matches what the page actually looks like (stamps / marks
+        // visible, rotated pages displayed in their rotated orientation).
+        const canvas = await compositePage(job.row, result, projectStore, 0.25);
+        splitState.thumbCache.set(job.pageNo, canvas);
+        if (onThumbReady) onThumbReady(job.pageNo, canvas);
+      } catch (err) {
+        console.error(`[split] thumb ${job.pageNo} failed:`, err);
+      }
+      done++;
+      if (onProgress) onProgress({ done, total });
+    }
+  };
+
+  const workers = [];
+  for (let i = 0; i < CONCURRENCY; i++) workers.push(worker());
+  await Promise.all(workers);
+}
+
+/** β.123: できた順に placeholder を canvas に差し替える。
+ * createThumbElement が最初に描いた最初の子要素 (placeholder DIV または
+ * 既存 CANVAS) を新しい canvas にスワップ。サムネ要素自体は維持するので
+ * クリック・D&D・コンテキストメニュー等の handler はそのまま残る。 */
+function swapThumbCanvas(pageNo, sourceCanvas) {
+  const thumbEl = splitFlow.querySelector(
+    `.split-thumb[data-page-no="${pageNo}"]`,
+  );
+  if (!thumbEl) return;
+  const first = thumbEl.firstElementChild;
+  if (!first || (first.tagName !== "DIV" && first.tagName !== "CANVAS")) return;
+  const c = document.createElement("canvas");
+  c.width = sourceCanvas.width;
+  c.height = sourceCanvas.height;
+  c.getContext("2d").drawImage(sourceCanvas, 0, 0);
+  first.replaceWith(c);
 }
 
 function rebuildSplitUI(pages) {
@@ -3128,20 +3190,53 @@ async function actionSplitSave() {
   splitState.partNames = new Map();
   // thumbCache is preserved across sessions (per workspace open)
 
+  // β.123: 即時レイアウト経路。
+  // 旧経路は「全ページのサムネ生成 → rebuildSplitUI」の順だったので、
+  // 大量ページだとカウンタしか見えず体感的に重かった。新経路では先に
+  // rebuildSplitUI を呼んで placeholder で全体のレイアウト (パート
+  // 区切り・名前入力・サイズバッジ) を起動直後に出し、サムネは並列 3
+  // で順次生成して swapThumbCanvas で差し込む。さらに IntersectionObserver
+  // で表示中の thumb を優先キューに昇格させ、見ているところから先に
+  // 揃うようにする (スクロール先のサムネもスクロールに追従して昇格)。
   splitFlow.innerHTML = "";
-  const progressNode = document.createElement("div");
-  progressNode.className = "split-progress";
-  progressNode.textContent = "サムネイルを準備中... 0 / " + pages.length;
-  splitFlow.appendChild(progressNode);
   setSplitMode(true);
   refreshDatePrefixPreview();
-
-  await generateAllThumbnails(pages, ({ done, total }) => {
-    progressNode.textContent = `サムネイルを準備中... ${done} / ${total}`;
-  });
-  // User may have left split mode while we were rendering
-  if (!isSplitMode) return;
   rebuildSplitUI(pages);
+
+  const progressNode = document.createElement("div");
+  progressNode.className = "split-progress";
+  progressNode.textContent = `サムネイルを準備中... 0 / ${pages.length}`;
+  splitFlow.insertBefore(progressNode, splitFlow.firstChild);
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const ent of entries) {
+        if (!ent.isIntersecting) continue;
+        const pn = Number(ent.target.dataset.pageNo);
+        if (Number.isFinite(pn) && splitState.thumbPriorityBump) {
+          splitState.thumbPriorityBump(pn);
+        }
+      }
+    },
+    { root: splitFlow, rootMargin: "200px 0px", threshold: 0.01 },
+  );
+  for (const el of splitFlow.querySelectorAll(".split-thumb[data-page-no]")) {
+    observer.observe(el);
+  }
+
+  await generateAllThumbnails(
+    pages,
+    ({ done, total }) => {
+      if (done >= total) {
+        progressNode.remove();
+      } else {
+        progressNode.textContent = `サムネイルを準備中... ${done} / ${total}`;
+      }
+    },
+    (pageNo, canvas) => swapThumbCanvas(pageNo, canvas),
+  );
+
+  observer.disconnect();
 }
 
 splitCancelBtn.addEventListener("click", () => setSplitMode(false));
@@ -3709,8 +3804,8 @@ async function actionSave() {
           `「${activeSourceName || "(無名)"}」を保存します。\n`
           + `「確定」を選ぶと、いま入れたテキスト・印影などは\n`
           + `あとから動かせなくなります。`,
-        okLabel: "確定として PDF を上書き",
-        cancelLabel: "下書きとして保存（あとで編集できる）",
+        okLabel: "確定保存\n画像として上書き",
+        cancelLabel: "下書き保存\n編集可能として上書き",
         checkbox: {
           label: "白黒で上書き（カラースタンプ等を黒化して保存）",
           storageKey: "kpdf3.saveMono",
@@ -5158,8 +5253,15 @@ async function refreshSplitView() {
       splitState.thumbCache.delete(cachedPageNo);
     }
   }
-  await generateAllThumbnails(pages);
+  // β.123: 即時 rebuild → 順次サムネ差し込み (actionSplitSave と同じ
+  // プログレッシブ経路)。新規追加ページは placeholder で先に並び、
+  // 完成し次第 swapThumbCanvas でその場に canvas が入る。
   rebuildSplitUI(pages);
+  await generateAllThumbnails(
+    pages,
+    null,
+    (pageNo, canvas) => swapThumbCanvas(pageNo, canvas),
+  );
 }
 
 function isWorkspaceDirty() {
