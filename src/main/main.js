@@ -2650,18 +2650,24 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
   const allExes = [exeName, ...helpers];
   // β73: PID snapshot (4 回 tasklist) と印刷キュー snapshot (1 回 PowerShell)
   // は元々完全に独立な操作なので Promise.all で並列化。逐次だと
-  // ~1.3-2.3 秒、並列なら ~max(800ms, 1500ms) ≈ 1.5 秒。Adobe spawn 前の
-  // 体感待ちが約 1 秒短くなる (Adobe 自体の startup 3-5 秒は外部依存で
-  // 削れない)。
-  const [pidsArr, beforeJobIds] = await Promise.all([
-    Promise.all(allExes.map((name) => getProcessPidsByName(name))),
-    snapshotPrintJobs(),
-  ]);
+  // ~1.3-2.3 秒、並列なら ~max(800ms, 1500ms) ≈ 1.5 秒。
+  // β.124: さらに snapshotPrintJobs (PowerShell ~1.5s) は印刷キュー差分
+  // 検出用で、ユーザが Adobe ダイアログで「印刷」を押す前にジョブは増え
+  // ないので、spawn 後の polling tick (POLL_MS=1000ms) までに resolve
+  // していれば良い → Promise を spawn 前に kick だけして、tick 内で
+  // await することで Adobe 起動 (3-5s) と完全に並列化。pids snapshot は
+  // 新規 Adobe を識別するために spawn 前に必須なのでこちらだけ await。
+  // ダイアログ可視化までの体感待ちが追加で 1-1.5 秒短縮される。
+  const pidsArr = await Promise.all(
+    allExes.map((name) => getProcessPidsByName(name)),
+  );
   /** @type {Record<string, number[]>} */
   const beforePidsByExe = {};
   for (let i = 0; i < allExes.length; i++) {
     beforePidsByExe[allExes[i]] = pidsArr[i];
   }
+  // 即起動 — await はしない。spawn と並列で PowerShell が走る。
+  const beforeJobIdsPromise = snapshotPrintJobs();
 
   return new Promise((resolve, reject) => {
     const args = ["/n", "/s", "/o", "/p", pdfPath];
@@ -2783,7 +2789,16 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
         return;
       }
       try {
-        const currentJobs = await snapshotPrintJobs();
+        // β.124: beforeJobIdsPromise は spawn と並列に kick した PowerShell
+        // の結果。最初の tick (POLL_MS=1000ms 後) でも未完了の可能性は
+        // 残るが、await すれば確実に取れる (PowerShell 1.5s + Adobe 3-5s
+        // なので spawn 後の tick が POLL_MS=1000ms で起きた時点では概ね
+        // 完了している)。2 回目以降の tick は cache されているので await
+        // は即時 resolve。
+        const [beforeJobIds, currentJobs] = await Promise.all([
+          beforeJobIdsPromise,
+          snapshotPrintJobs(),
+        ]);
         const newJobs = currentJobs.filter((id) => !beforeJobIds.includes(id));
         if (newJobs.length > 0) {
           // β.118: 新規ジョブを submittedJobIds に積む (cleanup 段階で

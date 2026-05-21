@@ -735,9 +735,20 @@ export async function composePagesForExport({
   // silently swap the date stamp's 半角 face on the very first export
   // after launch.
   await ensureCustomFontsReady();
-  const out = [];
   const total = pages.length;
-  for (let i = 0; i < total; i++) {
+  // β.124: ページごとの処理 (overlay 合成 + PNG/JPEG エンコード + 場合に
+  // よっては renderPage IPC) を 3 並列ワーカープールで処理。out は事前
+  // 確保して index 書き込みするので、完了順が前後しても最終配列の順序は
+  // 入力 pages と同一 (main の assembleHybridPdf がページ順依存)。
+  // mupdf 自体は main 側で serialize されるが、canvas 合成・PNG/JPEG
+  // エンコード・IPC のラウンドトリップが並列化されるので、大ドキュメント
+  // (overlay 多数 / full ストラテジ多数) で wall-clock の短縮が出る。
+  const out = new Array(total);
+  let nextIdx = 0;
+  let completed = 0;
+  const CONCURRENCY = 3;
+
+  const processOne = async (i) => {
     const row = pages[i];
     const canonical = canonicalPageSize({
       mediaX: 0, mediaY: 0, mediaW: 0, mediaH: 0,
@@ -876,7 +887,7 @@ export async function composePagesForExport({
     // strategy === "source": no image bytes; main copies source page as-is.
     // strategy === "external" with no overlays: no image bytes either.
 
-    out.push({
+    out[i] = {
       pageNo: row.pageNo,
       widthPt: canonical.w,   // post-rotation canonical w/h (what user sees)
       heightPt: canonical.h,
@@ -897,9 +908,22 @@ export async function composePagesForExport({
       // にフォールバック。userRot=0 でかつ overlay/external 戦略時のみ
       // セットされる。
       overlayBBox,
-    });
-    if (onProgress) onProgress({ done: i + 1, total });
-  }
+    };
+  };
+
+  const worker = async () => {
+    while (true) {
+      const i = nextIdx++;
+      if (i >= total) return;
+      await processOne(i);
+      completed++;
+      if (onProgress) onProgress({ done: completed, total });
+    }
+  };
+
+  const workers = [];
+  for (let w = 0; w < CONCURRENCY; w++) workers.push(worker());
+  await Promise.all(workers);
   return out;
 }
 
