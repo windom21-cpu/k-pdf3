@@ -2447,68 +2447,32 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   text-overflow: ellipsis;
 }
 
-/* Recent PDFs dialog */
-.recent-window {
-  width: 480px;
-  max-height: 70vh;
+/* Submenu (cascading menu) — Win95 style.
+ * Reuses .menu-dropdown for the chrome. Items with data-submenu show a
+ * right-pointing arrow and stay highlighted while their submenu is open. */
+.menu-item-submenu {
+  padding-right: 22px;
 }
-.recent-window .window-body {
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
+.menu-item-submenu::after {
+  content: "▶";
+  position: absolute;
+  right: 6px;
+  top: 3px;
+  font-size: 9px;
 }
-.recent-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  flex: 1 1 auto;
-  overflow-y: auto;
-  max-height: 50vh;
-  background: #ffffff;
-  border: 1px solid;
-  border-color: #808080 #ffffff #ffffff #808080;
-  font-size: 12px;
-}
-.recent-item {
-  padding: 4px 8px;
-  cursor: default;
-  border-bottom: 1px solid #f0f0f0;
-}
-.recent-item:hover {
+.menu-item-submenu.submenu-open:not(.disabled) {
   background: #000080;
   color: #ffffff;
 }
-.recent-item-name {
-  font-weight: bold;
+.menu-submenu {
+  /* Inherits .menu-dropdown box styles (background / border / shadow).
+   * Sized a bit wider so long file names fit without ellipsis-truncating. */
+  min-width: 260px;
+  max-width: 480px;
 }
-.recent-item-path {
-  color: #666;
-  font-size: 11px;
-  white-space: nowrap;
+.menu-submenu .menu-item {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.recent-item-meta {
-  color: #888;
-  font-size: 11px;
-}
-.recent-item:hover .recent-item-path,
-.recent-item:hover .recent-item-meta {
-  color: #cccccc;
-}
-.recent-empty {
-  padding: 24px;
-  text-align: center;
-  color: #888;
-  font-style: italic;
-}
-.recent-buttons {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 8px;
-}
-.recent-buttons button {
-  min-width: 75px;
 }
 /* Win95-style file open dialog */
 .open-window {

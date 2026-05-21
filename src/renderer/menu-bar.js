@@ -12,13 +12,20 @@ export class MenuBar {
    * @param {HTMLElement} opts.menuBar         the .menu-bar root
    * @param {Record<string, HTMLElement>} opts.dropdowns   id -> .menu-dropdown element
    * @param {Record<string, () => void | Promise<void>>} opts.actions   action name -> handler
+   * @param {Record<string, HTMLElement>} [opts.submenus]  submenu key -> .menu-submenu container
+   * @param {Record<string, () => Promise<Array<{label:string,title?:string,action:()=>any}>>>} [opts.populators]
+   *        submenu key -> populator producing items on demand (called every open)
    */
-  constructor({ menuBar, dropdowns, actions }) {
+  constructor({ menuBar, dropdowns, actions, submenus = {}, populators = {} }) {
     this.menuBar = menuBar;
     this.dropdowns = dropdowns;
     this.actions = actions;
+    this.submenus = submenus;
+    this.populators = populators;
     /** @type {HTMLElement | null} currently open menu-bar item */
     this.openItem = null;
+    /** @type {string | null} currently open submenu key */
+    this.openSubmenuKey = null;
     this._wire();
   }
 
@@ -36,23 +43,30 @@ export class MenuBar {
 
     for (const dropdown of Object.values(this.dropdowns)) {
       for (const mi of dropdown.querySelectorAll(".menu-item")) {
+        const subKey = mi.dataset.submenu;
+        if (subKey) {
+          mi.addEventListener("mouseenter", () => {
+            if (mi.classList.contains("disabled")) {
+              this._closeSubmenus();
+              return;
+            }
+            this._openSubmenu(mi, subKey);
+          });
+          mi.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (mi.classList.contains("disabled")) return;
+            if (this.openSubmenuKey !== subKey) this._openSubmenu(mi, subKey);
+          });
+          continue;
+        }
+        mi.addEventListener("mouseenter", () => this._closeSubmenus());
         mi.addEventListener("click", (e) => {
           e.stopPropagation();
           if (mi.classList.contains("disabled")) return;
           const action = mi.dataset.action;
           this._closeAll();
           if (action && this.actions[action]) {
-            // Defer so close-state is reflected first
-            queueMicrotask(() => {
-              try {
-                const r = this.actions[action]();
-                if (r && typeof r.then === "function") {
-                  r.catch((err) => console.error(`[menu] action ${action} failed:`, err));
-                }
-              } catch (err) {
-                console.error(`[menu] action ${action} failed:`, err);
-              }
-            });
+            this._invokeAction(action, this.actions[action]);
           }
         });
       }
@@ -62,6 +76,85 @@ export class MenuBar {
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this._closeAll();
     });
+  }
+
+  _invokeAction(label, fn) {
+    // Defer so close-state is reflected first
+    queueMicrotask(() => {
+      try {
+        const r = fn();
+        if (r && typeof r.then === "function") {
+          r.catch((err) => console.error(`[menu] action ${label} failed:`, err));
+        }
+      } catch (err) {
+        console.error(`[menu] action ${label} failed:`, err);
+      }
+    });
+  }
+
+  /**
+   * Populate and show a submenu anchored to the right of its trigger item.
+   * @param {HTMLElement} trigger  the parent .menu-item[data-submenu]
+   * @param {string} key           submenu key (matches submenus / populators)
+   */
+  async _openSubmenu(trigger, key) {
+    const sub = this.submenus[key];
+    if (!sub) return;
+    if (this.openSubmenuKey === key) return;
+    this._closeSubmenus();
+    trigger.classList.add("submenu-open");
+
+    const populator = this.populators[key];
+    sub.innerHTML = "";
+    if (populator) {
+      try {
+        const items = await populator();
+        if (!items || items.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "menu-item disabled";
+          empty.textContent = "(履歴なし)";
+          sub.appendChild(empty);
+        } else {
+          for (const it of items) {
+            const mi = document.createElement("div");
+            mi.className = "menu-item";
+            mi.textContent = it.label;
+            if (it.title) mi.title = it.title;
+            mi.addEventListener("click", (e) => {
+              e.stopPropagation();
+              this._closeAll();
+              this._invokeAction(`submenu:${key}`, it.action);
+            });
+            sub.appendChild(mi);
+          }
+        }
+      } catch (err) {
+        sub.innerHTML = "";
+        const errItem = document.createElement("div");
+        errItem.className = "menu-item disabled";
+        errItem.textContent = "(読み込みエラー)";
+        sub.appendChild(errItem);
+        console.error(`[menu] submenu ${key} populator failed:`, err);
+      }
+    }
+
+    const rect = trigger.getBoundingClientRect();
+    // Anchor to the right edge of the trigger, overlap by 2px so the
+    // beveled borders read as one continuous Win95 cascade.
+    sub.style.left = `${rect.right - 2}px`;
+    sub.style.top = `${rect.top - 2}px`;
+    sub.hidden = false;
+    this.openSubmenuKey = key;
+  }
+
+  _closeSubmenus() {
+    for (const sub of Object.values(this.submenus)) sub.hidden = true;
+    for (const dd of Object.values(this.dropdowns)) {
+      for (const t of dd.querySelectorAll(".menu-item.submenu-open")) {
+        t.classList.remove("submenu-open");
+      }
+    }
+    this.openSubmenuKey = null;
   }
 
   /** @param {HTMLElement} item */
@@ -83,6 +176,7 @@ export class MenuBar {
     for (const item of this.menuBar.querySelectorAll(".menu-bar-item")) {
       item.classList.remove("active");
     }
+    this._closeSubmenus();
     this.openItem = null;
   }
 

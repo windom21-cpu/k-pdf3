@@ -31,7 +31,7 @@
   <div class="menu-dropdown" id="menu-file" hidden>
     <div class="menu-item" data-action="open">開く...</div>
     <div class="menu-item" data-action="open-in-new-window">別ウインドウで開く...</div>
-    <div class="menu-item" data-action="recent">最近のファイル...</div>
+    <div class="menu-item menu-item-submenu" data-submenu="recent">最近のファイル</div>
     <div class="menu-item disabled" data-action="close">閉じる</div>
     <div class="menu-separator"></div>
     <div class="menu-item disabled" data-action="save">上書き保存 (Ctrl+S)</div>
@@ -758,20 +758,8 @@
     </div>
   </div>
 
-  <!-- Recent PDFs dialog (M5-7) -->
-  <div class="busy-modal" id="recent-dialog" hidden>
-    <div class="window recent-window">
-      <div class="title-bar">
-        <div class="title-bar-text">最近のファイル</div>
-      </div>
-      <div class="window-body">
-        <ul id="recent-list" class="recent-list"></ul>
-        <div class="recent-buttons">
-          <button id="recent-cancel">閉じる</button>
-        </div>
-      </div>
-    </div>
-  </div>
+  <!-- Recent PDFs submenu (populated dynamically by menu-bar.js) -->
+  <div class="menu-dropdown menu-submenu" id="menu-recent" hidden></div>
 
   <!-- Custom Win95-style file browser (open / save / folder modes) -->
   <div class="busy-modal" id="open-dialog" hidden>

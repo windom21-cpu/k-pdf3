@@ -2623,55 +2623,19 @@ gotoInput.addEventListener("keydown", (e) => {
   }
 });
 
-// ---- Recent files dialog (M5-7) -------------------------------------
-const recentDialog = $("recent-dialog");
-const recentList = $("recent-list");
-const recentCancelBtn = $("recent-cancel");
-
-function hideRecentDialog() {
-  recentDialog.hidden = true;
-}
-
-async function actionShowRecent() {
-  if (!(await confirmDiscardIfDirty())) return;
+// ---- Recent files submenu populator -----------------------------------
+// Populates File > 最近のファイル on hover. Max 9 entries so a future
+// 1-9 access-key shortcut maps one-to-one.
+const RECENT_SUBMENU_LIMIT = 9;
+async function populateRecentSubmenu() {
   const recents = await kpdf3.listRecentPdfs();
-  recentList.innerHTML = "";
-  if (!recents || recents.length === 0) {
-    const li = document.createElement("li");
-    li.className = "recent-empty";
-    li.textContent = "(履歴がまだありません)";
-    recentList.appendChild(li);
-  } else {
-    for (const r of recents) {
-      const li = document.createElement("li");
-      li.className = "recent-item";
-      li.title = r.sourcePdfPath ?? "";
-      const name = document.createElement("div");
-      name.className = "recent-item-name";
-      name.textContent = r.sourcePdfName ?? "(unknown)";
-      const path = document.createElement("div");
-      path.className = "recent-item-path";
-      path.textContent = r.sourcePdfPath ?? "";
-      const meta = document.createElement("div");
-      meta.className = "recent-item-meta";
-      meta.textContent = `最終: ${r.updatedAt ?? ""}`;
-      li.appendChild(name);
-      li.appendChild(path);
-      li.appendChild(meta);
-      li.addEventListener("click", () => {
-        hideRecentDialog();
-        openPdfSmart(r.sourcePdfPath);
-      });
-      recentList.appendChild(li);
-    }
-  }
-  recentDialog.hidden = false;
+  if (!recents || recents.length === 0) return [];
+  return recents.slice(0, RECENT_SUBMENU_LIMIT).map((r, i) => ({
+    label: `${i + 1}  ${r.sourcePdfName ?? "(unknown)"}`,
+    title: r.sourcePdfPath ?? "",
+    action: () => openPdfSmart(r.sourcePdfPath),
+  }));
 }
-
-recentCancelBtn.addEventListener("click", hideRecentDialog);
-recentDialog.addEventListener("click", (e) => {
-  if (e.target === recentDialog) hideRecentDialog();
-});
 
 async function openPdfPath(pdfPath) {
   if (!pdfPath) return;
@@ -2739,7 +2703,7 @@ async function actionOpen() {
 
 /** Open `path` in the active tab when it's empty, or in a fresh tab
  *  when the active one already has a workspace loaded. Used by the
- *  toolbar 開く button, the file menu, the recents dialog and the
+ *  toolbar 開く button, the file menu, the recents submenu and the
  *  global PDF drop handler so they all behave consistently. */
 async function openPdfSmart(path) {
   if (isOpen) {
@@ -5819,7 +5783,6 @@ const menuBar = new MenuBar({
   actions: {
     open: actionOpen,
     "open-in-new-window": actionOpenInNewWindow,
-    recent: actionShowRecent,
     close: actionClose,
     save: actionSave,
     export: actionExport,
@@ -5872,6 +5835,12 @@ const menuBar = new MenuBar({
     "quality-standard": () => setRenderQuality("standard"),
     "quality-high": () => setRenderQuality("high"),
     "quality-max": () => setRenderQuality("max"),
+  },
+  submenus: {
+    recent: $("menu-recent"),
+  },
+  populators: {
+    recent: populateRecentSubmenu,
   },
 });
 
@@ -6313,9 +6282,9 @@ for (const [id, text] of Object.entries(STATUS_HINTS)) {
 for (const dropdownId of ["menu-file", "menu-edit", "menu-view", "menu-insert", "menu-tools", "menu-help"]) {
   const dd = document.getElementById(dropdownId);
   if (!dd) continue;
-  for (const item of dd.querySelectorAll(".menu-item[data-action]")) {
-    const action = item.dataset.action;
-    const text = MENU_HINTS[action];
+  for (const item of dd.querySelectorAll(".menu-item[data-action], .menu-item[data-submenu]")) {
+    const key = item.dataset.action || item.dataset.submenu;
+    const text = MENU_HINTS[key];
     if (!text) continue;
     item.addEventListener("mouseenter", () => showStatusHint(text));
     item.addEventListener("mouseleave", clearStatusHint);
