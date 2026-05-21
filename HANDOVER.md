@@ -1,7 +1,7 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-05-20
-現在のバージョン: **v2.0.0-beta.121** (autoUpdater 経由で配布中)
+最終更新: 2026-05-22
+現在のバージョン: **v2.0.0-beta.127** (autoUpdater 経由で配布中)
 リポジトリ: 開発リポ [windom21-cpu/k-pdf3](https://github.com/windom21-cpu/k-pdf3) (Public) / 配布フィード [windom21-cpu/k-pdf3-releases](https://github.com/windom21-cpu/k-pdf3-releases) (Public)
 
 このドキュメントは、K-PDF3 の開発を引き継ぐ次の AI アシスタント（または別環境の自分）が会話履歴なしで作業継続できるよう書かれている。**着手前に §0 → §1 → §2 → §3 → §6 → §8 → §17 の順で必ず読むこと**。
@@ -256,6 +256,22 @@
     - `"reader-closed"` → 中止ボタン経由 = まだバグ残り (両 path 不発)
     - `"timeout"` → 5 分タイムアウト経由 = 両 path 不発
   - **初回実機検証**: 通常印刷では Adobe が消えるよう改善 (ユーザー報告)。FAX 経路は未検証 (Adobe が FAX 送信後に document tab を閉じるか挙動次第)、再発したら `reason` + cleanup + followup ログ全部で切り分け
+- **β127** (2026-05-22): **最近のファイルをサブメニュー化 (ダイアログ撤去)**
+  - **背景**: M5-7 で実装した「最近のファイル...」は busy-modal ベースのダイアログ (`recent-dialog`、最大 10 件、ファイル名 + フルパス + 最終更新時刻のメタ表示) で、開く操作が 2 ステップ (メニュー → ダイアログ → 項目クリック) になっていた。ユーザー要望「ファイルメニューに、最近開いたファイルというような実装はできる？」を受け Win95 流のカスケードサブメニュー化を決定 (案 A 採択、ダイアログは撤去で一本化)
+  - **MenuBar 拡張** (`src/renderer/menu-bar.js`): 既存の汎用メニュークラスに `submenus` / `populators` 引数を追加 — `submenus` は key → `.menu-submenu` 要素、`populators` は key → 非同期生成関数 (毎回 hover 時に呼ばれて `{label, title, action}` 配列を返す)。`_openSubmenu` が呼ばれると submenu を `innerHTML=""` クリア → populator 実行 → 各項目を DOM 生成 + click handler で `_closeAll()` + 遅延 action 実行 → trigger 要素の右側に `getBoundingClientRect()` ベースで配置 (left=rect.right-2、top=rect.top-2 で beveled border が Win95 風に連続)。空配列なら "(履歴なし)" disabled、populator throw で "(読み込みエラー)" disabled。`.submenu-open` クラスで親 menu-item の青ハイライトをサブメニュー表示中も維持 (Win95 流)
+  - **HTML / CSS** (`src/renderer/index.html` + `src/renderer/style.css`):
+    - File menu の `<div class="menu-item" data-action="recent">最近のファイル...</div>` を `<div class="menu-item menu-item-submenu" data-submenu="recent">最近のファイル</div>` に変更
+    - 新規 `<div class="menu-dropdown menu-submenu" id="menu-recent" hidden></div>` を追加 (中身は populator が動的生成)
+    - `recent-dialog` ブロック (busy-modal の `<div>` + 13 行) を完全撤去
+    - CSS: 旧 `.recent-window` / `.recent-list` / `.recent-item*` / `.recent-empty` / `.recent-buttons` 65 行を削除、代わりに `.menu-item-submenu` (右に ▶ 9px、padding-right 22px)、`.menu-item-submenu.submenu-open:not(.disabled)` (青 #000080 hover 色を維持)、`.menu-submenu` (min-width 260px / max-width 480px、`.menu-dropdown` の Win95 chrome を継承) を追加
+  - **renderer 配線** (`src/renderer/renderer.js`):
+    - `populateRecentSubmenu()` を新設 — `kpdf3.listRecentPdfs()` (workspace-registry の SQLite query、limit 10) を呼んで先頭 9 件を `{label: "1  ファイル名.pdf", title: フルパス, action: () => openPdfSmart(path)}` に変換。`RECENT_SUBMENU_LIMIT=9` は将来の 1-9 access-key 対応を見越した上限
+    - `MenuBar` 初期化に `submenus: { recent: $("menu-recent") }` + `populators: { recent: populateRecentSubmenu }` を追加
+    - 旧 `actionShowRecent` + `recentDialog`/`recentList`/`recentCancelBtn` 宣言 + `hideRecentDialog` + click handler + actions の `recent: actionShowRecent` 行を全削除 (合計 ~50 行)
+    - `MENU_HINTS` の bind ループを `.menu-item[data-action], .menu-item[data-submenu]` に拡張 — `recent` hint「最近開いた PDF の一覧から選びます」を新しいサブメニュー trigger でもステータスバー表示
+  - **動作**: File → 「最近のファイル ▶」hover でサブメニュー右展開 → 「`1  hoge.pdf`」「`2  fuga.pdf`」… click で `openPdfSmart` (active タブ空なら active、開いてれば新タブ)。tooltip にフルパス。0 件は "(履歴なし)"
+  - **副次**: `openPdfSmart` の JSDoc の "recents dialog" を "recents submenu" に更新
+  - **未対応 (将来候補)**: 1-9 数字キーでの直接オープン (現在は label の数字は単なる表示プレフィックス)、ファイル存在しない時の灰色化 + リスト clear ボタン
 
 **当面の残課題 / 未解決事項** (優先順):
 
