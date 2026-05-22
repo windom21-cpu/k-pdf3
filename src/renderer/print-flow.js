@@ -20,7 +20,7 @@
 
 import { composePagesForExport, composeSinglePageCanvas } from "./exporter.js";
 import { renderSyntheticPagePixels } from "./viewer.js";
-import { showBusy, updateBusy, hideBusy } from "./busy-modal.js";
+import { showBusy, updateBusy, hideBusy, setBusyCancel } from "./busy-modal.js";
 import { customConfirm } from "./dialogs.js";
 
 const { kpdf3 } = window;
@@ -1094,7 +1094,13 @@ export async function actionFaxSend(opts = {}) {
   // 1 度「実際のサイズ」を選べば記憶されるので、以降は手数ほぼ同等。
   // 副次効果として Adobe の vector レンダラを使うので明朝の hairline 品質
   // も保たれる (β.88 Phase 3 が達成しようとした目的を別経路で実現)。
-  // β.118: 中止ボタンを表示 (FAX 経路でも Adobe が固まる可能性)。
+  // β.118: 描画フェーズの中止ボタン。
+  // β.129: FAX 経路は Adobe `/p` 起動後、印刷完了を自動検出する信号が
+  //   構造的に存在しない — FUJIFILM 等の FAX ドライバは Win32_PrintJob に
+  //   可視ジョブを出さず (案 X / Path A が盲目)、Adobe も FAX 送信後に
+  //   document を閉じないため Path B も遷移しない。そのため Adobe 起動後は
+  //   busy modal を「送信完了」の明示確認モーダルへ切り替え、ユーザーの
+  //   明示操作で Adobe を閉じる (自動検出に依存しない)。
   showBusy("FAX 送信", `送信先 ${faxDevice} — ページを描画中...`, 0, {
     onCancel: () => {
       try { kpdf3.cancelPrint?.(); } catch { /* ignore */ }
@@ -1115,7 +1121,23 @@ export async function actionFaxSend(opts = {}) {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
     });
-    updateBusy(`Adobe を ${faxDevice} 選択済で起動しています...`, 90);
+    // β.129: 描画完了 → ここから先は Adobe / FAX ドライバでの送信操作
+    // フェーズ。自動完了検出が効かないので modal を明示確認に切り替える。
+    updateBusy(
+      "Adobe と FAX ドライバの画面で送信操作を完了してください。"
+      + "送信が終わったら下の「送信完了」ボタンを押してください。",
+      100,
+    );
+    setBusyCancel({
+      cancelLabel: "送信完了",
+      cancelBusyMessage: "Adobe を終了しています...",
+      onCancel: () => {
+        // 押下 = kpdf3.cancelPrint() で Adobe を終了 → main の
+        // finish('reader-closed') が走り await が解決する。hideBusy /
+        // status 更新は await 解決側に集約 (二重更新を防ぐ)。
+        try { kpdf3.cancelPrint?.(); } catch { /* ignore */ }
+      },
+    });
     const result = await kpdf3.printViaReaderDialog({
       source: "rasterized",
       pages: composed,
@@ -1124,7 +1146,8 @@ export async function actionFaxSend(opts = {}) {
     hideBusy();
     const reasonText =
       result.reason === "job-detected" ? "印刷ジョブ投入を検出"
-      : result.reason === "reader-closed" ? "Reader を終了"
+      : result.reason === "doc-closed" ? "Adobe の文書クローズを検出"
+      : result.reason === "reader-closed" ? "送信ダイアログを閉じました"
       : result.reason === "timeout" ? "タイムアウト"
       : "完了";
     _wsStatus.textContent =
