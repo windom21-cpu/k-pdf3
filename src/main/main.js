@@ -58,6 +58,7 @@ import {
   loadDevmodeCacheFromDisk,
 } from "./printer-properties-win.js";
 import { findPdfReader, findAllPdfReaders } from "./pdf-reader-finder.js";
+import { convertFileToPdfBytes } from "./file-to-pdf.js";
 // β59: PS/PCL raw print 経路は撤去。C2360 で auto-detect エラー
 // (016-726 / 106-726) を引き起こすことが判明し、raw datatype で
 // ドライバを完全バイパスする経路は本機種では使えないと結論。
@@ -3686,7 +3687,9 @@ ipcMain.handle(
   async (event, { afterPageNo, afterKey, externalPath }) => {
     if (!activeWorkspace) throw new Error("No active workspace");
     if (!externalPath) throw new Error("externalPath missing");
-    const buf = readFileSync(externalPath);
+    // β.130: PDF 以外 (画像 / Word / Excel) は PDF バイト列へ変換してから
+    // 既存の挿入経路に流す (file-to-pdf.js)。PDF はそのまま読み込み。
+    const buf = await convertFileToPdfBytes(externalPath);
     const out = await _insertPdfBytesIntoWorkspace({
       workspace: activeWorkspace,
       pdfBytes: buf,

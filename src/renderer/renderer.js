@@ -4861,18 +4861,31 @@ function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
     // β75 diag: ユーザがサムネ間の "+" 帯にうっかり落として「open でなく
     // insert になった」のを区別するために、gap drop での file 受領を残す。
     kpdf3.logDiag?.("gap-drop-file", { path, afterPageNo, afterKey });
-    if (!path || !/\.pdf$/i.test(path)) {
-      wsStatus.textContent = "PDF ファイルをドロップしてください";
+    // β.130: PDF に加えて画像 / Word / Excel も挿入対象。拡張子リストは
+    // main 側 file-to-pdf.js の classifyInsertFile と揃えること。
+    const insertKind =
+      /\.pdf$/i.test(path) ? "pdf"
+      : /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i.test(path) ? "image"
+      : /\.docx?$/i.test(path) ? "word"
+      : /\.xlsx?$/i.test(path) ? "excel"
+      : null;
+    if (!path || !insertKind) {
+      wsStatus.textContent = "PDF・画像・Word・Excel のファイルをドロップしてください";
       return;
     }
-    showBusy("挿入", "外部 PDF を取り込み中...", 0);
+    showBusy("挿入",
+      insertKind === "pdf" ? "外部 PDF を取り込み中..."
+      : insertKind === "image" ? "画像を PDF に変換しています..."
+      : insertKind === "word" ? "Word を PDF に変換しています..."
+      : "Excel を PDF に変換しています...",
+      0);
     // β78: subscribe to per-page progress so the busy modal updates
     // through the 20-30s heavy-PDF insertion instead of looking frozen.
     const unsubProgress = kpdf3.onInsertPdfProgress?.((d) => {
       const total = d?.total ?? 0;
       const i = d?.i ?? 0;
       const pct = total > 0 ? Math.round(((i + 1) / total) * 100) : 0;
-      updateBusy(`外部 PDF を取り込み中... (${i + 1} / ${total})`, pct);
+      updateBusy(`ページを取り込み中... (${i + 1} / ${total})`, pct);
     });
     try {
       const r = await kpdf3.addInsertedPdfPages({
@@ -4903,7 +4916,12 @@ function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
       unsubProgress?.();
       hideBusy();
       console.error("[insert-pdf] failed", err);
-      wsStatus.textContent = `挿入失敗: ${err.message ?? err}`;
+      // IPC 越しの Error は "Error invoking remote method ...:" が前置
+      // されるので、ユーザー向けには末尾の実メッセージだけ見せる。
+      const msg = String(err?.message ?? err)
+        .replace(/^Error invoking remote method '[^']*':\s*/, "")
+        .replace(/^Error:\s*/, "");
+      wsStatus.textContent = `挿入失敗: ${msg}`;
     }
   });
 }
