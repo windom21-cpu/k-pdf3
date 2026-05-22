@@ -990,11 +990,23 @@ export async function composePageImage({
   quality = 0.92,
   monoOverlays = false,
 }) {
-  const canvas = await composeSinglePageCanvas(
+  const composed = await composeSinglePageCanvas(
     pageRow, renderPage, projectStore, zoom, renderSyntheticPage, monoOverlays,
   );
-  const widthPt = canvas.width / zoom;
-  const heightPt = canvas.height / zoom;
+  const widthPt = composed.width / zoom;
+  const heightPt = composed.height / zoom;
+  // PDF のページは「白い紙」。Excel→PDF など背景に白塗り矩形を持たない
+  // PDF は mupdf が透過 RGBA (背景 = RGB(0,0,0)/alpha 0) で返すため、白地を
+  // 敷かないと PNG は背景透過、JPEG は透過部分が黒として焼き込まれる。
+  // 形式を問わず不透明な白地へ合成する (composeRegionImage と同じ対策)。
+  const canvas = document.createElement("canvas");
+  canvas.width = composed.width;
+  canvas.height = composed.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("composePageImage: 2d context unavailable");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(composed, 0, 0);
   if (format === "jpeg" || format === "jpg") {
     const bytes = await canvasToJpeg(canvas, quality);
     return { bytes, widthPt, heightPt, mime: "image/jpeg", ext: "jpg" };
@@ -1047,12 +1059,11 @@ export async function composeRegionImage({
   out.height = sh;
   const ctx = out.getContext("2d");
   if (!ctx) throw new Error("composeRegionImage: 2d context unavailable");
-  // JPEG is opaque, paint white under so transparent overlay-only regions
-  // don't show as black after encoding.
-  if (format === "jpeg" || format === "jpg") {
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, sw, sh);
-  }
+  // PDF のページは「白い紙」。背景に白塗り矩形を持たない PDF (Excel→PDF 等)
+  // は mupdf が透過 RGBA で返すため、白地を敷かないと JPEG は透過部分が黒く
+  // 焼き込まれ、PNG も背景透過になる。形式を問わず不透明な白地へ合成する。
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, sw, sh);
   ctx.drawImage(fullCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
   if (format === "jpeg" || format === "jpg") {
     const bytes = await canvasToJpeg(out, quality);
