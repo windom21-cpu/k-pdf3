@@ -3,10 +3,20 @@
 # B-2 strategy (β34+): β tags (`v*-beta.*`) build Windows only — the
 # active tester is on Windows and β iterations need to land fast.
 # Stable tags (`v[0-9].[0-9].[0-9]` with no `-beta` suffix) trigger the
-# full Linux + macOS + Windows matrix so distribution covers all
-# platforms once the build hits release quality. This also stops the
-# transient `tag_name already_exists` 422 race we hit during β12/β33
-# when the 3-OS matrix tried to create the same release in parallel.
+# full Linux + macOS + Windows builds so distribution covers all
+# platforms once the build hits release quality.
+#
+# 3-OS race root cause (β12/β33 で踏んだ `422 tag_name already_exists`):
+# electron-builder の `--publish=always` は GitHub Release API を叩いて
+# 「release が無ければ作成、あれば asset 追加」を内部で判断するが、3 OS
+# 並列実行だと 3 job が同時に「無い」と判断して create を叩き合い、最初
+# の 1 つ以外が 422 で落ちる。
+#
+# 対策 (β.132 で導入): Windows を先に単独走らせて release を作成 → Mac
+# / Linux は Windows 完了後に並列で asset 追加だけ走らせる。create は
+# Windows ジョブ 1 つに固定されるので race 不能、Mac/Linux は引き続き
+# 並列なので所要時間は Win + max(Mac, Linux) ≒ 4-6 分程度に収まる。
+# `needs: build-windows` で job 依存を表現する。
 #
 # Outputs land in `release/` (per the package.json `directories.output`
 # setting). Electron-builder publishes the installer + `latest*.yml` +
@@ -61,11 +71,15 @@ jobs:
 
   # macOS and Linux only run for stable tags (no `-beta` substring).
   # `!contains(...)` evaluates against the tag name (e.g. `v2.0.0-beta.34`
-  # vs `v2.0.0`). Stable releases happen rarely so the matrix race
-  # documented in HANDOVER §6.4 is not a concern when both run together.
+  # vs `v2.0.0`).
+  #
+  # `needs: build-windows` で Win 完了を待つ — Win ジョブが既に release
+  # を作成済なので、Mac/Linux 側は append 経路に入り 422 race が起きない
+  # (β12/β33 構造的脆弱性の根治、β.132)。Mac↔Linux 同士は並列で走る。
   build-macos:
     name: build-macos
     runs-on: macos-latest
+    needs: build-windows
     if: "!contains(github.ref_name, '-beta')"
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +102,7 @@ jobs:
   build-linux:
     name: build-linux
     runs-on: ubuntu-latest
+    needs: build-windows
     if: "!contains(github.ref_name, '-beta')"
     steps:
       - uses: actions/checkout@v4
