@@ -1125,6 +1125,11 @@ async function pasteImageBlob(blob, mime) {
       frame: "none",
       fontSize: 14,
       rotation: 0,
+      // Clipboard paste 由来の画像は元画像の縦横比を維持したい (ユーザ
+      // 要望: スクショ・写真をペーストして拡大縮小しても歪まないこと)。
+      // viewer の resize ハンドルがこのフラグを読んで主軸方式で aspect
+      // を保つ。palette 由来の画像スタンプは付かないので従来通り自由。
+      aspectLocked: true,
     },
   });
   history.execute(cmd);
@@ -3864,6 +3869,17 @@ async function actionExportToPath(
       thumbSelection.pageNos.clear();
       thumbSelection.anchor = null;
       history.clear();
+      // Mirror the new source onto the active tab so the tab-bar label,
+      // future tab-switch round-trips, and detach-to-window snapshots
+      // all reflect the file the user just saved to. Critical for
+      // Save As (別パス) — without this the tab keeps the *original*
+      // file name even though the workspace is now anchored to the new
+      // file. 上書き保存 (同パス) では no-op。
+      const tab = getActiveTab();
+      if (tab) {
+        tab.activeSourcePdfPath = savePath;
+        tab.activeSourceName = savePath.split(/[\\/]/).pop() ?? "";
+      }
       await refreshViewer();
     } catch (switchErr) {
       console.error("[renderer] post-save workspace switch failed:", switchErr);
