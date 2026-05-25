@@ -101,6 +101,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   // performs the actual download/install on request.
   updaterCheck:           ()    => ipcRenderer.invoke("kpdf3:updater-check"),
   updaterDownload:        ()    => ipcRenderer.invoke("kpdf3:updater-download"),
+  updaterCancelDownload:  ()    => ipcRenderer.invoke("kpdf3:updater-cancel-download"),
   updaterInstall:         ()    => ipcRenderer.invoke("kpdf3:updater-install"),
   openCrashLog:           ()    => ipcRenderer.invoke("kpdf3:open-crash-log"),
   onUpdaterChecking:        (cb) => ipcRenderer.on("kpdf3:updater-checking",           ()      => cb()),

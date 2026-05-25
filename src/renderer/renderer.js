@@ -5518,22 +5518,51 @@ kpdf3.onUpdaterUpdateAvailable?.(async (info) => {
   // Hide the manual "確認中..." modal before showing the confirm.
   hideBusy();
   const ver = info?.version ? `v${info.version}` : "新しいバージョン";
+  // β.132: ラベルを「後で」→「閉じる」へ。「後で」は「(K-PDF3 が) 後で
+  // 自動的に進めてくれる」と読まれがちで、実際には次回起動まで何も
+  // 起きない (= 同じダイアログが再表示されるだけ) 挙動と乖離していた。
+  // メッセージにも「次回起動時にもう一度お聞きします」を明記して、
+  // 「保留 = 中間状態を作る」と誤解されない UX にする (β.31/β.32 仮説
+  // 対応: ユーザが期待値ズレで何度も触り直す経路を断つ)。
   const ok = await customConfirm({
     title: "更新が利用可能",
-    message: `${ver} が利用可能です。\n今すぐダウンロードしますか？\n\n（ダウンロード後に再起動の確認があります）`,
+    message:
+      `${ver} が利用可能です。\n今すぐダウンロードしますか？\n\n`
+      + `（ダウンロード後、再起動の確認があります。\n`
+      + `「閉じる」を選ぶと次回起動時にもう一度お聞きします。）`,
     okLabel: "ダウンロード",
-    cancelLabel: "後で",
+    cancelLabel: "閉じる",
   });
   if (!ok) {
     updaterMode = "auto";
     return;
   }
   updaterDownloadInFlight = true;
-  showBusy("更新をダウンロード中", "通信を開始しています...", 0);
+  // β.132: ダウンロード中の中止ボタンを busy modal に追加。
+  // electron-updater は CancellationToken 経由でキャンセルすると
+  // .partial ファイル / blockmap キャッシュを掃除してくれるので、
+  // 中途半端な状態が残らない (= autoUpdater「後で」仮説の打ち手)。
+  showBusy("更新をダウンロード中", "通信を開始しています...", 0, {
+    cancelLabel: "中止",
+    cancelBusyMessage: "ダウンロードを中止しています...",
+    onCancel: () => {
+      // fire-and-forget — main の cancel ハンドラがトークンを cancel し、
+      // downloadUpdate の Promise が CancellationError で reject される。
+      // そちらで updaterDownloadInFlight=false + hideBusy する。
+      kpdf3.updaterCancelDownload?.();
+    },
+  });
   const res = await kpdf3.updaterDownload();
   if (res && res.ok === false) {
     updaterDownloadInFlight = false;
     hideBusy();
+    // Cancellation はユーザが明示的に押した結果なので、エラー扱いせず
+    // ステータスバーで簡潔に通知して終わり。
+    if (res.cancelled) {
+      wsStatus.textContent = "更新のダウンロードを中止しました";
+      updaterMode = "auto";
+      return;
+    }
     void customConfirm({
       title: "ダウンロード失敗",
       message: `更新のダウンロードに失敗しました。\n${res.error || ""}`,
@@ -5556,9 +5585,16 @@ kpdf3.onUpdaterUpdateDownloaded?.(async (info) => {
   updaterDownloadInFlight = false;
   hideBusy();
   const ver = info?.version ? `v${info.version}` : "更新";
+  // β.132: 「次回起動時に適用」が実際に成立するよう updater.js で
+  // autoInstallOnAppQuit=true に変更済。メッセージにも「アプリ終了時
+  // に自動適用」と明記して期待値を合わせる。
   const ok = await customConfirm({
     title: "更新の準備完了",
-    message: `${ver} のダウンロードが完了しました。\n今すぐ再起動して適用しますか？\n\n（未保存の変更がある場合は事前に保存してください）`,
+    message:
+      `${ver} のダウンロードが完了しました。\n`
+      + `今すぐ再起動して適用しますか？\n\n`
+      + `（「次回起動時に適用」を選ぶと、アプリを閉じた際に\n`
+      + `自動的に適用されます。未保存の変更は事前に保存してください。）`,
     okLabel: "再起動して適用",
     cancelLabel: "次回起動時に適用",
   });

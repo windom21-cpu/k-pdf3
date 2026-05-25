@@ -18,18 +18,30 @@
 //   - kpdf3:updater-error          { message }
 //
 // IPC handlers (renderer → main):
-//   - kpdf3:updater-check         force a manual check
-//   - kpdf3:updater-download      begin downloading the staged update
-//   - kpdf3:updater-install       quit & install the downloaded update
+//   - kpdf3:updater-check          force a manual check
+//   - kpdf3:updater-download       begin downloading the staged update
+//   - kpdf3:updater-cancel-download   abort an in-flight download + drop
+//                                     any partial files (electron-updater
+//                                     uses CancellationToken to do this
+//                                     cleanly — partial.* / blockmap
+//                                     caches get removed)
+//   - kpdf3:updater-install        quit & install the downloaded update
 
 import { app, ipcMain } from "electron";
 import electronUpdater from "electron-updater";
 
-const { autoUpdater } = electronUpdater;
+const { autoUpdater, CancellationToken } = electronUpdater;
 
 let initialised = false;
 /** @type {import('electron').BrowserWindow | null} */
 let updaterWindow = null;
+/** Active download's cancellation token. Held so the renderer's cancel
+ *  button on the download busy-modal can abort cleanly — electron-updater
+ *  removes the partial.* cache when a download is cancelled via token,
+ *  which is the **β.31/β.32 起動クラッシュ仮説** root-cause mitigation
+ *  ("後で" 経路で中間ファイルが残って次バージョン取得時に整合性破壊). */
+/** @type {InstanceType<typeof CancellationToken> | null} */
+let activeDownloadToken = null;
 
 /** True when this run should never talk to the update server. */
 function shouldSkip() {
@@ -105,9 +117,38 @@ function wireIpc() {
 
   ipcMain.handle("kpdf3:updater-download", async () => {
     if (shouldSkip()) return { skipped: true };
+    // If a previous download was abandoned without proper cancel (e.g.
+    // app crashed mid-DL), the token would already be released; create
+    // a fresh one. Holding the reference lets `updater-cancel-download`
+    // abort cleanly.
+    const token = new CancellationToken();
+    activeDownloadToken = token;
     try {
-      await autoUpdater.downloadUpdate();
+      await autoUpdater.downloadUpdate(token);
       return { ok: true };
+    } catch (err) {
+      // CancellationError is the expected outcome when the user clicked
+      // the busy-modal cancel button. Surface as ok:false with cancelled
+      // flag so the renderer can suppress the error confirm.
+      const cancelled =
+        err?.name === "CancellationError" || /cancell?ed/i.test(err?.message ?? "");
+      return { ok: false, cancelled, error: err?.message || String(err) };
+    } finally {
+      if (activeDownloadToken === token) activeDownloadToken = null;
+    }
+  });
+
+  // β.132: in-flight download cancel. Called from the renderer's busy-modal
+  // cancel button. electron-updater removes the .partial download (and
+  // blockmap cache) when cancelled via token, which is the mitigation for
+  // the autoUpdater "後で" 仮説 (β.31/β.32) — no half-baked cache lingers
+  // to corrupt the next version's diff calculation.
+  ipcMain.handle("kpdf3:updater-cancel-download", () => {
+    if (shouldSkip()) return { skipped: true };
+    if (!activeDownloadToken) return { ok: true, hadActive: false };
+    try {
+      activeDownloadToken.cancel();
+      return { ok: true, hadActive: true };
     } catch (err) {
       return { ok: false, error: err?.message || String(err) };
     }
@@ -136,10 +177,15 @@ export function setupAutoUpdater(win) {
   if (initialised) return;
   initialised = true;
 
-  // We drive download / install from the renderer, so opt out of the
-  // built-in auto-download + install-on-quit behaviour.
+  // We drive download from the renderer, so opt out of auto-download.
   autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
+  // β.132: flip `autoInstallOnAppQuit` to true so that when the user
+  // chooses 「次回起動時に適用」 in the download-complete confirm, the
+  // staged update actually applies on normal quit (was a no-op before
+  // — next launch re-prompted "ダウンロードしますか？" for an already
+  // downloaded version, leading to double-DL + cache mismatch, which
+  // is the second leg of the autoUpdater "後で" 仮説).
+  autoUpdater.autoInstallOnAppQuit = true;
   // Allow downgrading pre-release tags (β5 → β4) only when the user
   // explicitly asks. Default false — we never silently downgrade.
   autoUpdater.allowDowngrade = false;
