@@ -2926,6 +2926,15 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
     const tempPdfMarker = "kpdf3-print";
     let docOpenedSeen = false;
 
+    // β.137 diag: 「印刷の送信中ダイアログが消えない」事象の切り分け用。
+    // 6 件連続で submittedJobCount:0 + reason=reader-closed (= 中止押下) で
+    // 終わっており、Path A (Win32_PrintJob diff) も Path B (Adobe title 変化)
+    // も発火していない疑い。各 tick で raw データを記録し、どちらの経路の
+    // どの段階で sailent になっているのかを確定させる。
+    // 真因確定後に撤去 (stable cleanup #6 対象)。
+    let _tickN = 0;
+    let _lastLoggedTitle = null;
+
     const tick = async () => {
       if (settled) return;
       const elapsed = Date.now() - startMs;
@@ -2946,6 +2955,36 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
           snapshotPrintJobs(),
           snapshotAdobeTitle(pidForTitle),
         ]);
+
+        _tickN++;
+        // β.137 diag: tick の raw を crash.log に。最初の 3 tick は無条件、
+        // 以降は title 変化時 or 10 tick 毎、または job 検出時に出す
+        // (ノイズ抑制しつつ転機を取り逃さない)。
+        const titleNorm = adobeTitle ?? null;
+        const titleChanged = titleNorm !== _lastLoggedTitle;
+        const shouldLogTick =
+          _tickN <= 3
+          || titleChanged
+          || (_tickN % 10) === 0
+          || currentJobs.length > 0;
+        if (shouldLogTick) {
+          try {
+            logCrash("print-tick", {
+              tickN: _tickN,
+              elapsedMs: elapsed,
+              spPid: pidForTitle,
+              currentJobsLen: currentJobs.length,
+              currentJobIds: currentJobs.slice(0, 8),
+              beforeJobIdsLen: beforeJobIds.length,
+              everSeenNewJobsSize: everSeenNewJobs.size,
+              docOpenedSeen,
+              adobeTitleLen: titleNorm == null ? null : titleNorm.length,
+              adobeTitle: titleNorm == null ? null : titleNorm.slice(0, 120),
+              titleHasMarker: titleNorm != null && titleNorm.includes(tempPdfMarker),
+            });
+          } catch { /* ignore */ }
+          _lastLoggedTitle = titleNorm;
+        }
 
         // Path A: Win32_PrintJob diff + cumulative tracking
         const newJobs = currentJobs.filter((id) => !beforeJobIds.includes(id));
