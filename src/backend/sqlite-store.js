@@ -67,8 +67,21 @@ export function openWorkspace(filePath, opts = {}) {
     migrateOverlaysAddShape(db);
     migrateBookmarksDropPageFk(db);
     migrateStampPresetsTable(db);
+    migrateSourcePdfAddExternalPath(db);
   }
   return { db, isNew };
+}
+
+/**
+ * β.134: source_pdf に external_path カラム追加。閾値超の巨大 PDF を
+ * SQLite BLOB ではなく workspace 隣のサイドカーファイルに退避するため。
+ * blob の NOT NULL 制約はそのまま残し、externalPath 経路では blob に
+ * 0-byte Buffer を入れる (table 再作成を避けて低リスク移行)。Idempotent。
+ */
+function migrateSourcePdfAddExternalPath(db) {
+  const cols = db.prepare("PRAGMA table_info(source_pdf)").all();
+  if (cols.some((c) => c.name === "external_path")) return;
+  db.exec("ALTER TABLE source_pdf ADD COLUMN external_path TEXT");
 }
 
 /** Add the `stamp_presets` table (ADR-0019 MVP). Idempotent. */
@@ -440,15 +453,27 @@ export function closeWorkspace(db) {
 /**
  * Insert (or replace) the single source_pdf row.
  *
+ * β.134: externalPath が non-null のときは blob には 0-byte Buffer を入れる
+ * (NOT NULL 制約は移行ずみ DB のため残置)。読出は getSourcePdfMeta() →
+ * externalPath → ファイル read という流れで Workspace.getSourceBytes()
+ * が透明に扱う。
+ *
  * @param {import("better-sqlite3").Database} db
- * @param {{ fileName: string, blob: Buffer, byteSize: number, pageCount: number, fingerprint: string }} row
+ * @param {{ fileName: string, blob: Buffer, externalPath?: string | null, byteSize: number, pageCount: number, fingerprint: string }} row
  */
 export function setSourcePdf(db, row) {
   db.prepare("DELETE FROM source_pdf").run();
   db.prepare(`
-    INSERT INTO source_pdf (id, file_name, blob, byte_size, page_count, fingerprint)
-    VALUES (1, @fileName, @blob, @byteSize, @pageCount, @fingerprint)
-  `).run(row);
+    INSERT INTO source_pdf (id, file_name, blob, external_path, byte_size, page_count, fingerprint)
+    VALUES (1, @fileName, @blob, @externalPath, @byteSize, @pageCount, @fingerprint)
+  `).run({
+    fileName: row.fileName,
+    blob: row.blob,
+    externalPath: row.externalPath ?? null,
+    byteSize: row.byteSize,
+    pageCount: row.pageCount,
+    fingerprint: row.fingerprint,
+  });
 }
 
 /**
@@ -458,7 +483,7 @@ export function setSourcePdf(db, row) {
  */
 export function getSourcePdfMeta(db) {
   return db.prepare(
-    "SELECT id, file_name AS fileName, byte_size AS byteSize, page_count AS pageCount, fingerprint, imported_at AS importedAt FROM source_pdf WHERE id = 1"
+    "SELECT id, file_name AS fileName, byte_size AS byteSize, page_count AS pageCount, fingerprint, imported_at AS importedAt, external_path AS externalPath FROM source_pdf WHERE id = 1"
   ).get();
 }
 

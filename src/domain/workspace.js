@@ -3,8 +3,15 @@
 // Coordinates between SQLite store (persistence) and mupdf (PDF parsing)
 // without exposing backend types to higher layers.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { basename } from "node:path";
+
+// β.134: source PDF が閾値を超えると better-sqlite3 の bind が
+// RangeError "The bound string, buffer, or bigint is too big" で蹴る
+// (712MB 裁判所謄写で実測再現)。SQLite/V8/N-API の構造的制約のため、
+// 閾値超は workspace ファイルの隣に .source.pdf としてサイドカー書出し、
+// source_pdf.external_path にパスを格納する。安全マージン込みで 200MB。
+const LARGE_PDF_THRESHOLD_BYTES = 200 * 1024 * 1024;
 import {
   openWorkspace,
   closeWorkspace,
@@ -145,10 +152,28 @@ export class Workspace {
     const info = extractPdfInfo(bytes);
     const fingerprint = await computePdfFingerprint(bytes);
 
+    // β.134: 閾値超は SQLite BLOB を避けてサイドカーファイルへ。
+    // ファイル書出しは DB tx の外側で先に済ませる (write 失敗時に
+    // DB を更新しない順序)。tx 失敗で孤立ファイルが残る可能性は
+    // 低リスクとして許容 (workspace 削除時に一緒に消える設計)。
+    const useExternal = bytes.length > LARGE_PDF_THRESHOLD_BYTES;
+    const externalPath = useExternal ? `${this.filePath}.source.pdf` : null;
+    if (useExternal) {
+      writeFileSync(externalPath, bytes);
+    } else {
+      // 旧 external file が残っていれば消す (workspace 再利用時)
+      const oldExternal = `${this.filePath}.source.pdf`;
+      try { if (existsSync(oldExternal)) unlinkSync(oldExternal); } catch { /* ignore */ }
+    }
+
     const tx = this.db.transaction(() => {
       setSourcePdf(this.db, {
         fileName,
-        blob: bytes,
+        // external 経路でも blob NOT NULL を満たすため 0-byte Buffer。
+        // 読出は getSourceBytes() が external_path を優先するので
+        // 0-byte blob は実害なし。
+        blob: useExternal ? Buffer.alloc(0) : bytes,
+        externalPath,
         byteSize: bytes.length,
         pageCount: info.pageCount,
         fingerprint,
@@ -167,8 +192,25 @@ export class Workspace {
     return getSourcePdfMeta(this.db);
   }
 
-  /** Get source PDF bytes (BLOB). */
+  /**
+   * Get source PDF bytes.
+   *
+   * β.134: external_path 経路 (閾値超の巨大 PDF) はサイドカーファイル
+   * から read。通常経路 (BLOB) は SQLite から取得。呼び出し側は
+   * どちらかを意識せず Buffer を受け取れる。
+   *
+   * @returns {Buffer | null}
+   */
   getSourceBytes() {
+    const meta = getSourcePdfMeta(this.db);
+    if (meta?.externalPath) {
+      if (!existsSync(meta.externalPath)) {
+        // サイドカー消失 (ユーザが手で削除等)。null を返して上層で
+        // 「ソース欠落」のフォールバック (typical: 早期エラー表示)。
+        return null;
+      }
+      return readFileSync(meta.externalPath);
+    }
     return getSourcePdfBlob(this.db);
   }
 

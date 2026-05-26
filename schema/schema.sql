@@ -22,15 +22,20 @@ CREATE TABLE metadata (
 -- ===================================================================
 -- source_pdf: 元 PDF を bit-identical で BLOB 保管
 -- 1 workspace = 1 source PDF
+-- β.134: 大きすぎる PDF (e.g. 712MB 裁判所謄写) は better-sqlite3 の bind
+-- が RangeError で落ちるため、閾値超は workspace ファイルの隣に
+-- .source.pdf として書き出し、external_path にパスを保持して blob には
+-- 0-byte Buffer を入れる。読出は Workspace.getSourceBytes() で吸収。
 -- ===================================================================
 CREATE TABLE source_pdf (
-    id           INTEGER PRIMARY KEY CHECK(id = 1),  -- 単一行を保証
-    file_name    TEXT NOT NULL,
-    blob         BLOB NOT NULL,
-    byte_size    INTEGER NOT NULL,
-    page_count   INTEGER NOT NULL,
-    fingerprint  TEXT NOT NULL,              -- file hash (SHA-256)
-    imported_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id            INTEGER PRIMARY KEY CHECK(id = 1),  -- 単一行を保証
+    file_name     TEXT NOT NULL,
+    blob          BLOB NOT NULL,                       -- external_path 非 NULL の時は 0-byte
+    external_path TEXT,                                -- 非 NULL のとき blob は無視、ファイルから読む
+    byte_size     INTEGER NOT NULL,
+    page_count    INTEGER NOT NULL,
+    fingerprint   TEXT NOT NULL,                       -- file hash (SHA-256)
+    imported_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- ===================================================================
