@@ -2644,6 +2644,13 @@ async function populateRecentSubmenu() {
 
 async function openPdfPath(pdfPath) {
   if (!pdfPath) return;
+  // β.135: 巨大 PDF (200MB+ サイドカー経路) は読込 2〜数秒かかるため
+  // フリーズ誤認を防ぐ busy modal。通常サイズで一瞬で開けるケースで
+  // フラッシュしないよう 300ms 遅延表示。完了/失敗 finally で hide。
+  let _busyTimer = setTimeout(() => {
+    _busyTimer = null;
+    try { showBusy("PDF を読み込み中", "大きな PDF は数秒かかることがあります...", 0); } catch { /* ignore */ }
+  }, 300);
   try {
     // ADR-0015: bind the workspace handle on the main side to the
     // active tab's id. Phase 4's "+ button" creates a fresh TabState
@@ -2699,6 +2706,11 @@ async function openPdfPath(pdfPath) {
       errMessage: String(err?.message ?? err),
     });
     wsStatus.textContent = `エラー: ${err.message ?? err}`;
+  } finally {
+    // β.135: タイマー未発火なら busy 未表示なので clear のみ、
+    // 発火済なら hideBusy で閉じる。
+    if (_busyTimer) clearTimeout(_busyTimer);
+    else { try { hideBusy(); } catch { /* ignore */ } }
   }
 }
 
