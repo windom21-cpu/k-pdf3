@@ -55,3 +55,83 @@
     ExecShellWait "" '"$PROGRAMFILES64\K-PDF3\Uninstall K-PDF3.exe"' "/allusers /S" SW_HIDE
   customLegacyDone:
 !macroend
+
+; ============================================================
+; customInstall — runs after electron-builder's stock install macros.
+;
+; β.139 (2026-05-26): file association registration is now a
+; one-shot per machine. After the first install writes the ProgID
+; and Applications entries, subsequent autoUpdater installs skip
+; them entirely so the user's "default app" choice (Adobe / Edge
+; / K-PDF3) survives every update.
+;
+; Background: electron-builder's stock registerFileAssociations
+; (driven by the `fileAssociations` block in package.json) used to
+; run on every install — including autoUpdater-triggered ones —
+; which reset the UserChoice hash and triggered Windows 10/11's
+; "defaults were reset" notification. The `fileAssociations`
+; block was removed from package.json in β.139 to disable that
+; macro; this block handles the registration with a once-only
+; sentinel value under HKCU\Software\<appId>.
+;
+; The block also clears the legacy ProgID name `K-PDF3.pdf` that
+; the old `fileAssociations`-driven registration created, so
+; testers see exactly one K-PDF3 entry in the "Open with" list
+; instead of two side-by-side entries (one with icon, one with
+; the OS-default icon).
+; ============================================================
+!macro customInstall
+  ReadRegStr $0 HKCU "Software\io.windom21.kpdf3" "FileAssociationsRegistered"
+  StrCmp $0 "" customRegisterAssociations customSkipAssociations
+
+  customRegisterAssociations:
+    ; --- Cleanup of pre-β.139 entries that may already exist ---
+    DeleteRegKey HKCU "Software\Classes\K-PDF3.pdf"
+    DeleteRegValue HKCU "Software\Classes\.pdf\OpenWithProgids" "K-PDF3.pdf"
+
+    ; --- New ProgID written under the appId namespace ---
+    WriteRegStr HKCU "Software\Classes\kpdf3.Document.1" "" "PDF Document"
+    WriteRegStr HKCU "Software\Classes\kpdf3.Document.1\DefaultIcon" "" "$INSTDIR\K-PDF3.exe,0"
+    WriteRegStr HKCU "Software\Classes\kpdf3.Document.1\shell\open\command" "" '"$INSTDIR\K-PDF3.exe" "%1"'
+
+    ; Add to .pdf OpenWith list — does NOT touch UserChoice, so
+    ; the user's default-app pick is preserved.
+    WriteRegStr HKCU "Software\Classes\.pdf\OpenWithProgids" "kpdf3.Document.1" ""
+
+    ; Applications entry — surface K-PDF3 in the right-click
+    ; "Open with > Choose another app" picker.
+    WriteRegStr HKCU "Software\Classes\Applications\K-PDF3.exe" "FriendlyAppName" "K-PDF3"
+    WriteRegStr HKCU "Software\Classes\Applications\K-PDF3.exe\DefaultIcon" "" "$INSTDIR\K-PDF3.exe,0"
+    WriteRegStr HKCU "Software\Classes\Applications\K-PDF3.exe\shell\open\command" "" '"$INSTDIR\K-PDF3.exe" "%1"'
+    WriteRegStr HKCU "Software\Classes\Applications\K-PDF3.exe\SupportedTypes" ".pdf" ""
+
+    ; Sentinel — every subsequent autoUpdater install reads this
+    ; and skips the block above.
+    WriteRegStr HKCU "Software\io.windom21.kpdf3" "FileAssociationsRegistered" "1"
+
+    ; Tell the shell to re-read associations so the new entries
+    ; appear immediately in Explorer.
+    System::Call 'Shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+    Goto customAssociationsDone
+
+  customSkipAssociations:
+    ; Sentinel present → updater install, leave associations alone.
+
+  customAssociationsDone:
+!macroend
+
+; ============================================================
+; customUnInstall — undo everything customInstall wrote so an
+; uninstall + reinstall is a clean re-initialisation.
+; ============================================================
+!macro customUnInstall
+  DeleteRegKey HKCU "Software\Classes\kpdf3.Document.1"
+  DeleteRegValue HKCU "Software\Classes\.pdf\OpenWithProgids" "kpdf3.Document.1"
+  DeleteRegKey HKCU "Software\Classes\Applications\K-PDF3.exe"
+  DeleteRegValue HKCU "Software\io.windom21.kpdf3" "FileAssociationsRegistered"
+  DeleteRegKey /ifempty HKCU "Software\io.windom21.kpdf3"
+  ; Legacy pre-β.139 cleanup
+  DeleteRegKey HKCU "Software\Classes\K-PDF3.pdf"
+  DeleteRegValue HKCU "Software\Classes\.pdf\OpenWithProgids" "K-PDF3.pdf"
+  System::Call 'Shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+!macroend
