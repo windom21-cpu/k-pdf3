@@ -2721,17 +2721,25 @@ function snapshotPrintJobs() {
  * Adobe Pro DC は印刷後に document tab を閉じる + 本体最小化、という挙動
  * を取る (ユーザー証言: 「アドビが最小化、開くと中身は空」)。MainWindowTitle
  * を polling して「temp PDF の名前を含む状態 → 含まない状態」への遷移を
- * 「印刷完了」のシグナルとして検出する。指定 PID 1 つだけの軽量 query。
+ * 「印刷完了」のシグナルとして検出する。
  *
- * 戻り値: title 文字列 (空 string も含む) / process 不在 or 取得失敗時は null。
+ * β.138: `Get-Process -Id sp.pid` 限定だと Adobe Pro DC の親子分離構成
+ * (Acrobat.exe 親 = window-less / AcroCEF.exe 子 = window 持ち) で
+ * MainWindowTitle が永遠に空文字を返す事象を実機で確認 (β.137 print-tick
+ * ログで 30 tick 全て adobeTitleLen:0)。Acrobat.exe / AcroCEF.exe 両方の
+ * MainWindowTitle を集合スキャンに変更。複数 instance / 既存 Adobe への
+ * 取り次ぎ / 親子分離どのケースでも window-bearing process を捕捉できる。
+ *
+ * 戻り値: 非空 title の配列。取得失敗時は空配列 (null と区別不要)。
  */
-function snapshotAdobeTitle(pid) {
+function snapshotAdobeTitles() {
   return new Promise((resolve) => {
-    if (process.platform !== "win32" || !pid) { resolve(null); return; }
+    if (process.platform !== "win32") { resolve([]); return; }
     try {
       const ps =
-        `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; `
-        + `if ($p) { $p.MainWindowTitle }`;
+        "Get-Process -Name Acrobat,AcroCEF -ErrorAction SilentlyContinue"
+        + " | Where-Object { $_.MainWindowTitle }"
+        + " | Select-Object -ExpandProperty MainWindowTitle";
       const sp = spawn(
         "powershell.exe",
         ["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
@@ -2739,10 +2747,16 @@ function snapshotAdobeTitle(pid) {
       );
       let out = "";
       sp.stdout?.on("data", (d) => { out += d.toString(); });
-      sp.on("error", () => resolve(null));
-      sp.on("close", () => resolve(out.replace(/\r?\n/g, "").trim()));
+      sp.on("error", () => resolve([]));
+      sp.on("close", () => {
+        const titles = out
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        resolve(titles);
+      });
     } catch {
-      resolve(null);
+      resolve([]);
     }
   });
 }
@@ -2922,18 +2936,20 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
     // settled-guard で安全。
     /** @type {Set<number>} 観測した全ての new job ID (cumulative). */
     const everSeenNewJobs = new Set();
-    // basename prefix のみマッチ (Adobe が長 title を truncate しても確実)。
-    const tempPdfMarker = "kpdf3-print";
+    // β.138: 当該ジョブの temp PDF basename (拡張子なし) を marker に使う。
+    // 旧 marker "kpdf3-print" (prefix のみ) は前回印刷の Adobe ウィンドウが
+    // 残っている場合に false positive を起こす弱点があった。UUID 入りの
+    // basename で当該ジョブに紐づく title のみを判定する。
+    // (例: "kpdf3-print-649dc133-350a-4738-8d8f-e0bf2a6de737")
+    const tempPdfMarker = basename(pdfPath, ".pdf");
     let docOpenedSeen = false;
 
     // β.137 diag: 「印刷の送信中ダイアログが消えない」事象の切り分け用。
-    // 6 件連続で submittedJobCount:0 + reason=reader-closed (= 中止押下) で
-    // 終わっており、Path A (Win32_PrintJob diff) も Path B (Adobe title 変化)
-    // も発火していない疑い。各 tick で raw データを記録し、どちらの経路の
-    // どの段階で sailent になっているのかを確定させる。
-    // 真因確定後に撤去 (stable cleanup #6 対象)。
+    // β.137 で 30 tick 全て adobeTitleLen:0 を確認 → β.138 で全 Acrobat /
+    // AcroCEF プロセス scan に変更済。引き続き real-world 挙動確認のため
+    // 残置 (titles 配列も追加で出す)。真因確定後に撤去 (stable cleanup #6 対象)。
     let _tickN = 0;
-    let _lastLoggedTitle = null;
+    let _lastLoggedTitlesKey = null;
 
     const tick = async () => {
       if (settled) return;
@@ -2947,24 +2963,26 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
         // の結果。最初の tick (POLL_MS=1000ms 後) でも未完了の可能性は残るが、
         // await すれば確実に取れる。2 回目以降の tick は cache されているので
         // await は即時 resolve。
-        // β.126: snapshotAdobeTitle も並列で取る (sp.pid が無ければ null)。
+        // β.138: snapshotAdobeTitles は全 Acrobat/AcroCEF process の
+        // MainWindowTitle 配列を返す (β.126 の sp.pid 限定を解除)。
         // 3 つ並列でも PowerShell startup は max(call) ≈ 1.5s でほぼ変わらず。
-        const pidForTitle = sp?.pid ?? null;
-        const [beforeJobIds, currentJobs, adobeTitle] = await Promise.all([
+        const [beforeJobIds, currentJobs, adobeTitles] = await Promise.all([
           beforeJobIdsPromise,
           snapshotPrintJobs(),
-          snapshotAdobeTitle(pidForTitle),
+          snapshotAdobeTitles(),
         ]);
+
+        const titleHasMarker = adobeTitles.some((t) => t.includes(tempPdfMarker));
 
         _tickN++;
         // β.137 diag: tick の raw を crash.log に。最初の 3 tick は無条件、
-        // 以降は title 変化時 or 10 tick 毎、または job 検出時に出す
+        // 以降は titles 変化時 or 10 tick 毎、または job 検出時に出す
         // (ノイズ抑制しつつ転機を取り逃さない)。
-        const titleNorm = adobeTitle ?? null;
-        const titleChanged = titleNorm !== _lastLoggedTitle;
+        const titlesKey = adobeTitles.join("");
+        const titlesChanged = titlesKey !== _lastLoggedTitlesKey;
         const shouldLogTick =
           _tickN <= 3
-          || titleChanged
+          || titlesChanged
           || (_tickN % 10) === 0
           || currentJobs.length > 0;
         if (shouldLogTick) {
@@ -2972,18 +2990,19 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
             logCrash("print-tick", {
               tickN: _tickN,
               elapsedMs: elapsed,
-              spPid: pidForTitle,
+              spPid: sp?.pid ?? null,
               currentJobsLen: currentJobs.length,
               currentJobIds: currentJobs.slice(0, 8),
               beforeJobIdsLen: beforeJobIds.length,
               everSeenNewJobsSize: everSeenNewJobs.size,
               docOpenedSeen,
-              adobeTitleLen: titleNorm == null ? null : titleNorm.length,
-              adobeTitle: titleNorm == null ? null : titleNorm.slice(0, 120),
-              titleHasMarker: titleNorm != null && titleNorm.includes(tempPdfMarker),
+              titlesLen: adobeTitles.length,
+              titles: adobeTitles.map((t) => t.slice(0, 120)),
+              titleHasMarker,
+              marker: tempPdfMarker,
             });
           } catch { /* ignore */ }
-          _lastLoggedTitle = titleNorm;
+          _lastLoggedTitlesKey = titlesKey;
         }
 
         // Path A: Win32_PrintJob diff + cumulative tracking
@@ -2999,18 +3018,18 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
           return;
         }
 
-        // Path B (β.126): Adobe MainWindowTitle 変化検出
-        if (adobeTitle && adobeTitle.length > 0) {
-          if (adobeTitle.includes(tempPdfMarker)) {
-            // temp PDF (kpdf3-print-*) を開いている状態を確認
-            docOpenedSeen = true;
-          } else if (docOpenedSeen) {
-            // 開いていた document が title から消えた = Adobe 内で
-            // document tab がクローズされた = 印刷完了 (or 手動 close)
-            // → 3 秒バッファ後に Reader を kill。Path A と同じ semantics。
-            setTimeout(() => finish("doc-closed"), POST_JOB_BUFFER_MS);
-            return;
-          }
+        // Path B (β.126 + β.138): Adobe MainWindowTitle 変化検出。
+        // 全 Acrobat / AcroCEF プロセスの window title 集合のうち
+        // どれか 1 つでも当該ジョブの marker を含めば armed、全部消えたら
+        // 印刷完了とみなす (β.138 で sp.pid 限定を解除)。
+        if (titleHasMarker) {
+          docOpenedSeen = true;
+        } else if (docOpenedSeen) {
+          // armed 後に marker を含む title が全部消えた = Adobe 内で
+          // document tab がクローズされた = 印刷完了 (or 手動 close)
+          // → 3 秒バッファ後に Reader を kill。Path A と同じ semantics。
+          setTimeout(() => finish("doc-closed"), POST_JOB_BUFFER_MS);
+          return;
         }
       } catch { /* ignore — keep polling */ }
       setTimeout(tick, POLL_MS);
