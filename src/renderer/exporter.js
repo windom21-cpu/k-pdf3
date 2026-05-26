@@ -1204,8 +1204,17 @@ export async function compositePage(row, renderResult, projectStore, zoom = EXPO
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("compositePage: 2d context unavailable");
 
-  // PDF page itself — bounce through an offscreen canvas when rotation
-  // is non-zero (putImageData ignores ctx transforms).
+  // β.136: ページ PDF が背景に白塗り矩形を持たない (スキャン系 / Excel→PDF
+  // 等) と mupdf は alpha=0 の透過 RGBA を返す。後段で JPEG q=0.95 化される
+  // (full 戦略) と透過部分が黒として焼き込まれ、墨消しした際に「枠の外側
+  // (透過部分) が全面黒、枠の中 (白塗り PDF 部分) は白のまま」となる事象を
+  // 構造的に解消する。β.128 が composePageImage で行った対策の compositePage
+  // 版。白下地を先に敷いて drawImage で page raster をブレンド合成する
+  // (putImageData は下地を消す raw 書き込みなので tmp 経由で drawImage に
+  // 統一する)。
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
   const pixels =
     renderResult.pixels instanceof Uint8ClampedArray
       ? renderResult.pixels
@@ -1223,13 +1232,15 @@ export async function compositePage(row, renderResult, projectStore, zoom = EXPO
     }
     imageData = new ImageData(rgba, renderResult.width, renderResult.height);
   }
+  // β.136: 必ず tmp canvas 経由で drawImage で合成 (putImageData は raw
+  // 書き込みで上の白 fill を消すため)。userRot==0 も同経路に統一。
+  const tmp = document.createElement("canvas");
+  tmp.width = renderResult.width;
+  tmp.height = renderResult.height;
+  tmp.getContext("2d").putImageData(imageData, 0, 0);
   if (userRot === 0) {
-    ctx.putImageData(imageData, 0, 0);
+    ctx.drawImage(tmp, 0, 0);
   } else {
-    const tmp = document.createElement("canvas");
-    tmp.width = renderResult.width;
-    tmp.height = renderResult.height;
-    tmp.getContext("2d").putImageData(imageData, 0, 0);
     ctx.save();
     ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.rotate((userRot * Math.PI) / 180);
