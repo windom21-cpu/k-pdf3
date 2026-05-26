@@ -1251,101 +1251,137 @@ ipcMain.handle("kpdf3:import-pdf", async (_, pdfPath) => {
  *   4. Open the mupdf doc, cache page rows, return overlays to renderer.
  */
 ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null) => {
-  // ADR-0015: each tab gets its own workspace handle. If a tabId is
-  // passed, we register the new handle under that id (replacing any
-  // existing one for the same id). Otherwise generate a fresh tabId.
-  const targetTabId = tabId ?? `tab-${Date.now().toString(36)}`;
-  // If we're reusing an existing tabId, drop its previous handle so
-  // we don't leak the old workspace + doc. (Renderer drives re-opens
-  // by passing the same tabId.)
-  if (tabHandles.has(targetTabId)) disposeTab(targetTabId);
-  // Detach the active-* refs first; we'll re-point them via
-  // activateTab() once the new handle is built.
-  if (activeTabId === targetTabId) {
-    disposeActiveDoc();
-    activeWorkspace = null;
-    activeSourcePdfPath = null;
-  }
-
-  const pdfBytes = readFileSync(pdfPath);
-  const fingerprint = await computePdfFingerprint(pdfBytes);
-  const sourceName = basename(pdfPath);
-
-  let isNew = false;
-  let migrated = false;
-  let workspace;
-  const existing = findWorkspaceByFingerprint(fingerprint);
-  if (existing && existsSync(existing.workspacePath)) {
-    workspace = Workspace.open(existing.workspacePath);
-    touchWorkspace(fingerprint, pdfPath, sourceName);
-  } else {
-    const id = generateWorkspaceId();
-    const wsPath = workspacePathFor(id);
-    const legacy = legacySidecarPath(pdfPath);
-    if (existsSync(legacy)) {
-      // Migrate the ADR-0006 sidecar into userData/.
-      try {
-        renameSync(legacy, wsPath);
-      } catch (err) {
-        console.error("[main] sidecar migration rename failed:", err);
-        throw err;
-      }
-      workspace = Workspace.open(wsPath);
-      migrated = true;
-    } else {
-      workspace = Workspace.create(wsPath);
-      await workspace.importPdfFromFile(pdfPath);
-      isNew = true;
-    }
-    registerWorkspace({
-      fingerprint,
-      workspaceId: id,
-      workspacePath: wsPath,
-      sourcePdfPath: pdfPath,
-      sourcePdfName: sourceName,
-    });
-  }
-
-  // Open the mupdf Document for this tab. Each tab carries its own
-  // handle so a tab switch is just pointer-swapping the active-* refs.
-  const bytes = workspace.getSourceBytes();
-  const doc = bytes ? openPdfDocument(bytes) : null;
-  const pages = workspace.getPages({ includeDeleted: true });
-  tabHandles.set(targetTabId, {
-    workspace,
-    doc,
-    pages,
-    sourcePdfPath: pdfPath,
-    sourceName,
-  });
-  activateTab(targetTabId);
-  // Mark this tab as owned by the calling window so window-close
-  // disposes it (B3-α multi-window).
-  const winSt = windowStateForEvent(event);
-  if (winSt) {
-    winSt.ownedTabIds.add(targetTabId);
-    winSt.activeTabId = targetTabId;
-  }
-
-  // First-run migration of workspace-local stamp presets to the
-  // global stamps.db. Idempotent — only fires when the global store
-  // is empty AND the just-opened workspace has presets to copy. Runs
-  // every open so β testers who registered presets in any of several
-  // workspaces under the old design get the first one's set surfaced.
-  try {
-    migrateStampPresetsToGlobalIfEmpty(workspace);
-  } catch (err) {
-    console.warn("[stamp-presets] global migration failed (non-fatal):", err);
-  }
-
-  return {
-    tabId: targetTabId,
-    pdfPath,
-    pageCount: workspace.getSourceMeta()?.pageCount ?? 0,
-    isNew,
-    migrated,
-    overlays: workspace.loadOverlays(),
+  // β.133 diag: 巨大 PDF (e.g. 712MB 裁判所謄写) で「開けない / window が
+  // すぐ閉じる」事象を切り分けるため、各ステージの所要時間 + ファイル
+  // サイズ + 失敗時のスタックを crash.log に記録。真因が確定したら
+  // 撤去 (stable リリース時の cleanup 対象)。
+  const _t0 = Date.now();
+  let _fileSize = -1;
+  try { _fileSize = (await stat(pdfPath)).size; } catch { /* swallow — readFileSync が真因を出す */ }
+  const _diag = (stage, extra = {}) => {
+    try { logCrash("open-pdf-stage", { stage, pdfPath, fileSize: _fileSize, elapsedMs: Date.now() - _t0, ...extra }); } catch { /* swallow */ }
   };
+  _diag("start");
+  try {
+    // ADR-0015: each tab gets its own workspace handle. If a tabId is
+    // passed, we register the new handle under that id (replacing any
+    // existing one for the same id). Otherwise generate a fresh tabId.
+    const targetTabId = tabId ?? `tab-${Date.now().toString(36)}`;
+    // If we're reusing an existing tabId, drop its previous handle so
+    // we don't leak the old workspace + doc. (Renderer drives re-opens
+    // by passing the same tabId.)
+    if (tabHandles.has(targetTabId)) disposeTab(targetTabId);
+    // Detach the active-* refs first; we'll re-point them via
+    // activateTab() once the new handle is built.
+    if (activeTabId === targetTabId) {
+      disposeActiveDoc();
+      activeWorkspace = null;
+      activeSourcePdfPath = null;
+    }
+
+    const _tRead = Date.now();
+    const pdfBytes = readFileSync(pdfPath);
+    _diag("read-done", { readMs: Date.now() - _tRead, bytes: pdfBytes.length });
+
+    const _tFp = Date.now();
+    const fingerprint = await computePdfFingerprint(pdfBytes);
+    _diag("fingerprint-done", { fingerprintMs: Date.now() - _tFp });
+
+    const sourceName = basename(pdfPath);
+
+    let isNew = false;
+    let migrated = false;
+    let workspace;
+    const existing = findWorkspaceByFingerprint(fingerprint);
+    if (existing && existsSync(existing.workspacePath)) {
+      workspace = Workspace.open(existing.workspacePath);
+      touchWorkspace(fingerprint, pdfPath, sourceName);
+      _diag("workspace-reopened");
+    } else {
+      const id = generateWorkspaceId();
+      const wsPath = workspacePathFor(id);
+      const legacy = legacySidecarPath(pdfPath);
+      if (existsSync(legacy)) {
+        // Migrate the ADR-0006 sidecar into userData/.
+        try {
+          renameSync(legacy, wsPath);
+        } catch (err) {
+          console.error("[main] sidecar migration rename failed:", err);
+          throw err;
+        }
+        workspace = Workspace.open(wsPath);
+        migrated = true;
+        _diag("workspace-migrated");
+      } else {
+        const _tImp = Date.now();
+        workspace = Workspace.create(wsPath);
+        await workspace.importPdfFromFile(pdfPath);
+        isNew = true;
+        _diag("workspace-imported", { importMs: Date.now() - _tImp });
+      }
+      registerWorkspace({
+        fingerprint,
+        workspaceId: id,
+        workspacePath: wsPath,
+        sourcePdfPath: pdfPath,
+        sourcePdfName: sourceName,
+      });
+    }
+
+    // Open the mupdf Document for this tab. Each tab carries its own
+    // handle so a tab switch is just pointer-swapping the active-* refs.
+    const _tDoc = Date.now();
+    const bytes = workspace.getSourceBytes();
+    const doc = bytes ? openPdfDocument(bytes) : null;
+    _diag("open-document-done", { openDocMs: Date.now() - _tDoc, hasDoc: !!doc, sourceBytes: bytes?.length ?? 0 });
+
+    const pages = workspace.getPages({ includeDeleted: true });
+    tabHandles.set(targetTabId, {
+      workspace,
+      doc,
+      pages,
+      sourcePdfPath: pdfPath,
+      sourceName,
+    });
+    activateTab(targetTabId);
+    // Mark this tab as owned by the calling window so window-close
+    // disposes it (B3-α multi-window).
+    const winSt = windowStateForEvent(event);
+    if (winSt) {
+      winSt.ownedTabIds.add(targetTabId);
+      winSt.activeTabId = targetTabId;
+    }
+
+    // First-run migration of workspace-local stamp presets to the
+    // global stamps.db. Idempotent — only fires when the global store
+    // is empty AND the just-opened workspace has presets to copy. Runs
+    // every open so β testers who registered presets in any of several
+    // workspaces under the old design get the first one's set surfaced.
+    try {
+      migrateStampPresetsToGlobalIfEmpty(workspace);
+    } catch (err) {
+      console.warn("[stamp-presets] global migration failed (non-fatal):", err);
+    }
+
+    const result = {
+      tabId: targetTabId,
+      pdfPath,
+      pageCount: workspace.getSourceMeta()?.pageCount ?? 0,
+      isNew,
+      migrated,
+      overlays: workspace.loadOverlays(),
+    };
+    _diag("done", { pageCount: result.pageCount });
+    return result;
+  } catch (err) {
+    _diag("error", {
+      errName: err?.name ?? "Error",
+      errMessage: String(err?.message ?? err),
+      errCode: err?.code,
+      errStack: (err?.stack ?? "").split("\n").slice(0, 5).join(" | "),
+    });
+    throw err;
+  }
 });
 
 ipcMain.handle("kpdf3:switch-tab", async (event, tabId) => {

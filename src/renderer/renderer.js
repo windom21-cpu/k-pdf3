@@ -2691,6 +2691,13 @@ async function openPdfPath(pdfPath) {
     renderTabBar();
   } catch (err) {
     console.error("[renderer] openPdfFile (recent) failed:", err);
+    // β.133 diag: main 側の open-pdf-stage error と対応付けるため
+    // renderer 側にも残す。撤去は stable リリース時。
+    kpdf3.logDiag?.("open-pdf-renderer-error", {
+      pdfPath,
+      errName: err?.name ?? "Error",
+      errMessage: String(err?.message ?? err),
+    });
     wsStatus.textContent = `エラー: ${err.message ?? err}`;
   }
 }
