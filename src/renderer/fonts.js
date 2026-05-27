@@ -73,7 +73,9 @@ export function getTextFontStack(fontId, opts = {}) {
     const family = `"${String(fontId).replace(/"/g, '\\"')}"`;
     // 末尾に既定 sans フォントを fallback として追加 (フォントがその PC
     // に無いとき素の "MS UI Gothic" 系で表示される)。
-    return `${family}, "MS UI Gothic", "Hiragino Kaku Gothic ProN", sans-serif`;
+    const main = `${family}, "MS UI Gothic", "Hiragino Kaku Gothic ProN", sans-serif`;
+    if (opts.digitsHanko) return `${TEXT_DIGITS_HANKO_FAMILY}, ${main}`;
+    return main;
   }
   const main = TEXT_FONT_STACKS[fontId] ?? TEXT_FONT_STACKS.default;
   if (opts.digitsHanko) return `${TEXT_DIGITS_HANKO_FAMILY}, ${main}`;

@@ -156,6 +156,14 @@ function paintGlyphRun(ctx, text, x, y, color, fontSize, opts = {}) {
     ctx.strokeText(text, x, y);
   }
   ctx.fillText(text, x, y);
+  // hairline モード (明朝/serif + 太字 OFF) では glyph の太さは変えずに
+  // 密度だけ上げて紙でのドット化を解消する。fillText を同じ位置に重ね
+  // 描きすると source-over 合成式 `dst = src*α + dst*(1-α)` で AA 縁の
+  // alpha だけが段階的に上がり、glyph 中心は元から完全黒なので不変。
+  // 2 回打ちで AA pixel alpha 0.5 → 0.75 相当、3 回で 0.875 相当に強化。
+  if (hairline) {
+    ctx.fillText(text, x, y);
+  }
   ctx.restore();
 }
 

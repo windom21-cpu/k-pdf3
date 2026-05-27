@@ -331,6 +331,7 @@ initOverlaySelection({
   onSelectionChanged: () => {
     refreshModeOptionsBar();
     populateFormFieldOptionsBar();
+    populateTextToolbar();
     // β.102/β.103: shape を 1 つだけ選んだら shape palette popup の
     // 値をその overlay のものに同期する。popup が hidden でも値だけは
     // 更新しておく (次に popup を開いた時に反映)。
@@ -995,14 +996,27 @@ function dispatchOverlayCtx(target) {
  *  β.80: multi-select 対応。クリップボード配列を一括 paste する。
  *  各 overlay は元の相対位置を維持して +12pt/+12pt 移動する。Shared by
  *  Ctrl+V and the right-click「貼り付け」menu item. */
-function pasteOverlayFromClipboard() {
+function pasteOverlayFromClipboard(anchor = null) {
   if (!_overlayClipboard || _overlayClipboard.length === 0) {
     wsStatus.textContent = "貼り付けるものがありません";
     return;
   }
-  const pageNo = viewer.currentPage || _overlayClipboard[0]?.pageNo || 1;
-  const dx = 12;
-  const dy = 12;
+  // anchor.pageNo が指定されればそのページ、なければ viewer の active page
+  // (= 直近にクリックしたページ、無ければ scroll 由来の current page)。
+  // 「ペースト先のページをクリックしてから Ctrl+V」が直感どおり動く。
+  const pageNo = anchor?.pageNo || viewer.activePage || _overlayClipboard[0]?.pageNo || 1;
+  // anchor.x/y が指定されたら、primary (= clipboard[0]) を anchor 位置に
+  // 配置し、他は元の相対位置を維持する (group paste の自然な挙動)。
+  // anchor 無しは従来通り +12pt 平行移動。
+  let dx, dy;
+  if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
+    const head = _overlayClipboard[0];
+    dx = anchor.x - (head?.x ?? 0);
+    dy = anchor.y - (head?.y ?? 0);
+  } else {
+    dx = 12;
+    dy = 12;
+  }
   const newIds = [];
   for (const src of _overlayClipboard) {
     // β.82 (B-6): form_field を paste するときは tabOrder を捨てる。
@@ -1049,8 +1063,10 @@ const PASTE_IMAGE_MAX_WIDTH_PT = 200;          // 初期幅上限。ハンドル
 
 /** Insert a clipboard image Blob as an image-stamp overlay centered on
  *  the visible page. Used by both the document paste event handler and
- *  the right-click「貼り付け」menu (when OS clipboard has an image). */
-async function pasteImageBlob(blob, mime) {
+ *  the right-click「貼り付け」menu (when OS clipboard has an image).
+ *  anchor: {pageNo, x, y} を渡すと貼り付け先をそのページ + 座標 (画像の
+ *  中央が anchor になる) に固定。 */
+async function pasteImageBlob(blob, mime, anchor = null) {
   if (!isOpen) {
     wsStatus.textContent = "PDF を開いてから貼り付けてください";
     return;
@@ -1090,8 +1106,9 @@ async function pasteImageBlob(blob, mime) {
     return;
   }
   // 配置先ページの canonical 寸法 (pre-rotation) に userRotation で
-  // swap を反映。viewer.currentPage は scroll で更新される値。
-  const pageNo = viewer.currentPage || 1;
+  // swap を反映。anchor 指定があればそのページ、無ければ viewer の
+  // active page (= 直近 click、無ければ scroll 由来の current)。
+  const pageNo = anchor?.pageNo || viewer.activePage || 1;
   const row = viewer._pages?.find((p) => p.pageNo === pageNo);
   const cw = row?.cropW ?? row?.width ?? 595;
   const ch = row?.cropH ?? row?.height ?? 842;
@@ -1108,8 +1125,12 @@ async function pasteImageBlob(blob, mime) {
     h = pageH * 0.8;
     w = h / ratio;
   }
-  const x = Math.max(0, (pageW - w) / 2);
-  const y = Math.max(0, (pageH - h) / 2);
+  // anchor.x/y は画像の中央に合わせる (右クリック位置=画像中心の直感)。
+  // page 範囲外にならないよう clamp。anchor 無しはページ中央に置く従来挙動。
+  const cx = Number.isFinite(anchor?.x) ? anchor.x : pageW / 2;
+  const cy = Number.isFinite(anchor?.y) ? anchor.y : pageH / 2;
+  const x = Math.max(0, Math.min(pageW - w, cx - w / 2));
+  const y = Math.max(0, Math.min(pageH - h, cy - h / 2));
   const cmd = new AddOverlayCommand(projectStore, {
     pageNo,
     type: "stamp",
@@ -1139,8 +1160,9 @@ async function pasteImageBlob(blob, mime) {
 
 /** OS クリップボードに画像があれば貼り付け、なければ内部 _overlayClipboard
  *  にフォールバック。右クリック「貼り付け」とメニューバー「貼り付け」
- *  はこちらを呼ぶ (paste event は Ctrl+V ネイティブ経路で別途発火)。 */
-async function tryPasteFromAnyClipboard() {
+ *  はこちらを呼ぶ (paste event は Ctrl+V ネイティブ経路で別途発火)。
+ *  anchor: {pageNo, x, y} を渡すと貼り付け先をクリックページ + 座標に固定。 */
+async function tryPasteFromAnyClipboard(anchor = null) {
   // navigator.clipboard.read は permission 要 / async API。Electron では
   // 通常許可されているが念のため try で囲んでフォールバック。
   try {
@@ -1149,7 +1171,7 @@ async function tryPasteFromAnyClipboard() {
       for (const type of item.types) {
         if (/^image\/(png|jpe?g|webp)$/i.test(type)) {
           const blob = await item.getType(type);
-          await pasteImageBlob(blob, type);
+          await pasteImageBlob(blob, type, anchor);
           return;
         }
       }
@@ -1158,7 +1180,7 @@ async function tryPasteFromAnyClipboard() {
     // permission denied / API unsupported — fall through to internal.
   }
   if (_overlayClipboard) {
-    pasteOverlayFromClipboard();
+    pasteOverlayFromClipboard(anchor);
   } else {
     wsStatus.textContent = "貼り付けるものがありません";
   }
@@ -1239,8 +1261,12 @@ viewerContainer.addEventListener("pointerdown", (ev) => {
 // background (not on an existing overlay) opens a menu that toggles
 // placement mode. Clicking the active mode again exits to "none".
 const ctxPage = $("ctx-page");
-function showPageContextMenu(x, y) {
+/** 右クリック時に保存される「貼り付け先」。dispatchPageCtx で paste を
+ *  実行する時に参照する。null なら viewer.currentPage に貼り付ける旧挙動。 */
+let _pagePasteAnchor = null;
+function showPageContextMenu(x, y, anchor = null) {
   if (!ctxPage) return;
+  _pagePasteAnchor = anchor;
   // Mark the currently-active mode with the existing ".checked" style
   // (✓ left of the item) so the user can see what's on.
   for (const item of ctxPage.querySelectorAll(".menu-item")) {
@@ -1249,6 +1275,13 @@ function showPageContextMenu(x, y) {
       (mode === "none" && placementMode === "none") ||
       (mode !== "none" && mode === placementMode);
     item.classList.toggle("checked", isActive);
+    // paste 項目は clipboard が空のとき灰色化 (内部 overlay クリップ + OS
+    // 画像のどちらかでもあれば有効。OS 画像有無の事前 sync 判定は重い
+    // ので、内部クリップが空のときだけ disabled にする保守的方針)。
+    if (mode === "paste") {
+      const enabled = !!(_overlayClipboard && _overlayClipboard.length);
+      item.classList.toggle("disabled", !enabled);
+    }
   }
   ctxPage.style.left = `${x}px`;
   ctxPage.style.top = `${y}px`;
@@ -1259,10 +1292,20 @@ function hidePageContextMenu() {
   ctxPage.hidden = true;
 }
 function dispatchPageCtx(target) {
-  hidePageContextMenu();
   if (!(target instanceof HTMLElement)) return;
   const mode = target.dataset.ctx;
   if (!mode) return;
+  if (target.classList.contains("disabled")) {
+    hidePageContextMenu();
+    return;
+  }
+  if (mode === "paste") {
+    const anchor = _pagePasteAnchor;
+    hidePageContextMenu();
+    void tryPasteFromAnyClipboard(anchor);
+    return;
+  }
+  hidePageContextMenu();
   if (mode === "none") {
     setPlacementMode("none");
   } else if (placementMode === mode) {
@@ -1277,9 +1320,19 @@ viewerContainer.addEventListener("contextmenu", (e) => {
   // right-clicks landing inside an overlay. Only act on the page
   // background itself.
   if (e.target instanceof HTMLElement && e.target.closest(".overlay")) return;
-  if (e.target instanceof HTMLElement && !e.target.closest(".viewer-page")) return;
+  if (!(e.target instanceof HTMLElement)) return;
+  const pageEl = e.target.closest(".viewer-page");
+  if (!(pageEl instanceof HTMLElement)) return;
   e.preventDefault();
-  showPageContextMenu(e.clientX, e.clientY);
+  // 右クリックした位置を canonical 座標で記録。paste 時に「現在ページ」
+  // ではなくクリックしたページに貼り付けるための anchor。
+  const pageNo = Number(pageEl.dataset.pageNo) || 0;
+  const rect = pageEl.getBoundingClientRect();
+  const z = viewer.zoom || 1;
+  const anchor = pageNo > 0
+    ? { pageNo, x: (e.clientX - rect.left) / z, y: (e.clientY - rect.top) / z }
+    : null;
+  showPageContextMenu(e.clientX, e.clientY, anchor);
 });
 ctxPage?.addEventListener("pointerdown", (e) => {
   e.stopPropagation();
@@ -1471,6 +1524,10 @@ async function actionSavePagesAsPdf(pageNos) {
         cancelLabel: null,
       });
     }
+    // 書き出した PDF を新タブで開いて、ユーザーが書き出し結果を直接確認
+    // できるようにする (元タブは編集状態を維持)。
+    try { await newTabAndOpen(savePath); }
+    catch (openErr) { console.error("[save-pages] post-save open failed:", openErr); }
   } catch (err) {
     hideBusy();
     console.error("[save-pages] failed", err);
@@ -3350,6 +3407,10 @@ async function actionExportRange() {
         cancelLabel: null,
       });
     }
+    // 書き出した PDF を新タブで開いて、ユーザーが書き出し結果を直接確認
+    // できるようにする (元タブは編集状態を維持)。Save As と同じ動線。
+    try { await newTabAndOpen(savePath); }
+    catch (openErr) { console.error("[renderer] post-export open failed:", openErr); }
   } catch (err) {
     hideBusy();
     console.error("[renderer] export-range failed:", err);
@@ -3880,26 +3941,34 @@ async function actionExportToPath(
       });
     }
     updateBusy("新しいファイルに切り替え中...", 95);
+    // 別名保存 (= 元タブの sourcePath と異なるパス) の場合、元タブの
+    // workspace / dirty 追跡を破壊しないために新タブで開く。元タブはその
+    // まま残るので「元データの編集はまだ未保存」アラートも従来どおり出る。
+    // 上書き保存 (同パス) は現タブを更新する従来経路を維持。
+    const preTab = getActiveTab();
+    const isSaveAs = !!preTab && preTab.activeSourcePdfPath !== savePath;
     try {
-      const opened = await kpdf3.openPdfFile(savePath, getActiveTabId());
-      projectStore.reset(opened.overlays ?? []);
-      pendingDeletedPages.clear();
-      workspaceMutated = false;
-      thumbSelection.pageNos.clear();
-      thumbSelection.anchor = null;
-      history.clear();
-      // Mirror the new source onto the active tab so the tab-bar label,
-      // future tab-switch round-trips, and detach-to-window snapshots
-      // all reflect the file the user just saved to. Critical for
-      // Save As (別パス) — without this the tab keeps the *original*
-      // file name even though the workspace is now anchored to the new
-      // file. 上書き保存 (同パス) では no-op。
-      const tab = getActiveTab();
-      if (tab) {
-        tab.activeSourcePdfPath = savePath;
-        tab.activeSourceName = savePath.split(/[\\/]/).pop() ?? "";
+      if (isSaveAs) {
+        // 新タブで保存先 PDF を開く。元タブの projectStore / workspaceMutated /
+        // pendingDeletedPages は触らない。
+        await newTabAndOpen(savePath);
+      } else {
+        const opened = await kpdf3.openPdfFile(savePath, getActiveTabId());
+        projectStore.reset(opened.overlays ?? []);
+        pendingDeletedPages.clear();
+        workspaceMutated = false;
+        thumbSelection.pageNos.clear();
+        thumbSelection.anchor = null;
+        history.clear();
+        // 上書き保存 (= 同パス) なので tab.activeSourcePdfPath は不変だが
+        // 念のため明示更新 (race / 旧状態防止)。
+        const tab = getActiveTab();
+        if (tab) {
+          tab.activeSourcePdfPath = savePath;
+          tab.activeSourceName = savePath.split(/[\\/]/).pop() ?? "";
+        }
+        await refreshViewer();
       }
-      await refreshViewer();
     } catch (switchErr) {
       console.error("[renderer] post-save workspace switch failed:", switchErr);
     }
@@ -5942,6 +6011,17 @@ const menuBar = new MenuBar({
     const sel = document.getElementById(id);
     if (sel) await appendSystemFontsToSelect(sel);
   }
+  // text-font の永続化保存値がシステムフォント名のとき、起動時には option
+  // がまだ追加されておらず sel.value = saved が失敗していた。append 完了
+  // 後にもう一度復元を試みる。
+  const textFontSelEl = document.getElementById("text-font");
+  if (textFontSelEl) {
+    const saved = localStorage.getItem("kpdf3.textFontId");
+    if (saved && saved !== "default" &&
+        [...textFontSelEl.options].some((o) => o.value === saved)) {
+      textFontSelEl.value = saved;
+    }
+  }
 })();
 
 // ---- Render quality (oversample level) -------------------------------
@@ -7085,6 +7165,37 @@ function applyFontSizeToEditingOverlay() {
   viewer.applyEditingTextStyle({ fontId, fontSize, color, digitsHanko, bold });
 }
 
+/** 配置済みのテキスト枠を後付けで編集できる導線。
+ *  編集中 (inline-edit) → その 1 つだけ。それ以外 → 選択中の text overlay
+ *  全て (form_field β.107 と同じ multi-select 一括反映)。1 件でも反映した
+ *  ら true を返す → 呼び出し側はテキスト配置モードへの自動遷移を抑止する。 */
+function applyTextStyleToEditingOrSelected() {
+  const editId = viewer._editingId;
+  const targetIds = editId
+    ? [editId]
+    : getSelectedIds().filter((id) => {
+        const ov = projectStore.get(id);
+        return ov && ov.type === "text";
+      });
+  if (!targetIds.length) return false;
+  const fontId = currentTextFontId();
+  const fontSize = currentTextFontSize();
+  const color = currentTextColor();
+  const digitsHanko = currentTextDigitsHanko();
+  const bold = currentTextBold();
+  for (const id of targetIds) {
+    const ov = projectStore.get(id);
+    if (!ov || ov.type !== "text") continue;
+    projectStore.update(id, {
+      properties: { ...ov.properties, fontId, fontSize, color, digitsHanko, bold },
+    });
+  }
+  if (editId) {
+    viewer.applyEditingTextStyle({ fontId, fontSize, color, digitsHanko, bold });
+  }
+  return true;
+}
+
 /** β.81 → β.82: form_field の編集中 / 選択中 overlay にプロパティ
  *  変更をライブ反映する。fieldKind ごとに反映するプロパティを切り替える:
  *
@@ -7235,6 +7346,45 @@ function applyFormFieldStyleToEditingOrSelected(kind = null) {
 // β.82 (B-5): 旧称の後方互換。form-text-* listener から呼ばれていた。
 const applyFormTextStyleToEditingOrSelected = applyFormFieldStyleToEditingOrSelected;
 
+/** テキスト枠を選択した瞬間、ツールバーの text-* select / checkbox を
+ *  その overlay の現在値で populate する (form_field の populate と同じ
+ *  考え方)。変更すれば applyTextStyleToEditingOrSelected で当該 overlay
+ *  に直接反映される。multi-select は全て text のときだけ primary 値で
+ *  populate (異種混在は触らない)。 */
+function populateTextToolbar() {
+  const selSize = getSelectionSize();
+  if (selSize < 1) return;
+  const selId = getPrimarySelectedId();
+  const ov = selId ? projectStore.get(selId) : null;
+  if (!ov || ov.type !== "text") return;
+  if (selSize > 1) {
+    for (const id of getSelectedIds()) {
+      const o = projectStore.get(id);
+      if (!o || o.type !== "text") return;
+    }
+  }
+  const p = ov.properties || {};
+  const setVal = (id, val) => {
+    const el = document.getElementById(id);
+    if (!el || val == null) return;
+    if (document.activeElement === el) return;
+    if (el.tagName === "SELECT") {
+      if ([...el.options].some((o) => o.value === String(val))) {
+        el.value = String(val);
+      }
+    } else {
+      el.value = String(val);
+    }
+  };
+  setVal("text-font", p.fontId ?? "mincho");
+  setVal("text-size", p.fontSize ?? 12);
+  setVal("text-color", p.color ?? "#000000");
+  const dh = document.getElementById("text-digits-hanko");
+  if (dh && document.activeElement !== dh) dh.checked = !!p.digitsHanko;
+  const bo = document.getElementById("text-bold");
+  if (bo && document.activeElement !== bo) bo.checked = !!p.bold;
+}
+
 /** β.82 (B-5 ii): form_field を選択した瞬間に、その overlay の現在値を
  *  options bar の select に流し込む。これで「選択した枠が今どの設定か」
  *  が一目でわかり、select 変更も「最後にユーザが触った値」ベースでは
@@ -7303,10 +7453,10 @@ if (textFontSel) {
   if (saved && saved !== "default") textFontSel.value = saved;
   textFontSel.addEventListener("change", () => {
     localStorage.setItem(TEXT_FONT_STORAGE_KEY, currentTextFontId());
-    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+    const applied = applyTextStyleToEditingOrSelected();
+    if (!applied && isOpen && placementMode !== "text" && !viewer._editingId) {
       setPlacementMode("text");
     }
-    applyFontSizeToEditingOverlay();
   });
 }
 if (textSizeSel) {
@@ -7314,10 +7464,10 @@ if (textSizeSel) {
   if (saved) textSizeSel.value = saved;
   textSizeSel.addEventListener("change", () => {
     localStorage.setItem(TEXT_SIZE_STORAGE_KEY, String(currentTextFontSize()));
-    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+    const applied = applyTextStyleToEditingOrSelected();
+    if (!applied && isOpen && placementMode !== "text" && !viewer._editingId) {
       setPlacementMode("text");
     }
-    applyFontSizeToEditingOverlay();
   });
 }
 const TEXT_COLOR_STORAGE_KEY = "kpdf3.textColor";
@@ -7328,10 +7478,10 @@ if (textColorSel) {
   }
   textColorSel.addEventListener("change", () => {
     localStorage.setItem(TEXT_COLOR_STORAGE_KEY, currentTextColor());
-    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+    const applied = applyTextStyleToEditingOrSelected();
+    if (!applied && isOpen && placementMode !== "text" && !viewer._editingId) {
       setPlacementMode("text");
     }
-    applyFontSizeToEditingOverlay();
   });
 }
 const TEXT_DIGITS_HANKO_STORAGE_KEY = "kpdf3.textDigitsHanko";
@@ -7344,10 +7494,10 @@ if (textDigitsHankoChk) {
       TEXT_DIGITS_HANKO_STORAGE_KEY,
       textDigitsHankoChk.checked ? "1" : "0",
     );
-    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+    const applied = applyTextStyleToEditingOrSelected();
+    if (!applied && isOpen && placementMode !== "text" && !viewer._editingId) {
       setPlacementMode("text");
     }
-    applyFontSizeToEditingOverlay();
   });
 }
 const TEXT_BOLD_STORAGE_KEY = "kpdf3.textBold";
@@ -7360,10 +7510,10 @@ if (textBoldChk) {
       TEXT_BOLD_STORAGE_KEY,
       textBoldChk.checked ? "1" : "0",
     );
-    if (isOpen && placementMode !== "text" && !viewer._editingId) {
+    const applied = applyTextStyleToEditingOrSelected();
+    if (!applied && isOpen && placementMode !== "text" && !viewer._editingId) {
       setPlacementMode("text");
     }
-    applyFontSizeToEditingOverlay();
   });
 }
 
