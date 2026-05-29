@@ -1,7 +1,7 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-05-27
-現在のバージョン: **v2.0.0-beta.140** (autoUpdater 経由で配布中、β 卒業準備フェーズ bug fix 期間)
+最終更新: 2026-05-29
+現在のバージョン: **v2.0.0-beta.141** (autoUpdater 経由で配布中、β 卒業準備フェーズ bug fix 期間)
 リポジトリ: 開発リポ [windom21-cpu/k-pdf3](https://github.com/windom21-cpu/k-pdf3) (Public) / 配布フィード [windom21-cpu/k-pdf3-releases](https://github.com/windom21-cpu/k-pdf3-releases) (Public)
 
 このドキュメントは、K-PDF3 の開発を引き継ぐ次の AI アシスタント（または別環境の自分）が会話履歴なしで作業継続できるよう書かれている。**着手前に §0 → §1 → §2 → §3 → §6 → §8 → §17 の順で必ず読むこと**。
@@ -12,9 +12,9 @@
 
 ## 現状サマリ (1 分で把握)
 
-**フェーズ**: **β 卒業準備 bug fix 期間 (2026-05-25〜06-01 目安)**。β.131 機能凍結ライン以降、業務並走で見つかった重大バグだけを β.133〜β.140 で修正中 (機能追加は引き続き凍結)。並行で stable 残務 (qpdf Mac/Linux 同梱 / 診断ロガー撤去) を仕込み、重大バグなしを確認したら v2.0.0 stable へ。M6 残のうち annotation proxy / qpdf sanitize / 真の墨消しは β.83-.85 で完了、「後で」仮説恒久対応は β.132 で投入、**β.134 で巨大 PDF (712MB 級裁判所謄写) を SQLite BLOB ではなくサイドカーファイル化して開けるように構造修正**、**β.136 で墨消し書き出しの透過 PDF 黒背景バグを修正**、**β.138 で印刷送信中モーダル消失失敗 (Adobe Pro DC 親子分離下の Path B 沈黙) を構造解消**、**β.139 で installer の portable target 撤去 + 関連付け書込を sentinel 付き customInstall macro で初回 install 時のみに限定 (autoUpdater 更新時の「規定アプリリセット」通知 + 「アイコンあり/なし K-PDF3 が 2 つ表示」現象を構造解消)**、**β.140 で 2026-05-27 業務並走フィードバック 9 件 (テキスト UX 6 + 保存 UX 3) + MS 明朝が印刷物で薄くドット化する根本対策 (hairline 経路に fillText 二重描きで AA 縁の濃度のみ上げる、glyph 太さは不変) を投入**。
+**フェーズ**: **β 卒業準備 bug fix 期間 (2026-05-25〜06-01 目安)**。β.131 機能凍結ライン以降、業務並走で見つかった重大バグだけを β.133〜β.141 で修正中 (機能追加は引き続き凍結)。並行で stable 残務 (qpdf Mac/Linux 同梱 / 診断ロガー撤去) を仕込み、重大バグなしを確認したら v2.0.0 stable へ。M6 残のうち annotation proxy / qpdf sanitize / 真の墨消しは β.83-.85 で完了、「後で」仮説恒久対応は β.132 で投入、**β.134 で巨大 PDF (712MB 級裁判所謄写) を SQLite BLOB ではなくサイドカーファイル化して開けるように構造修正**、**β.136 で墨消し書き出しの透過 PDF 黒背景バグを修正**、**β.138 で印刷送信中モーダル消失失敗 (Adobe Pro DC 親子分離下の Path B 沈黙) を構造解消**、**β.139 で installer の portable target 撤去 + 関連付け書込を sentinel 付き customInstall macro で初回 install 時のみに限定 (autoUpdater 更新時の「規定アプリリセット」通知 + 「アイコンあり/なし K-PDF3 が 2 つ表示」現象を構造解消)**、**β.140 で 2026-05-27 業務並走フィードバック 9 件 (テキスト UX 6 + 保存 UX 3) + MS 明朝が印刷物で薄くドット化する根本対策 (hairline 経路に fillText 二重描きで AA 縁の濃度のみ上げる、glyph 太さは不変) を投入**、**β.141 で β.140 の追い込み 2 件 — (a) 明朝印刷密度を 2 回打ち → 4 回打ち (AA α 0.75 → 0.9375) に強化して横線のドット感も解消、(b) 配置済みテキスト枠を選択しても options bar が表示されない (β.140 で `refreshModeOptionsBar` に text 選択時の分岐を入れ忘れた配線漏れ) を修正**。
 
-**直近完了 (β71〜β140、2026-05-14〜27)**:
+**直近完了 (β71〜β141、2026-05-14〜29)**:
 - **β71** — B2 renderer.js モジュール分離完結 (8631→4472 行 / -48.2% / 12 モジュール) + B3 タブ別ウインドウ完成 (右クリック / ツールバー / File menu / drag tearout / drag dock-back の 5 経路)
 - **β72** — 印刷経路を**案 D に再々設計**: K-PDF3 自前ダイアログを skip して Adobe `/p` でネイティブ印刷ダイアログ直接起動。**FAX freeze バグ根治** (β54-β70 の構造的問題、Adobe `/t` silent flag が driver UI 抑止する仕様 + β70 SW_HIDE 併発が原因)。案 X 印刷キュー監視 (`Win32_PrintJob` PowerShell) で Pro DC を 3 秒バッファ後 auto-kill
 - **β73** — テキスト太字化バグ修正 (β34 の 0.03×fontSize overstroke を bold OFF 時 skip)。Adobe spawn の preamble を `Promise.all` で並列化 (~1 秒短縮)
@@ -345,6 +345,9 @@
     - **根因確定**: β.76 で導入した hairline stroke は `0.02×fontSize` で 12pt なら 0.24pt = 900dpi で約 3px、トナー再現の境界線で乗らずドット化していた。stroke を太くすればドット化は緩和するが「太字にして濃くなるのは根本解決ではない」(ユーザー談) ため線幅を上げる解は却下
     - **打ち手 — 太さではなく密度で調整**: `paintGlyphRun` の hairline モードで `fillText` を 2 回打ち。Canvas 2D の source-over 合成式 `dst = src*α + dst*(1-α)` により AA 縁の alpha だけが `0.5 → 0.75` 相当に上昇 (glyph 中心は元から完全黒なので不変)。結果として **glyph の太さ・形状は β.76 と完全同一、AA 縁の濃度だけが向上** → 紙でのドット化を構造的に解消
     - **副作用評価**: Gothic / sans / system font / 太字 ON は `hairline = false` で従来通り 1 回打ち、変更なし。描画コストは raster がキャッシュされるため無視できる増分。万一足りなければ 3 回打ちで `0.875` 相当まで上げる余地あり
+- **β141** (2026-05-29): **β.140 の追い込み 2 件 — 明朝印刷密度の追加強化 + テキスト後付け編集 options bar の表示漏れ修正**
+  - **(a) 明朝印刷密度: 2 回打ち → 4 回打ち** — ユーザー報告「払い・縦線は改善したが横線がまだドット感あり、太さは変えずもう少し濃く」。明朝の横線は元から細い (12pt × 900dpi で 1〜2px) ため AA 縁が支配的で α=1.0 中心 pixel がほぼ無く、β.140 の 2 回打ち (AA α 0.5 → 0.75) では浅いトナー再現で残留ドット化していた。`paintGlyphRun` の hairline 分岐を `fillText` 計 4 回 (base 1 + branch 3) に変更、source-over 合成式で AA α 0.5 → **0.9375** まで強化。中心 α=1.0 は何回打っても 1.0 のままなので glyph の太さは完全不変 (これが「太字化しない密度補強」の核)。Gothic / sans / 太字 ON は `hairline=false` で従来通り 1 回打ち、変更なし。`src/renderer/exporter.js:158-172`
+  - **(b) 配置済みテキスト枠の options bar が出ない** — ユーザー報告「フォント/サイズ/色を後付け変更する調整バーが表示されない」。原因確定: β.140 で `applyTextStyleToEditingOrSelected` / `populateTextToolbar` / 各 select の change handler の 3 配線は入っていたが、**`refreshModeOptionsBar` (renderer.js:2174) が text 選択時にバーを表示する分岐だけが抜けていた**。β.107 で `form_field` 用に追加した「placementMode=none + 選択あり → 同種選択ならパネル表示」と全く同じパターンを `text` overlay にも追加。multi-select は全部 text のときだけ表示 (異種混在は hide)、`which = "text"` で `data-mode="text"` の既存パネル (フォント / 太字 / 数字 hanko / サイズ / 色) を流用 — text 配置モード中と同じ DOM を再利用。これで「テキスト枠を 1 つ選択 → options bar が自動表示 → select 変更で即反映」が β.140 で意図された動作通りに到達する。`src/renderer/renderer.js:2182-2222`
 
 **当面の残課題 / 未解決事項** (優先順):
 
@@ -387,9 +390,9 @@
 37. **portable 残骸の個別掃除案内**: 過去に `K-PDF3-2.0.0-beta.xxx.exe` (portable) を実行した PC は customInstall で自動掃除できない → スタッフ環境で「2 つ表示」が β.139 後も残ったら PowerShell 手順 (`Remove-Item HKCU:\Software\Classes\Applications\K-PDF3*.exe -Recurse` 等) で個別対応、または「アンインストール → 再インストール」で一掃
 38. **BIOS から OS 起動失敗の別原因切り分け** — ユーザー報告のうち (a) BIOS フリーズは K-PDF3 が干渉できる経路が構造的に無いため別原因 (Windows Update / ドライバ / hiberfil.sys 不整合 / CMOS 電池 / SSD 劣化等) を疑うべき。β.139 後も継続するか観察 → 続けばハードウェア / OS 側の問題が確定的
 
-**β.51 以来追跡されてきた「一瞬開いてすぐ閉じる」は β.90 で根治済** (旧 §8.2 #1)。**「印刷後 Adobe 残留」は β.95-96-116-118 と段階的に対策を重ねて構造解消**、β.118 では Adobe CC whitelist 拡張 + 詳細診断ログで「未知の Adobe 関連プロセス」も追跡可能に。**「印刷の途中打ち切り」は β.118 のジョブ drain 待ちで構造解消**、実機検証待ち。**「ページ番号の印刷時かすれ」は β.121 で `enforceHairline` 導入により細字 + Gothic でも 0.02pt の hairline stroke で濃く印刷される**。**β.128 で「画像として保存」の黒背景バグ (白塗り背景の無い PDF) を修正。β.129 で FAX 送信中モーダルを「送信完了」明示確認に変更 — FAX は印刷完了の自動検出信号が構造的に無いため (memory `[[project-fax-busy-modal-explicit]]`)。β.130 で挿入対象に画像/Word/Excel を追加 (Office COM 経由で PDF 化 → 既存挿入経路に流す、memory `[[project-insert-office-image]]`)**。**β.131 で Save As 後のタブ表示が新ファイル名にならない不具合 + クリップボード paste 画像の縦横比保持 (aspectLocked プロパティ + 主軸方式 resize)**。**β.132 で「後で」仮説恒久対応 + CI 3-OS race 構造解消 — β 卒業準備の第一弾**。**β.133 で `kpdf3:open-pdf-file` 全ステージ診断ロガー追加 (即 β.134 の真因特定)。β.134 で巨大 PDF (200MB 超) をサイドカーファイル化して better-sqlite3 BLOB bind RangeError を構造解消 (実機 712MB / 2.4 秒 open 確認)。β.135 で巨大 PDF 読込中の busy modal 表示 (300ms 遅延でフラッシュ抑制)。β.136 で墨消し書き出しの透過 PDF 黒背景バグ (compositePage 白下地未敷きの β.128 横展開漏れ) を構造解消。β.137 で print-tick 診断ロガー追加 (即 β.138 の真因特定)。β.138 で印刷送信中モーダル auto-close 失敗を構造解消 — Adobe Pro DC の親子分離下で sp.pid 限定 title scan が永遠に空文字を返していた根因を、全 Acrobat/AcroCEF process scan + UUID marker で克服 (実機 2 件で 16-18 秒の auto-close 確認)。β.140 で 2026-05-27 業務並走フィードバック 9 件 + MS 明朝の印刷密度補強 — テキスト UX 6 件 (system font の半角数字独立軸 / フォント永続化 / 後付け変更導線 / 空き領域右クリック貼り付け / ページ跨ぎ paste anchor) + 保存 UX 3 件 (Save As で元タブ残存・dirty 継続 / 範囲・単ページ書き出し後の新タブ表示) + 「明朝が印刷でドット化して薄い」根因 (0.02pt × 900dpi ≒ 3px のトナー再現境界) を確定し、線幅を変えず `fillText` 二重描きで AA 縁の濃度のみ上昇させる方向で構造解消**。
+**β.51 以来追跡されてきた「一瞬開いてすぐ閉じる」は β.90 で根治済** (旧 §8.2 #1)。**「印刷後 Adobe 残留」は β.95-96-116-118 と段階的に対策を重ねて構造解消**、β.118 では Adobe CC whitelist 拡張 + 詳細診断ログで「未知の Adobe 関連プロセス」も追跡可能に。**「印刷の途中打ち切り」は β.118 のジョブ drain 待ちで構造解消**、実機検証待ち。**「ページ番号の印刷時かすれ」は β.121 で `enforceHairline` 導入により細字 + Gothic でも 0.02pt の hairline stroke で濃く印刷される**。**β.128 で「画像として保存」の黒背景バグ (白塗り背景の無い PDF) を修正。β.129 で FAX 送信中モーダルを「送信完了」明示確認に変更 — FAX は印刷完了の自動検出信号が構造的に無いため (memory `[[project-fax-busy-modal-explicit]]`)。β.130 で挿入対象に画像/Word/Excel を追加 (Office COM 経由で PDF 化 → 既存挿入経路に流す、memory `[[project-insert-office-image]]`)**。**β.131 で Save As 後のタブ表示が新ファイル名にならない不具合 + クリップボード paste 画像の縦横比保持 (aspectLocked プロパティ + 主軸方式 resize)**。**β.132 で「後で」仮説恒久対応 + CI 3-OS race 構造解消 — β 卒業準備の第一弾**。**β.133 で `kpdf3:open-pdf-file` 全ステージ診断ロガー追加 (即 β.134 の真因特定)。β.134 で巨大 PDF (200MB 超) をサイドカーファイル化して better-sqlite3 BLOB bind RangeError を構造解消 (実機 712MB / 2.4 秒 open 確認)。β.135 で巨大 PDF 読込中の busy modal 表示 (300ms 遅延でフラッシュ抑制)。β.136 で墨消し書き出しの透過 PDF 黒背景バグ (compositePage 白下地未敷きの β.128 横展開漏れ) を構造解消。β.137 で print-tick 診断ロガー追加 (即 β.138 の真因特定)。β.138 で印刷送信中モーダル auto-close 失敗を構造解消 — Adobe Pro DC の親子分離下で sp.pid 限定 title scan が永遠に空文字を返していた根因を、全 Acrobat/AcroCEF process scan + UUID marker で克服 (実機 2 件で 16-18 秒の auto-close 確認)。β.140 で 2026-05-27 業務並走フィードバック 9 件 + MS 明朝の印刷密度補強 — テキスト UX 6 件 (system font の半角数字独立軸 / フォント永続化 / 後付け変更導線 / 空き領域右クリック貼り付け / ページ跨ぎ paste anchor) + 保存 UX 3 件 (Save As で元タブ残存・dirty 継続 / 範囲・単ページ書き出し後の新タブ表示) + 「明朝が印刷でドット化して薄い」根因 (0.02pt × 900dpi ≒ 3px のトナー再現境界) を確定し、線幅を変えず `fillText` 二重描きで AA 縁の濃度のみ上昇させる方向で構造解消。β.141 で追い込み 2 件 — (a) 明朝印刷密度を 4 回打ちに強化 (AA α 0.75 → 0.9375、横線のドット感も解消)、(b) β.140 の text 後付け編集で options bar が出ない配線漏れ (`refreshModeOptionsBar` の text 選択分岐) を修正**。
 
-**β 卒業ロードマップ (2026-05-25 確定、進行状況 2026-05-27)**: β.131 機能凍結ライン + 1 週間業務並走 (〜 2026-06-01 目安) で重大バグなしを確認 → 並行で stable 残務 (qpdf Mac/Linux 同梱 + 診断ロガー撤去) を仕込む → v2.0.0 stable タグ。配布対象は Win + Mac + Linux 全部 (Mac 署名/公証は不要、ダイレクト dmg + 初回「右クリック→開く」案内で運用)。**並走 Day 1 (2026-05-26) で 5 件 + Day 2 (2026-05-27) で 1 件 (β.140) の構造修正を投入**: β.134 巨大 PDF / β.135 読込モーダル / β.136 墨消し黒背景 / β.138 印刷モーダル消失 / β.139 installer 関連付け sentinel + portable target 撤去 / β.140 フィードバック 9 件 + 明朝印刷密度。いずれも構造修正 (小手先回避なし)、機能追加はなし。残り ~4 日間で追加のバグが出なければ stable へ進む方針継続。
+**β 卒業ロードマップ (2026-05-25 確定、進行状況 2026-05-29)**: β.131 機能凍結ライン + 1 週間業務並走 (〜 2026-06-01 目安) で重大バグなしを確認 → 並行で stable 残務 (qpdf Mac/Linux 同梱 + 診断ロガー撤去) を仕込む → v2.0.0 stable タグ。配布対象は Win + Mac + Linux 全部 (Mac 署名/公証は不要、ダイレクト dmg + 初回「右クリック→開く」案内で運用)。**並走 Day 1 (2026-05-26) で 5 件 + Day 2 (2026-05-27) で 1 件 + Day 4 (2026-05-29) で 1 件 (β.141) の構造修正を投入**: β.134 巨大 PDF / β.135 読込モーダル / β.136 墨消し黒背景 / β.138 印刷モーダル消失 / β.139 installer 関連付け sentinel + portable target 撤去 / β.140 フィードバック 9 件 + 明朝印刷密度 / β.141 明朝印刷密度 4 回打ち + テキスト options bar 表示漏れ修正。いずれも構造修正 (小手先回避なし)、機能追加はなし。残り ~3 日間で追加のバグが出なければ stable へ進む方針継続。
 
 **HANDOVER 更新ルール**: HANDOVER.md は **ユーザーが明示的に依頼した時だけ** 書き換える。β タグを切る毎に勝手に refresh しない (2026-05-12 にユーザーから明示)。
 
@@ -1006,7 +1009,7 @@ npm run dev                        # electronmon (推奨、自動 reload。Wayla
 
 #### 🔴 着手検討が必要なオープン項目 (β 卒業準備フェーズ、2026-05-25〜)
 
-1. **β.131 を機能凍結ラインに、bug fix のみで業務並走** — 2026-05-27 時点で β.140 まで進行 (β.134 巨大 PDF / β.135 読込モーダル / β.136 墨消し黒背景 / β.138 印刷モーダル消失 / β.139 installer 関連付け sentinel + portable target 撤去 / β.140 フィードバック 9 件 + 明朝印刷密度)、いずれも構造修正。残り ~4 日間で重大バグが追加で出なければ stable へ
+1. **β.131 を機能凍結ラインに、bug fix のみで業務並走** — 2026-05-29 時点で β.141 まで進行 (β.134 巨大 PDF / β.135 読込モーダル / β.136 墨消し黒背景 / β.138 印刷モーダル消失 / β.139 installer 関連付け sentinel + portable target 撤去 / β.140 フィードバック 9 件 + 明朝印刷密度 / β.141 明朝印刷密度 4 回打ち + テキスト options bar 表示漏れ修正)、いずれも構造修正。残り ~3 日間で重大バグが追加で出なければ stable へ
 2. **qpdf Mac/Linux バンドル** (stable 残務 #5、最優先) — β.84 で Win 同梱済。stable は 3 OS 配布確定なので、`vendor/qpdf/{mac,linux}/` バイナリ追加 + `package.json` mac/linux `extraResources` 設定 + `qpdf-sanitize.js findQpdfBinary` の Mac/Linux パス対応が必要
 3. **クラッシュ診断ロガー一式の撤去** (stable 残務 #6、最後) — β.51-.138 で累積した診断系を撤去。**#2 (qpdf Mac/Linux) と現行 β.131-.140 修正の安定確認が完了してから着手** (= 1 週間並走後)。撤去対象に β.133 `open-pdf-stage` / `open-pdf-renderer-error` + β.137-138 `print-tick` も含める
 4. **β.132 autoUpdater 修正の実機検証** — β.133→β.139 で実際の update を経験して順調 (ラベル「閉じる」/ 「次回起動時にもう一度」/ autoInstallOnAppQuit など機能している)。残課題: β.138 タグで GitHub Actions webhook 取りこぼし 1 件、`git push :tag` → 再 push で復旧。β.139 は webhook 取りこぼしなく 1 発で起動 (2m10s 完走)
@@ -1044,7 +1047,8 @@ npm run dev                        # electronmon (推奨、自動 reload。Wayla
 - ~~ページ跨ぎコピペが不安定~~ ✅ **β.140** (`viewer._lastClickedPage` + `activePage` getter)
 - ~~別名保存で元タブ消失 + dirty 警告消失~~ ✅ **β.140** (Save As は `newTabAndOpen` 経路、上書きは現タブ更新)
 - ~~範囲書き出し / 単ページ書き出し後の表示先がわからない~~ ✅ **β.140** (post-save に `newTabAndOpen(savePath)` 追加)
-- ~~MS 明朝が印刷でドット化して薄い~~ ✅ **β.140** (`paintGlyphRun` hairline 経路で `fillText` 二重描き、AA 縁濃度のみ向上、glyph 太さ不変)
+- ~~MS 明朝が印刷でドット化して薄い~~ ✅ **β.140 → β.141 で追い込み** (`paintGlyphRun` hairline 経路で `fillText` を **4 回打ち**、AA α 0.5 → 0.9375、横線も完全に締まる。中心 α=1.0 不変なので glyph 太さ完全不変)
+- ~~β.140 で配置済みテキスト枠を選択しても options bar (フォント/サイズ/色) が出ない~~ ✅ **β.141** (`refreshModeOptionsBar` に text 選択時の `which="text"` 分岐を追加、`form_field` 用 β.107 パターンを横展開)
 
 #### 🟡 確認待ち項目（実機テスター側）
 
@@ -1096,7 +1100,8 @@ npm run dev                        # electronmon (推奨、自動 reload。Wayla
 - ~~印刷送信中モーダル auto-close 失敗 (Path B 沈黙)~~ ✅ β.138 (全 Acrobat/AcroCEF process scan + UUID marker)
 - ~~PDF 規定アプリの更新ごとの暴れ + 「2 つ表示」~~ ✅ β.139 (portable target 撤去 + customInstall sentinel + 旧 ProgID 残骸掃除)
 - ~~2026-05-27 業務並走フィードバック 9 件 (テキスト UX 6 + 保存 UX 3)~~ ✅ β.140
-- ~~MS 明朝の印刷ドット化~~ ✅ β.140 (`paintGlyphRun` hairline 経路で `fillText` 二重描き、太さ不変で AA 縁濃度のみ向上)
+- ~~MS 明朝の印刷ドット化~~ ✅ β.140 → β.141 で追い込み (`paintGlyphRun` hairline 経路で `fillText` を **4 回打ち**まで強化、AA α 0.9375 で横線のドット感も解消、glyph 太さ不変)
+- ~~β.140 で配置済みテキスト枠を選択しても options bar が出ない (`refreshModeOptionsBar` の text 分岐漏れ)~~ ✅ β.141 (text 選択時の `which="text"` 分岐を追加、form_field β.107 パターンを横展開)
 
 **残作業** (stable タグ前の TODO):
 - 🔴 **qpdf Mac/Linux バンドル** (stable 残務 #5、配布対象が 3 OS 全部確定なので最優先) — `vendor/qpdf/{mac,linux}/` バイナリ追加 + `package.json` mac/linux `extraResources` 設定 + `qpdf-sanitize.js findQpdfBinary` の Mac/Linux パス対応
