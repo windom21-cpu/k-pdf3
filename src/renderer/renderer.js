@@ -2182,6 +2182,11 @@ function refreshModeOptionsBar() {
   } else if (!formFillMode && getSelectionSize() >= 1) {
     // β.107: multi-select 時も「全部同種 form_field」なら専用パネル表示
     // (= 一括変更可能)。異種混在 or 非 form_field 単独 なら hide。
+    // β.141: 配置済み text overlay 選択時も text オプションバーを出す
+    // (β.140 で populateTextToolbar / change handler は配線されたが、
+    // バー自体を表示する分岐が抜けていた)。multi-select は全 text のとき
+    // だけ (異種混在は hide)。これで text-font / size / color / digits
+    // hanko / 太字 を後付け編集できる。
     const selId = getPrimarySelectedId();
     const primary = selId ? projectStore.get(selId) : null;
     if (primary?.type === "form_field") {
@@ -2202,6 +2207,15 @@ function refreshModeOptionsBar() {
         kind === "circle" ? "form-circle" :
         kind === "radio"  ? "form-radio"  : null
       ) : null;
+    } else if (primary?.type === "text") {
+      let homogeneous = true;
+      if (getSelectionSize() > 1) {
+        for (const id of getSelectedIds()) {
+          const ov = projectStore.get(id);
+          if (!ov || ov.type !== "text") { homogeneous = false; break; }
+        }
+      }
+      which = homogeneous ? "text" : null;
     } else {
       which = null;
     }

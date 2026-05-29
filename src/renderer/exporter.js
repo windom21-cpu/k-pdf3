@@ -160,8 +160,13 @@ function paintGlyphRun(ctx, text, x, y, color, fontSize, opts = {}) {
   // 密度だけ上げて紙でのドット化を解消する。fillText を同じ位置に重ね
   // 描きすると source-over 合成式 `dst = src*α + dst*(1-α)` で AA 縁の
   // alpha だけが段階的に上がり、glyph 中心は元から完全黒なので不変。
-  // 2 回打ちで AA pixel alpha 0.5 → 0.75 相当、3 回で 0.875 相当に強化。
+  // β.140: 2 回打ち (AA α 0.5 → 0.75) では明朝横線 (元から細く中心 α=1.0
+  // 不在) が紙でドット化残留。β.141: 4 回打ちで AA α 0.5 → 0.9375 まで
+  // 強化し、横線の見かけ濃度を底上げ。中心 α=1.0 は何回打っても 1.0 の
+  // ままなので太さ不変。縦線・払いも更に締まる。
   if (hairline) {
+    ctx.fillText(text, x, y);
+    ctx.fillText(text, x, y);
     ctx.fillText(text, x, y);
   }
   ctx.restore();
