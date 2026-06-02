@@ -911,10 +911,12 @@ export async function composePagesForExport({
       externalSourcePdfId: hasExternalSource ? row.syntheticSourcePdfId : null,
       externalSourcePageIndex: hasExternalSource ? row.syntheticSourcePageIndex : null,
       // userRotation lets the main side place the source page rotated.
-      // pdf-lib's embedPage already bakes in the source's intrinsic
-      // /Rotate, so only the *additional* user-applied rotation needs
-      // to flow through drawPage. 0 = no extra rotation.
+      // pdf-lib's embedPdf does NOT bake the source's intrinsic /Rotate
+      // (verified), so main combines BOTH into effRot = sourceRotation +
+      // userRotation and applies the whole rotation clockwise. Without the
+      // source rotation, overlays on a rotated source page print 天地さかさま.
       userRotation: userRot,
+      sourceRotation: sourceRot,
       imageBytes,
       // β62: overlay PNG の配置 bbox。canonical coords (top-left origin、PDF
       // point 単位)。null の場合は main 側で「full-page (β61 までの挙動)」
@@ -1120,8 +1122,15 @@ export async function composeRegionImage({
  * 描画対象だけを渡せるようにして、vector 化対象 overlay を canvas から
  * 除外できるようにする (vector は別途 main 側で pdf-lib drawText 経由)。 */
 export async function composeOverlayOnlyPage(row, overlays, zoom = EXPORT_ZOOM, monoOverlays = false) {
+  // Canonical page size uses the EFFECTIVE rotation (source /Rotate +
+  // userRotation), not userRotation alone — overlays are stored in the
+  // canonical frame, so the bbox clamp / canvas dims must match the
+  // post-effective-rotation page or overlays on a /Rotate=90/270 source get
+  // clamped to the wrong axis and misplaced.
   const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
-  const swap = userRot === 90 || userRot === 270;
+  const sourceRot = (((row.rotation ?? 0) % 360) + 360) % 360;
+  const effRot = ((sourceRot + userRot) % 360 + 360) % 360;
+  const swap = effRot === 90 || effRot === 270;
   const pageW = swap ? row.cropH : row.cropW;
   const pageH = swap ? row.cropW : row.cropH;
 

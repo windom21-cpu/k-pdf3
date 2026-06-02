@@ -20,6 +20,7 @@ import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
 import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
+import { rotatedSourcePlacement } from "./rotate-place.js";
 import { computePdfFingerprint, extractPdfProperties } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
@@ -1837,6 +1838,8 @@ ipcMain.handle("kpdf3:pick-export-pdf", async () => {
  *                  strategy: "source" | "overlay" | "full",
  *                  sourceIdx: number | null,
  *                  userRotation?: 0 | 90 | 180 | 270,
+ *                  sourceRotation?: 0 | 90 | 180 | 270,
+ *                  overlayBBox?: {x:number,y:number,w:number,h:number}|null,
  *                  imageBytes?: Uint8Array }>} pages
  * @param {Uint8Array | null} sourceBytes raw source-PDF bytes
  * @returns {Promise<Buffer>}
@@ -1871,19 +1874,28 @@ async function assembleHybridPdf(pages, sourceBytes) {
   }
   for (const p of pages) {
     const userRot = (((p.userRotation ?? 0) % 360) + 360) % 360;
+    const sourceRot = (((p.sourceRotation ?? 0) % 360) + 360) % 360;
+    // Effective rotation the user sees = source /Rotate + userRotation, both
+    // clockwise (see rotate-place.js). Overlays are authored in this canonical
+    // frame, so any non-zero effective rotation must be baked into the source
+    // content (page /Rotate=0) before the overlay is drawn — otherwise a page
+    // with a non-zero source /Rotate flips the overlay (天地さかさま).
+    const effRot = ((sourceRot + userRot) % 360 + 360) % 360;
     if (p.strategy === "source") {
       if (!sourcePdf) throw new Error("assembleHybridPdf: source page strategy but no source PDF");
       if (userRot === 0) {
         // Fast path — verbatim copy retains the source page's intrinsic
-        // /Rotate so vectors stay crisp at native zoom.
+        // /Rotate so vectors stay crisp at native zoom. No overlay rides on
+        // top here, so the preserved /Rotate renders correctly on its own.
         const [copied] = await newPdf.copyPages(sourcePdf, [p.sourceIdx]);
         newPdf.addPage(copied);
       } else {
-        await _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, null);
+        // userRotation must be combined with the source /Rotate (effRot).
+        await _placeRotatedSourcePage(newPdf, sourcePdf, p, effRot, null);
       }
     } else if (p.strategy === "overlay") {
       if (!sourcePdf) throw new Error("assembleHybridPdf: overlay strategy but no source PDF");
-      if (userRot === 0) {
+      if (effRot === 0) {
         const [copied] = await newPdf.copyPages(sourcePdf, [p.sourceIdx]);
         newPdf.addPage(copied);
         if (p.imageBytes && p.imageBytes.length > 0) {
@@ -1916,7 +1928,9 @@ async function assembleHybridPdf(pages, sourceBytes) {
           }
         }
       } else {
-        await _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, p.imageBytes);
+        // Rotated source (source /Rotate and/or userRotation): bake the
+        // rotation into the content so the overlay lands canonical.
+        await _placeRotatedSourcePage(newPdf, sourcePdf, p, effRot, p.imageBytes);
       }
     } else if (p.strategy === "external") {
       // β31: vector-preserving external PDF insertion. Pull the stored
@@ -1927,7 +1941,7 @@ async function assembleHybridPdf(pages, sourceBytes) {
         throw new Error(`assembleHybridPdf: external strategy missing source ids (page ${p.pageNo})`);
       }
       const extDoc = await getExternalPdf(p.externalSourcePdfId);
-      if (userRot === 0) {
+      if (effRot === 0) {
         const [copied] = await newPdf.copyPages(extDoc, [p.externalSourcePageIndex]);
         newPdf.addPage(copied);
         if (p.imageBytes && p.imageBytes.length > 0) {
@@ -1957,7 +1971,7 @@ async function assembleHybridPdf(pages, sourceBytes) {
           newPdf,
           extDoc,
           { ...p, sourceIdx: p.externalSourcePageIndex },
-          userRot,
+          effRot,
           p.imageBytes,
         );
       }
@@ -2012,54 +2026,61 @@ async function assembleHybridPdf(pages, sourceBytes) {
  * pages) onto a freshly-added canonical-sized page in newPdf, then
  * (optionally) draw an overlay PNG on top.
  *
- * Approach: embed the source page as a PDFEmbeddedPage (pdf-lib bakes
- * in the source's intrinsic /Rotate when computing the embedded form's
- * bounding box, so the embedded form is *already* in "post-/Rotate"
- * orientation). We then drawPage with the additional userRotation, plus
- * a translation that keeps the rotated bounding box inside the new
- * canvas. This keeps source content as vectors so text stays crisp —
- * β4 fell back to full-rasterize JPEG which blurred + bloated.
+ * `effRot` is the FULL effective rotation the user sees = source /Rotate +
+ * userRotation, clockwise. pdf-lib's embedPdf does NOT bake the source
+ * /Rotate (verified: a /Rotate=90 page embeds at native, un-swapped dims),
+ * so the embedded form is the page's NATIVE (pre-/Rotate) content and we
+ * must apply the entire `effRot` here. `rotatedSourcePlacement` returns the
+ * clockwise drawPage params (PDF /Rotate is clockwise; pdf-lib rotate() is
+ * counter-clockwise — see rotate-place.js).
  *
- * Translation table — `embedded.width` / `embedded.height` are the
- * post-/Rotate displayed dimensions. After rotating CCW by `userRot`
- * around the placement point (x, y), the embedded form's corners need
- * to land in the first quadrant [0, canonicalW] × [0, canonicalH].
+ * Keeping source content as vectors keeps text crisp — β4 fell back to
+ * full-rasterize JPEG which blurred + bloated.
  *
- *   userRot=0   → (x, y) = (0, 0)             new page = (W_emb, H_emb)
- *   userRot=90  → (x, y) = (H_emb, 0)          new page = (H_emb, W_emb)
- *   userRot=180 → (x, y) = (W_emb, H_emb)      new page = (W_emb, H_emb)
- *   userRot=270 → (x, y) = (0, W_emb)          new page = (H_emb, W_emb)
+ * The overlay PNG, when present, is drawn AFTER the rotated source onto the
+ * canonical /Rotate=0 page. It was authored by the renderer in canonical
+ * (post-rotation) coordinates, so it is placed at its canonical bbox with a
+ * top-left→bottom-left Y flip — exactly like the non-rotated fast path — and
+ * is NOT subjected to any page rotation (the new page has /Rotate=0).
  *
- * The overlay PNG, when present, is drawn AFTER the rotated source so
- * it sits on top at (0, 0) of the new page in canonical dimensions —
- * no transform needed because the overlay was rendered by the renderer
- * in canonical/post-rotation coordinates.
+ * @param {number} effRot  (source /Rotate + userRotation) mod 360
  */
-async function _placeRotatedSourcePage(newPdf, sourcePdf, p, userRot, overlayBytes) {
+async function _placeRotatedSourcePage(newPdf, sourcePdf, p, effRot, overlayBytes) {
   const [embedded] = await newPdf.embedPdf(sourcePdf, [p.sourceIdx]);
   const page = newPdf.addPage([p.widthPt, p.heightPt]);
-  const W = embedded.width;
-  const H = embedded.height;
-  let tx = 0;
-  let ty = 0;
-  if (userRot === 90) { tx = H; ty = 0; }
-  else if (userRot === 180) { tx = W; ty = H; }
-  else if (userRot === 270) { tx = 0; ty = W; }
+  const { tx, ty, rotate } = rotatedSourcePlacement(
+    effRot, embedded.width, embedded.height,
+  );
   page.drawPage(embedded, {
     x: tx,
     y: ty,
-    width: W,
-    height: H,
-    rotate: degrees(userRot),
+    width: embedded.width,
+    height: embedded.height,
+    rotate,
   });
   if (overlayBytes && overlayBytes.length > 0) {
     const overlayImg = await newPdf.embedPng(overlayBytes);
-    page.drawImage(overlayImg, {
-      x: 0,
-      y: 0,
-      width: p.widthPt,
-      height: p.heightPt,
-    });
+    // β62 bbox-cropped overlay, placed in canonical coords (same maths as the
+    // non-rotated overlay/external fast paths). Falls back to full-page if the
+    // bbox is missing/invalid.
+    const bb = p.overlayBBox;
+    if (bb && Number.isFinite(bb.x) && Number.isFinite(bb.y)
+        && Number.isFinite(bb.w) && Number.isFinite(bb.h)
+        && bb.w > 0 && bb.h > 0) {
+      page.drawImage(overlayImg, {
+        x: bb.x,
+        y: p.heightPt - bb.y - bb.h,
+        width: bb.w,
+        height: bb.h,
+      });
+    } else {
+      page.drawImage(overlayImg, {
+        x: 0,
+        y: 0,
+        width: p.widthPt,
+        height: p.heightPt,
+      });
+    }
   }
 }
 
