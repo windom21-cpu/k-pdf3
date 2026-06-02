@@ -179,7 +179,12 @@ export function measureCalloutSize(text, fontSize, fontFamily, currentW = 0, max
   // Wrap at the chosen w to count lines (same algorithm as
   // measureCalloutWrappedHeight, kept inline so the function stays
   // self-contained and parallel to measureTextOverlaySize).
-  const innerW = Math.max(20, w - padX * 2);
+  // innerW MUST mirror the exporter exactly (wrapCanvasText uses w - padX*2
+  // with no floor). A previous `Math.max(20, …)` floor here made narrow
+  // callouts wrap into FEWER lines than the exporter actually drew → the
+  // print/thumb output overflowed the measured box. Keep a floor of 1 only
+  // to avoid a zero/negative wrap width.
+  const innerW = Math.max(1, w - padX * 2);
   let lineCount = 0;
   for (const para of paras) {
     if (para === "") { lineCount += 1; continue; }
@@ -252,24 +257,61 @@ export function handleOverlayResizeEnd(id, bbox) {
   ) {
     return;
   }
-  // Callouts: respect the user's new width but snap height to the
-  // wrapped text. Previously we kept the user's dragged height when
-  // it exceeded the text (Math.max), which left visible empty space
-  // below the wrapped text inside the callout border. Now the border
-  // always hugs the bottom of the last line — matches "no whitespace"
-  // behaviour of regular text overlays.
+  // Callouts: the box always GROWS to fit the text (user choice 2026-06-02
+  // "枠を本文に合わせて自動拡大"). Width is floored at the widest single
+  // glyph + padding so no character is ever wider than the box; height is
+  // snapped to the wrapped text at that width. Dragging a handle smaller
+  // than the text snaps back to the minimum that contains it — so the
+  // editor and the print/thumb output can never disagree (no overflow).
   if (ov.type === "rect" && ov.properties?.kind === "callout") {
-    const wrappedH = measureCalloutWrappedHeight(
-      ov.properties.text ?? "",
-      ov.properties.fontSize ?? 12,
-      getTextFontStack(ov.properties.fontId, {
-        digitsHanko: !!ov.properties.digitsHanko,
-      }),
-      bbox.w,
-    );
-    bbox = { ...bbox, h: wrappedH };
+    const fontStack = getTextFontStack(ov.properties.fontId, {
+      digitsHanko: !!ov.properties.digitsHanko,
+    });
+    const fontSize = ov.properties.fontSize ?? 12;
+    const text = ov.properties.text ?? "";
+    const minW = measureCalloutMinWidth(text, fontSize, fontStack);
+    const w = Math.max(bbox.w, minW);
+    const wrappedH = measureCalloutWrappedHeight(text, fontSize, fontStack, w);
+    bbox = { ...bbox, w, h: wrappedH };
   }
   history.execute(new UpdateOverlayCommand(projectStore, id, bbox));
+}
+
+/** Minimum callout box width (canonical pt) that still fits the widest
+ *  single glyph in `text` plus the horizontal padding — so no character is
+ *  ever wider than the inner box and the greedy wrap always places at least
+ *  one glyph per line. Used to clamp manual resizes (auto-grow on shrink).
+ *  Floors at ~1em so an empty / whitespace-only callout still has a sane
+ *  minimum. */
+export function measureCalloutMinWidth(text, fontSize, fontFamily) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  ctx.font = `${fontSize}px ${fontFamily}`;
+  let widest = fontSize; // ~1em floor (covers full-width CJK glyphs)
+  for (const ch of String(text ?? "")) {
+    if (ch === "\n" || ch === "\r") continue;
+    const w = ctx.measureText(ch).width;
+    if (w > widest) widest = w;
+  }
+  return Math.ceil(widest) + CALLOUT_PAD_X * 2;
+}
+
+/** Re-fit a callout box to its text after a property change (e.g. the user
+ *  changed font / size from the options bar). Keeps the current width but
+ *  floors it at measureCalloutMinWidth and snaps height to the wrapped
+ *  text — the same auto-grow contract as handleOverlayResizeEnd. Returns
+ *  the new { w, h } (canonical pt) without touching the store, so callers
+ *  can fold it into their own update/patch. */
+export function fitCalloutBox(ov) {
+  const fontStack = getTextFontStack(ov.properties?.fontId, {
+    digitsHanko: !!ov.properties?.digitsHanko,
+  });
+  const fontSize = ov.properties?.fontSize ?? 12;
+  const text = ov.properties?.text ?? "";
+  const minW = measureCalloutMinWidth(text, fontSize, fontStack);
+  const w = Math.max(ov.w ?? 0, minW);
+  const h = measureCalloutWrappedHeight(text, fontSize, fontStack, w);
+  return { w, h };
 }
 
 /** Measure the height (canonical pt) needed to fit `text` in a box of
@@ -282,7 +324,10 @@ export function measureCalloutWrappedHeight(text, fontSize, fontFamily, boxW) {
   ctx.font = `${fontSize}px ${fontFamily}`;
   const padX = CALLOUT_PAD_X;
   const lineHeight = fontSize * CALLOUT_LINE_HEIGHT;
-  const innerW = Math.max(20, boxW - padX * 2);
+  // innerW mirrors the exporter's wrapCanvasText width (boxW - padX*2, no
+  // floor) so the measured height equals the number of lines the exporter
+  // actually paints — see the note in measureCalloutSize. Floor of 1 only.
+  const innerW = Math.max(1, boxW - padX * 2);
   // Wrap: hard breaks on \n, otherwise greedy character-by-character
   // fit within innerW.
   const paras = (text ?? "").split(/\r?\n/);

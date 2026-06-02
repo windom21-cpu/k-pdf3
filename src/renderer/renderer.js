@@ -37,6 +37,7 @@ import {
   measureTextOverlaySize,
   measureCalloutSize,
   measureCalloutWrappedHeight,
+  fitCalloutBox,
 } from "./overlay-edit.js";
 import {
   initOverlaySelection,
@@ -2171,6 +2172,12 @@ if (tabOrderListClose) {
  *  に入り直さずに配置済みフィールドの体裁を後付け編集できる。記入
  *  モード中は値入力に集中させるため発動しない (formFillMode === true
  *  で抑止)。 */
+/** 吹き出し overlay 判定 (rect + kind=callout)。text と同じ書式バーを
+ *  共有するための共通ヘルパ。 */
+function _isCalloutOverlay(ov) {
+  return !!ov && ov.type === "rect" && ov.properties?.kind === "callout";
+}
+
 function refreshModeOptionsBar() {
   const bar = $("mode-options-bar");
   if (!bar) return;
@@ -2207,12 +2214,19 @@ function refreshModeOptionsBar() {
         kind === "circle" ? "form-circle" :
         kind === "radio"  ? "form-radio"  : null
       ) : null;
-    } else if (primary?.type === "text") {
+    } else if (primary?.type === "text" || _isCalloutOverlay(primary)) {
+      // β.143: 配置済みテキスト枠 / 吹き出しを選択したら text オプション
+      // バーを出す。両者はフォント/サイズ/色/太字/数字 hanko の同じ
+      // プロパティを共有するので、混在選択 (text + callout) も同じバーで
+      // 一括編集できる。異種 (form_field / shape / stamp 等) が混ざれば hide。
       let homogeneous = true;
       if (getSelectionSize() > 1) {
         for (const id of getSelectedIds()) {
           const ov = projectStore.get(id);
-          if (!ov || ov.type !== "text") { homogeneous = false; break; }
+          if (!ov || (ov.type !== "text" && !_isCalloutOverlay(ov))) {
+            homogeneous = false;
+            break;
+          }
         }
       }
       which = homogeneous ? "text" : null;
@@ -7185,11 +7199,13 @@ function applyFontSizeToEditingOverlay() {
  *  ら true を返す → 呼び出し側はテキスト配置モードへの自動遷移を抑止する。 */
 function applyTextStyleToEditingOrSelected() {
   const editId = viewer._editingId;
+  // β.143: 配置済み text overlay に加えて 吹き出し (callout) も後付け書式
+  // 変更の対象にする。両者はフォント/サイズ/色/太字/数字 hanko を共有する。
   const targetIds = editId
     ? [editId]
     : getSelectedIds().filter((id) => {
         const ov = projectStore.get(id);
-        return ov && ov.type === "text";
+        return ov && (ov.type === "text" || _isCalloutOverlay(ov));
       });
   if (!targetIds.length) return false;
   const fontId = currentTextFontId();
@@ -7199,10 +7215,18 @@ function applyTextStyleToEditingOrSelected() {
   const bold = currentTextBold();
   for (const id of targetIds) {
     const ov = projectStore.get(id);
-    if (!ov || ov.type !== "text") continue;
-    projectStore.update(id, {
-      properties: { ...ov.properties, fontId, fontSize, color, digitsHanko, bold },
-    });
+    if (!ov) continue;
+    if (ov.type === "text") {
+      projectStore.update(id, {
+        properties: { ...ov.properties, fontId, fontSize, color, digitsHanko, bold },
+      });
+    } else if (_isCalloutOverlay(ov)) {
+      // フォント/サイズ変更で本文の必要サイズが変わるので、枠を本文に
+      // 合わせて自動拡大する (はみ出し防止、2026-06-02 ユーザー選択)。
+      const next = { ...ov, properties: { ...ov.properties, fontId, fontSize, color, digitsHanko, bold } };
+      const { w, h } = fitCalloutBox(next);
+      projectStore.update(id, { w, h, properties: next.properties });
+    }
   }
   if (editId) {
     viewer.applyEditingTextStyle({ fontId, fontSize, color, digitsHanko, bold });
@@ -7370,11 +7394,12 @@ function populateTextToolbar() {
   if (selSize < 1) return;
   const selId = getPrimarySelectedId();
   const ov = selId ? projectStore.get(selId) : null;
-  if (!ov || ov.type !== "text") return;
+  // β.143: text に加え callout も populate 対象 (同じ書式バーを共有)。
+  if (!ov || (ov.type !== "text" && !_isCalloutOverlay(ov))) return;
   if (selSize > 1) {
     for (const id of getSelectedIds()) {
       const o = projectStore.get(id);
-      if (!o || o.type !== "text") return;
+      if (!o || (o.type !== "text" && !_isCalloutOverlay(o))) return;
     }
   }
   const p = ov.properties || {};
