@@ -42,6 +42,15 @@
 # already on k-pdf3-releases (autoUpdater feed), so the workflow run
 # debug copies were redundant. `npm ci` is ~30s slower without cache,
 # negligible against the 5-min CI run.
+#
+# アクションの固定方針 (β.144 後の CI 整備, 2026-06-03): GitHub Actions
+# ランナーの Node 20 ランタイム撤去 (2026-06-16 で Node 24 強制 / 09-16 で
+# Node 20 削除) に追従するため、first-party の actions/checkout・
+# actions/setup-node を Node 24 対応の最新メジャー (checkout v6.0.3 /
+# setup-node v6.4.0) へ更新。tag は可変 (tj-actions/changed-files
+# CVE-2025-30066 のように再ポイント攻撃され得る) なので、リポの
+# exact-pin 方針に合わせ **commit SHA で固定** + 行末コメントに版を併記。
+# 版を上げるときは SHA を貼り替えてコメントの版数も更新する。
 
 name: release
 
@@ -55,11 +64,15 @@ jobs:
     name: build-windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22.22.2"
+          # 明示無効化: v5+ は package.json に packageManager があると npm
+          # キャッシュを自動 ON にする。release は storage 枠対策で常に
+          # キャッシュ無しに保つ (上のコメント参照) ため固定で false。
+          package-manager-cache: false
 
       - name: Install dependencies
         run: npm ci
@@ -82,11 +95,15 @@ jobs:
     needs: build-windows
     if: "!contains(github.ref_name, '-beta')"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22.22.2"
+          # 明示無効化: v5+ は package.json に packageManager があると npm
+          # キャッシュを自動 ON にする。release は storage 枠対策で常に
+          # キャッシュ無しに保つ (上のコメント参照) ため固定で false。
+          package-manager-cache: false
 
       - name: Install dependencies
         run: npm ci
@@ -105,11 +122,15 @@ jobs:
     needs: build-windows
     if: "!contains(github.ref_name, '-beta')"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22.22.2"
+          # 明示無効化: v5+ は package.json に packageManager があると npm
+          # キャッシュを自動 ON にする。release は storage 枠対策で常に
+          # キャッシュ無しに保つ (上のコメント参照) ため固定で false。
+          package-manager-cache: false
 
       - name: Install dependencies
         run: npm ci
