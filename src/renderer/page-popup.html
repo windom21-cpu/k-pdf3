@@ -2,6 +2,9 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
+  <!-- セキュリティ hardening (2026-06-03): index.html と同一方針の CSP。
+       本ファイルはインライン <style> を持つため style-src 'unsafe-inline'。 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob: data:; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <title>K-PDF3 ポップアップ</title>
   <link rel="icon" type="image/png" sizes="32x32" href="./vendor/favicon-32.png" />
   <style>

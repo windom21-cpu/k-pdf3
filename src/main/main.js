@@ -132,6 +132,35 @@ app.on("render-process-gone", (_event, webContents, details) => {
 app.on("child-process-gone", (_event, details) => {
   logCrash("child-process-gone", details);
 });
+
+// セキュリティ hardening (2026-06-03, Electron 41 化に合わせた CI/脆弱性整備):
+// 全 webContents に対し「新窓生成」と「リモート遷移」を一律拒否する。
+// アプリのコンテンツは loadFile のローカル HTML のみで、window.open も
+// 外部 URL への遷移も使っていない (別ウインドウは IPC 経由で main 側が
+// BrowserWindow を生成、外部 URL は shell.openExternal で明示)。したがって
+// これらは挙動を変えず、「将来 untrusted/remote コンテンツや注入が紛れ込んだ
+// 場合に最初の被害を止める」防御一層 (Electron 公式 security checklist の
+// setWindowOpenHandler / will-navigate ロックダウン)。
+app.on("web-contents-created", (_event, contents) => {
+  // window.open / target=_blank は一律拒否 (子窓を開く機能は無い)。
+  contents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // file:// 以外への遷移を拒否。http(s)/ftp 等のリモート遷移を遮断しつつ、
+  // ローカル HTML や Chromium PDF ビューア (印刷窓) が使う file:/chrome:/
+  // about:/blob:/data: は素通りさせて既存挙動を壊さない。解析不能 URL も拒否。
+  const blockRemote = (event, url) => {
+    let proto;
+    try {
+      proto = new URL(url).protocol;
+    } catch {
+      proto = "block:";
+    }
+    if (proto === "http:" || proto === "https:" || proto === "ftp:" || proto === "block:") {
+      event.preventDefault();
+    }
+  };
+  contents.on("will-navigate", blockRemote);
+  contents.on("will-redirect", blockRemote);
+});
 // Mark each session start so the log is easy to read chronologically.
 // Deferred to whenReady because logCrash uses app.getPath('userData')
 // which is only safe after the app is initialised.

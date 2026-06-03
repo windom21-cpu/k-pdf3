@@ -2,6 +2,13 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
+  <!-- セキュリティ hardening (2026-06-03): renderer はインライン script を
+       持たず (単一 module ./renderer.js)、mupdf wasm はメインプロセス側で
+       動くため script-src は 'self' で厳格に。style 属性 / 98.css のため
+       style-src は 'unsafe-inline'、画像スタンプ等の blob:/data: を img に
+       許可。外部接続は一切無い (IPC 経由) ので remote は default-src 'self'
+       で遮断。注入が起きても remote script 読込・外部送信を構造的に防ぐ。 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob: data:; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>K-PDF3</title>
   <link rel="icon" type="image/png" sizes="32x32" href="./vendor/favicon-32.png" />
