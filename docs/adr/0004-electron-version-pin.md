@@ -126,3 +126,23 @@ Web 公開機能なし、UI も `98.css` + DOM の伝統的構成のため、新
 - `npm install` 成功（Electron 38 prebuild ダウンロード + better-sqlite3 native build OK）
 - `npm test`（Node ABI rebuild 後）: 62/62 + 51/51 = **113/113 pass**
 - `npm start`（Electron ABI rebuild 後）: 手動確認は次のセッションで実施予定
+
+## 更新 (2026-06-03): Electron 41 へ前進（38 が EOL のため）
+
+### 背景
+- **Electron 38 が 2026-03-10 で EOL**（[endoflife.date](https://endoflife.date/electron)）。サポートは最新3メジャー = 40 / 41 / 42 のみ。固定継続＝**今後のセキュリティパッチが当たらない**状態となり、本来「アップグレード起因の脆弱性を避ける」目的の固定が逆効果（本末転倒）になった。
+- ブロッカーだった **better-sqlite3 が 12.10.0 (2026-05-12) で Electron 39/40/41 の prebuild を提供**（ABI 上限 electron-v145 = Electron 41、全7プラットフォーム）。本 ADR 起草時（12.9.1 = Electron 38 止まり）から状況が改善。
+- **Electron 42 はまだ不可**：better-sqlite3 が 42 対応 prebuild を一度入れて取り下げ（PR #1470）、V8 external API 周りでソースビルド失敗が継続（upstream issue #1474 / #1475 オープン）。
+
+### 決定（本 ADR の解除条件の精神に沿った前進）
+- `devDependencies.electron` を `^38.8.6` → **`41.7.1` (exact)** に更新。`dependencies.better-sqlite3` を `^12.0.0` → **`12.10.0` (exact)** に更新（ユーザーの exact-pin 方針に準拠）。
+- これにより **EOL を脱却し、現役サポート（41 は〜2026-08-25）＝パッチ供給ありの状態**へ。`npm audit` が報告していた4件（offscreen UAF ×2 / clipboard クラッシュ / window.open scope）も Electron 41 で解消。
+- 解除条件①（Electron **42** の安定 prebuild）は未達だが、当時存在しなかった「41 という現役・パッチ供給ありの着地点」が新たに利用可能になったための前進。**42 が better-sqlite3 で通り次第（#1474/#1475 解決）、42（〜2026-10-20）へ再度上げる**。
+
+### 併せて投入した hardening（バージョンに依存しない防御一層）
+- `app.on("web-contents-created")` で全 webContents に **`setWindowOpenHandler` deny ＋ `will-navigate`/`will-redirect` のリモート遷移拒否**（src/main/main.js）。
+- index.html / page-popup.html に **CSP メタ**（`script-src 'self'`、style は `'unsafe-inline'`、img は blob:/data:）。
+- → いずれもアプリ挙動は不変だが、将来 untrusted/remote コンテンツや注入が入ったときの被害を構造的に抑止。
+
+### 検証方針
+- 38→41 はメジャー3つ飛び（Chromium ~134→146 / 主プロセス Node 22→24）。**CI の test.yml（3 OS で実 Electron 起動 = test:m1）で検証**。CSP は headless で全描画を検証しきれないため、**実機 Windows でのスモーク確認**を別途要する（blob 画像・印刷・ポップアップ表示）。
