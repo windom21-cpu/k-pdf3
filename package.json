@@ -101,7 +101,13 @@
       ],
       "category": "Office",
       "synopsis": "PDF Workspace for legal practice",
-      "description": "法律実務向けの PDF Workspace アプリ（K-PDF2 の全面再設計版）"
+      "description": "法律実務向けの PDF Workspace アプリ（K-PDF2 の全面再設計版）",
+      "extraResources": [
+        {
+          "from": "vendor/qpdf/linux",
+          "to": "qpdf"
+        }
+      ]
     },
     "win": {
       "target": [
@@ -137,7 +143,13 @@
           ]
         }
       ],
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "extraResources": [
+        {
+          "from": "vendor/qpdf/mac",
+          "to": "qpdf"
+        }
+      ]
     },
     "nsis": {
       "oneClick": true,

@@ -42,17 +42,25 @@ export function findQpdfBinary() {
   const isWin = process.platform === "win32";
   const exeName = isWin ? "qpdf.exe" : "qpdf";
 
-  // 1. Packaged app: electron-builder copies vendor/qpdf/win/ → resources/qpdf/.
+  // 同梱レイアウトはプラットフォームで異なる:
+  //   - win: qpdf.exe を root に flat 配置 (依存 DLL も同階層、Windows は
+  //     同ディレクトリの DLL を自動ロードする)。
+  //   - mac/linux: qpdf 公式 portable 配布の bin/ + lib/ 構造をそのまま
+  //     同梱。qpdf は bin/ 配下に置き、RUNPATH ($ORIGIN/../lib) /
+  //     install_name (@loader_path/../lib) で同梱 .so/.dylib を解決する。
+  const relExe = isWin ? exeName : join("bin", exeName);
+
+  // 1. Packaged app: electron-builder copies vendor/qpdf/{platform}/ → resources/qpdf/.
   //    process.resourcesPath is undefined when running scripts/tests under
   //    plain Node, hence the truthy guard.
   if (process.resourcesPath) {
-    const bundled = join(process.resourcesPath, "qpdf", exeName);
+    const bundled = join(process.resourcesPath, "qpdf", relExe);
     if (existsSync(bundled)) return bundled;
   }
 
   // 2. Dev workspace: src/main/qpdf-sanitize.js → ../../vendor/qpdf/{platform}/
   const platDir = isWin ? "win" : process.platform === "darwin" ? "mac" : "linux";
-  const devCand = join(__dirname, "..", "..", "vendor", "qpdf", platDir, exeName);
+  const devCand = join(__dirname, "..", "..", "vendor", "qpdf", platDir, relExe);
   if (existsSync(devCand)) return devCand;
 
   // 3. System PATH.
