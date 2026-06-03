@@ -1136,7 +1136,7 @@ ipcMain.handle("kpdf3:resize-popup-to-fit", async (event, opts) => {
   if (!imgW || !imgH) return;
   // Pick a reasonable default size: 75% of screen height, scaled to
   // the page's aspect, then add the 22-px popup-bar.
-  const display = require("electron").screen.getPrimaryDisplay();
+  const display = screen.getPrimaryDisplay();
   const targetH = Math.max(400, Math.round(display.workAreaSize.height * 0.75));
   const aspect = imgW / imgH;
   const targetW = Math.round(targetH * aspect) + 16; // tiny padding
