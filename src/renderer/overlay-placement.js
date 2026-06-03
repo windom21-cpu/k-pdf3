@@ -31,6 +31,8 @@ export function initOverlayPlacement({ projectStore, history, viewer, setPlaceme
 
 const redactionColorSel = document.getElementById("redaction-color");
 const markerColorSel = document.getElementById("marker-color");
+const markerStyleSel = document.getElementById("marker-style");
+const markerThicknessSel = document.getElementById("marker-thickness");
 const textFontSel = document.getElementById("text-font");
 const textSizeSel = document.getElementById("text-size");
 const textColorSel = document.getElementById("text-color");
@@ -47,6 +49,20 @@ export function currentRedactionColor() {
 export const MARKER_COLOR_STORAGE_KEY = "kpdf3.markerColor";
 export function currentMarkerColor() {
   return markerColorSel?.value || "#ffeb3b";
+}
+
+// マーカーの引き方: "range" = ドラッグした矩形を塗る（従来）、
+// "line" = 一定の太さで水平にまっすぐ引く（蛍光ペン）。
+export const MARKER_STYLE_STORAGE_KEY = "kpdf3.markerStyle";
+export function currentMarkerStyle() {
+  return markerStyleSel?.value === "line" ? "line" : "range";
+}
+
+// 直線マーカーの太さ (pt)。range 種類では無視される。
+export const MARKER_THICKNESS_STORAGE_KEY = "kpdf3.markerThickness";
+export function currentMarkerThickness() {
+  const v = parseInt(markerThicknessSel?.value ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 14;
 }
 
 export function currentTextFontId() {
@@ -178,14 +194,46 @@ export function placeMarker(pageNo, x, y, w, h) {
 }
 
 /**
- * Drag-to-define a rectangular marker. Both axes follow the cursor so
- * the user can paint horizontal stripes by dragging mostly sideways or
- * cover blocks by dragging diagonally. Mode is sticky — users tend to
- * highlight several spots in a row.
+ * Drag-to-define a marker. Two styles, picked in the marker options bar:
+ *
+ *  - "range" (従来): both axes follow the cursor, so the user can paint
+ *    horizontal stripes by dragging sideways or cover blocks diagonally.
+ *  - "line" (直線): a fixed-thickness horizontal stripe drawn straight,
+ *    like a highlighter pen across a line of text. The vertical band is
+ *    locked to the press point (top = startY − thickness/2, height =
+ *    thickness) so the stripe stays perfectly horizontal no matter how
+ *    the cursor drifts vertically; only the horizontal extent follows
+ *    the drag.
+ *
+ * Mode is sticky — users tend to highlight several spots in a row.
  */
 export function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
+  // Snapshot style/thickness at drag start so a mid-drag option change
+  // can't reshape the stripe under the user's hand.
+  const style = currentMarkerStyle();
+  const thickness = currentMarkerThickness();
   const DEFAULT_W = 120;
-  const DEFAULT_H = 14;
+  const DEFAULT_H = style === "line" ? thickness : 14;
+
+  // For "line" the vertical band is fixed; only width grows with the drag.
+  const lineTop = startY - thickness / 2;
+  const geom = (curX, curY) => {
+    if (style === "line") {
+      return {
+        left: Math.min(startX, curX),
+        top: lineTop,
+        width: Math.abs(curX - startX),
+        height: thickness,
+      };
+    }
+    return {
+      left: Math.min(startX, curX),
+      top: Math.min(startY, curY),
+      width: Math.abs(curX - startX),
+      height: Math.abs(curY - startY),
+    };
+  };
+
   if (!div || !downEvt || typeof div.setPointerCapture !== "function") {
     placeMarker(pageNo, startX - DEFAULT_W / 2, startY - DEFAULT_H / 2, DEFAULT_W, DEFAULT_H);
     return;
@@ -198,9 +246,9 @@ export function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
   preview.style.background = previewColor;
   preview.style.opacity = "0.35";
   preview.style.left = `${startX * z}px`;
-  preview.style.top = `${startY * z}px`;
+  preview.style.top = `${(style === "line" ? lineTop : startY) * z}px`;
   preview.style.width = "0px";
-  preview.style.height = "0px";
+  preview.style.height = `${(style === "line" ? thickness : 0) * z}px`;
   div.appendChild(preview);
 
   let curX = startX, curY = startY;
@@ -211,14 +259,11 @@ export function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
     const rect = div.getBoundingClientRect();
     curX = (e.clientX - rect.left) / z;
     curY = (e.clientY - rect.top) / z;
-    const left = Math.min(startX, curX);
-    const top = Math.min(startY, curY);
-    const width = Math.abs(curX - startX);
-    const height = Math.abs(curY - startY);
-    preview.style.left = `${left * z}px`;
-    preview.style.top = `${top * z}px`;
-    preview.style.width = `${width * z}px`;
-    preview.style.height = `${height * z}px`;
+    const g = geom(curX, curY);
+    preview.style.left = `${g.left * z}px`;
+    preview.style.top = `${g.top * z}px`;
+    preview.style.width = `${g.width * z}px`;
+    preview.style.height = `${g.height * z}px`;
   }
 
   function cleanup() {
@@ -232,16 +277,17 @@ export function startMarkerDrag(pageNo, startX, startY, downEvt, div) {
   function onUp(e) {
     if (e.pointerId !== pointerId) return;
     cleanup();
-    const left = Math.min(startX, curX);
-    const top = Math.min(startY, curY);
-    const width = Math.abs(curX - startX);
-    const height = Math.abs(curY - startY);
-    if (width < 5 || height < 5) {
-      // Quick click without meaningful drag — drop a default-size
-      // 1-line stripe centered on the click.
+    const g = geom(curX, curY);
+    // "line": only the horizontal drag matters (height is fixed), so a
+    // too-short stripe falls back to a default-width line. "range" needs
+    // both dims to be meaningful before committing.
+    const tooSmall = style === "line" ? g.width < 5 : (g.width < 5 || g.height < 5);
+    if (tooSmall) {
+      // Quick click without meaningful drag — drop a default-size stripe
+      // centered on the click (DEFAULT_H tall, so center on startY).
       placeMarker(pageNo, startX - DEFAULT_W / 2, startY - DEFAULT_H / 2, DEFAULT_W, DEFAULT_H);
     } else {
-      placeMarker(pageNo, left, top, width, height);
+      placeMarker(pageNo, g.left, g.top, g.width, g.height);
     }
   }
 
@@ -431,9 +477,12 @@ export function placeText(pageNo, x, y) {
     },
   });
   _history().execute(cmd);
-  // One-shot placement: release mode now so the next click can drag /
-  // edit existing overlays without accidentally placing another one.
-  _setPlacementMode("none");
+  // Sticky placement (ユーザー要望「連続してテキスト入力したい」): テキスト
+  // モードは置いた後も維持し、次のクリックでまた新しいテキスト枠を置ける。
+  // 1 枠を「置く→自動で編集開始」した直後にクリックで離脱した分は、
+  // handlePagePointerDown 側の編集中ガードが新規配置を抑止するので、
+  // 「クリックして編集を終える → もう一度クリックして次を置く」の流れになる。
+  // モードを抜けるには再度「テキスト」ボタン押下 / 別モード選択 / Esc。
   if (cmd._snapshot) {
     setTimeout(() => _viewer.enterTextEdit(cmd._snapshot.id), 0);
   }

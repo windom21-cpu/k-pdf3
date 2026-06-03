@@ -78,6 +78,8 @@ import {
   // (form-fill imports below)
   currentRedactionColor,
   currentMarkerColor,
+  currentMarkerStyle,
+  currentMarkerThickness,
   currentTextFontId,
   currentTextFontSize,
   currentTextColor,
@@ -85,6 +87,8 @@ import {
   currentTextBold,
   REDACTION_COLOR_STORAGE_KEY,
   MARKER_COLOR_STORAGE_KEY,
+  MARKER_STYLE_STORAGE_KEY,
+  MARKER_THICKNESS_STORAGE_KEY,
 } from "./overlay-placement.js";
 import {
   initStampPresets,
@@ -182,6 +186,8 @@ const textDigitsHankoChk = $("text-digits-hanko");
 const textBoldChk = $("text-bold");
 const btnModeMarker = $("btn-mode-marker");
 const markerColorSel = $("marker-color");
+const markerStyleSel = $("marker-style");
+const markerThicknessSel = $("marker-thickness");
 const btnModeCallout = $("btn-mode-callout");
 // β.80: form-field tools (申請書テンプレ) — toolbar の「フォーム」
 // 1 ボタンを押すと form-palette-popup が出て、その中で 4 サブタイプ
@@ -658,6 +664,11 @@ function handlePagePointerDown(pageNo, x, y, evt, div) {
   // this guard the contextmenu handler that pops the mode-toggle menu
   // would also fire placeText / placeStamp / etc. on the same point.
   if (evt && typeof evt.button === "number" && evt.button !== 0) return;
+  // 連続テキスト入力 (sticky text) の副作用ガード: インライン編集を確定
+  // するためにページをクリックした「その同じクリック」では新規配置しない。
+  // これが無いと、テキストモードのまま編集を終えるたびに新しいテキスト枠が
+  // 落ちてしまう。クリックは編集の blur 確定だけに使い、次のクリックで配置。
+  if (typeof viewer.isInlineEditing === "function" && viewer.isInlineEditing()) return;
   // Trial-stamp placement (§17.5) is its own dispatch — it runs while
   // the register dialog is hidden, with placementMode possibly === "none",
   // so it must be checked BEFORE the placementMode branches.
@@ -2267,6 +2278,8 @@ function setOpen(open) {
   if (textSizeSel) textSizeSel.disabled = !open;
   if (btnModeMarker) btnModeMarker.disabled = !open;
   if (markerColorSel) markerColorSel.disabled = !open;
+  if (markerStyleSel) markerStyleSel.disabled = !open;
+  if (markerThicknessSel) markerThicknessSel.disabled = !open;
   if (btnModeCallout) btnModeCallout.disabled = !open;
   // β.80: form-field — popup と中身のボタンは toolbar の「フォーム」
   // ボタンの開閉で扱う。中ボタンの disabled は影響しない (popup 自体
@@ -7565,6 +7578,30 @@ if (markerColorSel) {
   }
   markerColorSel.addEventListener("change", () => {
     localStorage.setItem(MARKER_COLOR_STORAGE_KEY, currentMarkerColor());
+    if (isOpen && placementMode !== "marker") setPlacementMode("marker");
+  });
+}
+
+if (markerStyleSel) {
+  const saved = localStorage.getItem(MARKER_STYLE_STORAGE_KEY);
+  if (saved && Array.from(markerStyleSel.options).some((o) => o.value === saved)) {
+    markerStyleSel.value = saved;
+  }
+  markerStyleSel.addEventListener("change", () => {
+    localStorage.setItem(MARKER_STYLE_STORAGE_KEY, currentMarkerStyle());
+    // 種類を選んだ = マーカーを引きたい意思表示。色 select と同じ流儀で
+    // マーカーモードに入れておく。
+    if (isOpen && placementMode !== "marker") setPlacementMode("marker");
+  });
+}
+
+if (markerThicknessSel) {
+  const saved = localStorage.getItem(MARKER_THICKNESS_STORAGE_KEY);
+  if (saved && Array.from(markerThicknessSel.options).some((o) => o.value === saved)) {
+    markerThicknessSel.value = saved;
+  }
+  markerThicknessSel.addEventListener("change", () => {
+    localStorage.setItem(MARKER_THICKNESS_STORAGE_KEY, String(currentMarkerThickness()));
     if (isOpen && placementMode !== "marker") setPlacementMode("marker");
   });
 }

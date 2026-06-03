@@ -1068,12 +1068,25 @@
       </select>
     </div>
     <div class="mode-options" data-mode="marker" hidden>
+      <span class="mode-options-label">種類:</span>
+      <select id="marker-style" class="toolbar-inline-select"
+              title="範囲=ドラッグした矩形を塗る / 直線=一定の太さで水平にまっすぐ引く（蛍光ペン）">
+        <option value="range" selected>範囲</option>
+        <option value="line">直線</option>
+      </select>
       <span class="mode-options-label">色:</span>
       <select id="marker-color" class="toolbar-inline-select" title="マーカーの色">
         <option value="#ffeb3b">黄</option>
         <option value="#a5d6a7">緑</option>
         <option value="#f8bbd0">桃</option>
         <option value="#90caf9">青</option>
+      </select>
+      <span class="mode-options-label">太さ:</span>
+      <select id="marker-thickness" class="toolbar-inline-select"
+              title="直線マーカーの太さ（pt）。「直線」種類のときに有効。">
+        <option value="10">細</option>
+        <option value="14" selected>中</option>
+        <option value="20">太</option>
       </select>
     </div>
     <div class="mode-options" data-mode="form-text" hidden>
