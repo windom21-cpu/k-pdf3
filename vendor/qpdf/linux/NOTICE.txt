@@ -1,0 +1,33 @@
+qpdf 12.3.2 — Linux x86_64 portable bundle
+==========================================
+
+出所 (Source)
+-------------
+qpdf 公式リリース v12.3.2 の `qpdf-12.3.2-bin-linux-x86_64.zip` から抽出。
+  https://github.com/qpdf/qpdf/releases/tag/v12.3.2
+  SHA256 (zip): 44f2c53bf784c0143128d80d2b9946e9793962c5bb403b75c0024cb4d8e346b9
+  ※ Windows 同梱版 (vendor/qpdf/win) と同一バージョン。
+
+同梱内容
+--------
+- bin/qpdf            実行バイナリ (RUNPATH = $ORIGIN/../lib)
+- lib/libqpdf.so.30   本体ライブラリ (公式 zip の symlink を実体化)
+- lib/lib*.so.*       libqpdf の依存 (gnutls / nettle / hogweed / tasn1 /
+                      p11-kit / idn2 / unistring / ffi / jpeg)
+
+公式 zip に含まれていた fix-qdf / zlib-flate は本アプリで未使用のため除外。
+
+移植性
+------
+`env -i`（システムライブラリパス排除）でも `qpdf --version` が起動することを
+確認済。外部依存はユニバーサルな base lib のみ (libz / libstdc++ / libgcc_s
+/ libc)。実用上どの glibc Linux でも追加インストール不要で動作する。
+
+ライセンス
+----------
+- qpdf: Apache License 2.0
+- 同梱依存ライブラリ (GnuTLS=LGPLv2.1+, Nettle/Hogweed=LGPLv3+/GPLv2,
+  libtasn1=LGPLv2.1+, p11-kit=BSD, libidn2=LGPLv3+/GPLv2+, libunistring=LGPLv3+,
+  libffi=MIT, libjpeg=IJG) は各上流の条件に従う。これらは動的リンクの共有
+  ライブラリとして同梱しており、各ライブラリは個別ファイルとして差し替え可能。
+  各ライセンス全文は上流 (https://github.com/qpdf/qpdf 及び各ライブラリ公式) を参照。
