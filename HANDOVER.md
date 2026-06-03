@@ -1,7 +1,7 @@
 # K-PDF3 開発引き継ぎ書
 
 最終更新: 2026-06-03
-現在のバージョン: **v2.0.0-beta.144** (autoUpdater 経由で配布中、β 卒業準備フェーズ bug fix 期間)
+現在のバージョン: 配布中タグ **v2.0.0-beta.144** (autoUpdater 経由、β 卒業準備フェーズ bug fix 期間)。**※ main には β.144 以降の未タグ変更あり** — Electron 38→**41** 化 + セキュリティ hardening (CSP / window.open・遷移制限) + qpdf **Linux** 同梱 + CI を Node24 対応 SHA 固定 + Electron 41 ESM 回帰修正。**次の β タグ (β.145) でこれらがテスターに配布される** (現配布 β.144 は Electron 38 のまま)。
 リポジトリ: 開発リポ [windom21-cpu/k-pdf3](https://github.com/windom21-cpu/k-pdf3) (Public) / 配布フィード [windom21-cpu/k-pdf3-releases](https://github.com/windom21-cpu/k-pdf3-releases) (Public)
 
 このドキュメントは、K-PDF3 の開発を引き継ぐ次の AI アシスタント（または別環境の自分）が会話履歴なしで作業継続できるよう書かれている。**着手前に §0 → §1 → §2 → §3 → §6 → §8 → §17 の順で必ず読むこと**。
@@ -1134,7 +1134,7 @@ npm run dev                        # electronmon (推奨、自動 reload。Wayla
 - ~~吹き出しが入力画面では枠内に収まるのにサムネ/印刷で本文が枠外にはみ出す~~ ✅ **β.143** (採寸の折返し幅下限 `max(20,…)` を撤去し exporter と一致 + `measureCalloutMinWidth` で枠を本文に合わせ自動拡大、余白ズーム連動化)
 
 **残作業** (stable タグ前の TODO):
-- 🟡 **qpdf Mac/Linux バンドル** (stable 残務 #5) — **Linux 完了 (2026-06-03)**: 公式 portable v12.3.2 を `vendor/qpdf/linux/` に同梱 (SHA256 検証・実機起動確認)、`findQpdfBinary` を win=flat / mac・linux=bin+lib 対応、`package.json` mac/linux `extraResources` 設定。**残 = 🔴 Mac バイナリ** (公式 mac プリビルド無し → `vendor/qpdf/mac/README.md` の brew+dylibbundler で実機ビルド、**stable タグ前に必須**) + ⚠️ stable ビルド時に extraResources コピー/AppImage・dmg 実行確認
+- 🟡 **qpdf Mac/Linux バンドル** (stable 残務 #5) — **Linux 完了 (2026-06-03)**: 公式 portable v12.3.2 を `vendor/qpdf/linux/` に同梱 (SHA256 検証・実機起動確認)、`findQpdfBinary` を win=flat / mac・linux=bin+lib 対応、`package.json` mac/linux `extraResources` 設定。**残 = 🔴 Mac バイナリ** (公式 mac プリビルド無し → **リポ直下 `QPDF-MAC-TODO.md` の詳細手順** [brew+dylibbundler / `otool -L` 自己完結検証 / universal2 / Gatekeeper / 配置 git chmod / チェックリスト] で実機ビルド、**stable タグ前に必須**) + ⚠️ stable ビルド時に extraResources コピー/AppImage・dmg 実行確認
 - 🔴 **クラッシュ診断ロガー撤去** (stable 残務 #6、最後): `crashLogPath()` / `logCrash()` / `kpdf3:log-diag` IPC / preload `openCrashLog` / index.html の `data-action="open-crash-log"` / `actionOpenCrashLog` / `drop-*` / `gap-drop-file` / `os-open-received` / `j5-zombie-kill-*` / `second-instance-*` / `primary-window-closed` / `pdfreader-cleanup` の `survivors`/`survivorsExtra`/`killDetails`/`newPidsByExe`/`preExistingPidsByExe`/`adobeRelatedAtCleanup`/`extraKilled` / `pdfreader-process-closed` / `pdfreader-jobs-drained` / `print-cancel-by-user` / `pdfreader-followup-snapshot` / `font-fallback-callback` / **`open-pdf-stage`** / **`open-pdf-renderer-error`** / **`print-tick`**。**他残務の安定確認後に適用**
 - 🟡 **業務並走 1 週間で重大バグなしの確認** (2026-05-25〜06-01 目安、Day 1 = 05-26 で β.134/.135/.136/.138/.139 を投入済、残 ~5 日間)
 - 🟢 Mac 署名/公証は不要 (ダイレクト dmg 配布 + 初回「右クリック→開く」案内で運用、memory `[[feedback-mac-signing-not-needed]]`)。Win コードサインも未署名で OK
@@ -1529,7 +1529,8 @@ ADR ファイル名：`docs/adr/00NN-{slug}.md`、連番。
 ### 15.1 現在の制約・運用上の注意
 
 - **Electron 版数の固定** (ADR-0004 + 2026-06-03 §更新): **2026-06-03 に Electron 38.8.6 → `41.7.1` (exact) へ更新**。Electron 38 が 2026-03-10 で EOL となりパッチ供給が止まったため、固定継続が「アップグレード起因の脆弱性を避ける」本来目的に反する状態となったため前進。ブロッカーだった better-sqlite3 が **12.10.0** で Electron 39/40/41 prebuild を全 OS 提供したのが解決の鍵 (mupdf は wasm で ABI 非依存)。**Electron 42 はまだ不可** (better-sqlite3 が 42 対応を取り下げ済 PR #1470、upstream issue #1474/#1475 オープン)。41 のサポートは **〜2026-08-25**、それまでに 42 が通れば再度上げる。
-- **Electron 脆弱性 (旧: 38 の高セベリティ 4 件)**: ~~offscreen UAF / clipboard クラッシュ / window.open スコープ~~ → **Electron 41 化 (2026-06-03) で 4 件とも解消済**。現役サポート版でパッチ供給あり。併せて hardening を投入: 全 webContents で `setWindowOpenHandler` deny + `will-navigate`/`will-redirect` のリモート遷移拒否 (`src/main/main.js`)、index.html / page-popup.html に CSP メタ (`script-src 'self'`)。**CSP は実機 Windows スモーク (画像スタンプ表示 / 印刷 / 別窓) で最終確認が必要** (headless CI 非検証領域、問題時は CSP コミットのみ revert 可)。
+- **Electron 脆弱性 (旧: 38 の高セベリティ 4 件)**: ~~offscreen UAF / clipboard クラッシュ / window.open スコープ~~ → **Electron 41 化 (2026-06-03) で 4 件とも解消済**。現役サポート版でパッチ供給あり。併せて hardening を投入: 全 webContents で `setWindowOpenHandler` deny + `will-navigate`/`will-redirect` のリモート遷移拒否 (`src/main/main.js`)、index.html / page-popup.html に CSP メタ (`script-src 'self'`)。**CSP は実機 WSLg スモークで合格 (2026-06-03)**: 画面フル描画 / 画像スタンプ blob: 表示 / 別窓描画、CSP 違反ゼロを確認 (CSP は Chromium が OS 非依存で適用するため WSLg 検証で代表可。問題時は CSP コミット `6c6b004` のみ revert 可)。**同スモークで Electron 41 の ESM 回帰 1 件を発見・修正**: ESM 化済 `main.js` の `kpdf3:resize-popup-to-fit` が `require("electron").screen` を呼び Node 24 の厳格 ESM で `require is not defined` → 別窓のページ追従リサイズが失敗していたのを、import 済 `screen` に置換 (`af224ad`)。
+- **CI / 依存監視整備 (2026-06-03)**: (a) GitHub Actions ランナーの Node 20 ランタイム撤去 (2026-06-16 で Node24 強制 / 09-16 削除) に追従し、`actions/checkout`・`actions/setup-node` を Node24 対応の最新メジャーへ更新し **commit SHA で固定** (checkout v6.0.3 / setup-node v6.4.0。tag 再ポイント攻撃 [tj-actions/changed-files CVE-2025-30066] 対策、release は `package-manager-cache:false` で no-cache 維持)。アプリのビルド Node は `node-version:22.22.2` 固定のまま不変。(b) **Electron 42 化を月次自動監視する claude.ai routine を作成** (`trig_014hyr1dE1yVZZWf23J1PRZN`、毎月1日 09:05 JST。`gh api` で better-sqlite3 の electron-v146 prebuild + issue #1474/#1475 を判定し、揃えば 42 化 PR を自動準備・マージはしない)。GitHub は `/web-setup` で接続済、テスト実行で動作確認済。
 - **直結 print が落ちる**: OS 印刷ダイアログを `webContents.print({silent:false})` で出すと、ユーザーが dialog を閉じた瞬間に Electron の PDF プラグイン teardown が crash する。**β72 案 D で構造的に解決** (Adobe `/p` でネイティブダイアログを使う = Electron 経路を完全に避ける)
 - **空の `fonts/` ディレクトリ**: IPAex は M6 で同梱予定
 - **userData 集中保管の副作用**: kpdf3 が `~/.config/K-PDF3/workspaces/` に置かれる (ADR-0007)。machine 間移植は手動コピーが必要。M6 で「workspace export package」UI 検討余地あり
