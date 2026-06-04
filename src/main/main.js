@@ -34,7 +34,9 @@ import {
   registerWorkspace,
   touchWorkspace,
   workspacePathFor,
+  workspacesDir,
 } from "./workspace-registry.js";
+import { sweepOrphanSourceSidecars } from "./sidecar-sweep.js";
 import {
   listStampPresetsGlobal,
   setStampPresetsOrderGlobal,
@@ -863,6 +865,20 @@ app.whenReady().then(() => {
   );
   loadDevmodeCacheFromDisk();
   createMainWindow();
+  // 巨大 PDF サイドカー (.kpdf3.source.pdf で兄弟 .kpdf3 が無いもの) の
+  // orphan 掃除 (stable 残務 #7)。上書き保存等で過去に取り残された分を
+  // best-effort 回収する。.kpdf3 本体・空ワークスペースには触れない。
+  // setImmediate で window 描画を妨げない。
+  setImmediate(() => {
+    try {
+      const { removed, freedBytes } = sweepOrphanSourceSidecars(workspacesDir());
+      if (removed > 0) {
+        console.log(
+          `[main] swept ${removed} orphan source sidecar(s), freed ${freedBytes} bytes`,
+        );
+      }
+    } catch { /* ignore */ }
+  });
   // Wire auto-update (§17.15). No-op in dev mode (!app.isPackaged) and
   // when launched with --no-update. The initial check fires ~3s after
   // the window is shown so the renderer has time to subscribe.

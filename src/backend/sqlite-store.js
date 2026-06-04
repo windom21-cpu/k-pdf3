@@ -43,6 +43,11 @@ export function openWorkspace(filePath, opts = {}) {
     if (existsSync(filePath)) rmSync(filePath, { force: true });
     rmSync(filePath + "-wal", { force: true });
     rmSync(filePath + "-shm", { force: true });
+    // β.134 サイドカー (.source.pdf) も道連れに消す。上書き保存で既存
+    // workspace を潰すと、巨大 PDF の external source ファイルだけが
+    // 取り残されて orphan 化していた (stable 残務 #7 の発生源)。無ければ
+    // no-op。
+    rmSync(filePath + ".source.pdf", { force: true });
   }
   const isNew = !existsSync(filePath);
   const db = new Database(filePath);
