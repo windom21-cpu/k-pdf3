@@ -1,7 +1,12 @@
 # qpdf macOS バンドル — やるべきこと（詳細 TODO）
 
-最終更新: 2026-06-03 / 対象: K-PDF3 stable (v2.0.0) リリース前の必須作業
+最終更新: 2026-06-05 / 対象: K-PDF3 stable (v2.0.0) リリース前の必須作業
 作業環境: **実機 Mac が必須**（WSL / Linux からは作成不可）
+
+> ✅ **2026-06-05 決定 (ユーザー確認済): 配布先 Mac は Apple Silicon (M1 以上) のみ・Intel 機なし。**
+> → **arm64 専用ビルドで確定** (universal2 / Rosetta / lipo は不要)。`package.json` の
+> `build.mac.target[0].arch` は既に `["arm64"]` に変更済 (2026-06-05)。ビルドは M1 でネイティブに作れる。
+> 残作業は「M1 で arm64 qpdf を `vendor/qpdf/mac/{bin,lib}/` に自己完結配置 → 検証 → commit」のみ。
 
 ---
 
@@ -94,23 +99,18 @@ bin/qpdf --version        # → qpdf version 12.x.x が出れば OK
   `dylibbundler` を再実行、または `install_name_tool -change <旧> @executable_path/../lib/<名> <対象>`
   で手動修正。
 
-### 3-3. アーキテクチャ（重要・要判断）
-dmg は **x64 と arm64 の両方**をビルドする（`package.json` の `build.mac.target[0].arch`）。
+### 3-3. アーキテクチャ（✅ arm64 専用で確定済）
+**2026-06-05 決定**: 配布先は Apple Silicon (M1 以上) のみ・Intel 機なし (ユーザー確認済) →
+**arm64 専用ビルドで確定**。`package.json` の `build.mac.target[0].arch` は既に `["arm64"]` に変更済。
 
-- **推奨: universal2（x64 + arm64 結合）**
-  Intel Mac と Apple Silicon Mac の両方で 1 バイナリが動く。
-  両アーキの qpdf + 各 dylib を用意し、`lipo -create <x64> <arm64> -output <universal>` で結合する。
-  片方の Mac しか無い場合は、もう片方のアーキを別 Mac / Rosetta / CI で用意する必要あり。
-  ```bash
-  # 例（x64 と arm64 それぞれビルド済の前提）
-  lipo -create x64/bin/qpdf arm64/bin/qpdf -output universal/bin/qpdf
-  # 各 dylib も同様に lipo -create で結合
-  ```
-- **妥協: 片アーキのみ**
-  自分の Mac のアーキだけ用意する場合、**もう一方のアーキの dmg では同梱 qpdf が動かない**
-  （起動時に PATH の system qpdf にフォールバック、無ければセキュア書き出しが失敗）。
-  配布アーキを 1 つに絞るなら、`package.json` の `build.mac.target[0].arch` も
-  そのアーキだけに変更しておく。
+- **やること: arm64 のみ用意すれば完了**
+  M1 Mac で `brew install qpdf` すれば arm64 ネイティブの qpdf が入る。それを `dylibbundler` で
+  自己完結化して `vendor/qpdf/mac/{bin,lib}/` に置くだけ。**universal2 / Rosetta / lipo は不要。**
+  `lipo -info bin/qpdf` で `arm64` 単独になっていることだけ一応確認しておくとよい。
+
+- ~~universal2 / 片アーキ妥協の判断~~ — Intel ユーザーが居ないため検討不要 (この節の旧手順は破棄)。
+  将来 Intel Mac ユーザーが現れたら、x64 を Rosetta Homebrew で用意し `lipo -create` で結合 +
+  `arch` を `["universal"]` に戻す、という拡張で対応可能 (今は不要)。
 
 ### 3-4. リポジトリに配置してコミット
 ```bash
@@ -176,7 +176,8 @@ K-PDF3 は未署名配布（初回「右クリック→開く」運用、ADR / H
 - [ ] `dylibbundler` で依存 dylib を `@executable_path/../lib/` に再配置
 - [ ] `otool -L` で `/opt/homebrew` `/usr/local` 依存ゼロを確認（自己完結）
 - [ ] `bin/qpdf --version` 起動確認
-- [ ] （推奨）universal2（x64+arm64）化、または配布アーキを 1 つに絞る
+- [x] 配布アーキを arm64 専用に確定 (2026-06-05、`arch: ["arm64"]` 反映済 / universal2 不要)
+- [ ] `lipo -info bin/qpdf` が `arm64` 単独であることを確認
 - [ ] `vendor/qpdf/mac/{bin,lib}/` に配置 + `NOTICE.txt` 作成
 - [ ] `git update-index --chmod=+x vendor/qpdf/mac/bin/qpdf`（`git ls-files -s` で 100755 確認）
 - [ ] Gatekeeper / quarantine で子プロセス起動が弾かれないか実機確認
