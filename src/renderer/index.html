@@ -118,6 +118,20 @@
     <div class="menu-item" data-action="about">バージョン情報</div>
   </div>
 
+  <!-- β.146: ツールバー右端「»」のあふれメニュー。各項目は隠した本体
+       ボタンを click() するだけ (data-target = ボタン id)。有効/無効は
+       本体ボタン側で管理され、disabled なら click() は無反応。 -->
+  <div class="menu-dropdown" id="menu-overflow" hidden>
+    <!-- β.146 動的退避ゾーン: 幅が足りない時、表示倍率→検索→回転→… の順に
+         実コントロールがここへ移動してくる。広い画面では空 (区切り線も隠す)。 -->
+    <div id="overflow-dynamic"></div>
+    <div class="menu-separator" id="overflow-sep" style="display:none"></div>
+    <div class="menu-item" data-target="btn-print-overlay-only">下敷き印刷</div>
+    <div class="menu-item" data-target="btn-page-numbers">＋ページ番号</div>
+    <div class="menu-item" data-target="btn-page-popup">別ウインドウで表示</div>
+    <div class="menu-item" data-target="btn-detach-tab">タブを別ウインドウに分離</div>
+  </div>
+
   <!-- Right-click context menu for overlays. Anchored at click coords. -->
   <div class="menu-dropdown" id="ctx-overlay" hidden>
     <div class="menu-item" data-ctx="copy">コピー (Ctrl+C)</div>
@@ -958,48 +972,72 @@
   </div>
 
   <div class="toolbar">
-    <button id="btn-open">開く</button>
+    <!-- β.146: ツールバーをアイコン化 (小さい画面でも 1 行に収まるよう)。
+         ◎ = アイコンのみ / ○ = アイコン+小ラベル / △ = » メニューへ収納。
+         文字が消えるぶん全ボタンに用途解説 title を付与 (ホバーで表示)。
+         SVG は currentColor 連動なので 白黒トグル ON (文字色=白) でも追従する。 -->
+    <button id="btn-open" class="tb-icon" title="PDF ファイルを開く">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5H6l1 1h7.5v8H1.5z"/><path d="M3 13L4.5 7.5h11l-1.5 5.5"/></svg></button>
     <span class="toolbar-sep"></span>
-    <button id="btn-save" disabled title="上書き保存 (Ctrl+S)">上書き</button>
-    <button id="btn-export" disabled title="名前を付けて保存 (Ctrl+Shift+S)">保存</button>
-    <button id="btn-print" disabled title="印刷 (Ctrl+P)">印刷</button>
-    <button id="btn-mono-print" class="toolbar-toggle" disabled title="ON にすると印刷時に overlay (テキスト/スタンプ/印影/丸囲み/形/フォーム枠) の色を黒に変換します。マーカー (黄) は除外。FAX や白黒プリンタでカラー印影が薄くなるのを回避するための保険。">白黒</button>
-    <button id="btn-fax-send" disabled title="既定の FAX プリンタへ直送 (白黒強制)。右クリックで Adobe 経由切替 + FAX プリンタ変更。">FAX</button>
-    <button id="btn-print-overlay-only" disabled title="申請書原本に重ね印刷 (背景なし、フィールドの値だけ印字)">下敷き印刷</button>
+    <button id="btn-save" class="tb-icon" disabled title="上書き保存 — 今ひらいているファイルにそのまま保存します (Ctrl+S)">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5H11L13.5 5v8.5H2.5z"/><path d="M5 2.5V6h5V2.5"/><rect x="4.5" y="8.5" width="7" height="5"/></svg></button>
+    <button id="btn-export" class="tb-iconlabel" disabled title="名前を付けて保存 — 別のファイルとして保存します (Ctrl+Shift+S)">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5H11L13.5 5v8.5H2.5z"/><path d="M5 2.5V6h5V2.5"/><rect x="4.5" y="8.5" width="7" height="5"/></svg><span>保存</span></button>
+    <button id="btn-print" class="tb-icon" disabled title="印刷 (Ctrl+P)">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5h7v3h-7z"/><path d="M2.5 5.5h11v5.5h-11z"/><rect x="4.5" y="9" width="7" height="4.5"/><rect class="fill" x="10.6" y="6.8" width="1.6" height="1.4"/></svg></button>
+    <button id="btn-mono-print" class="tb-iconlabel toolbar-toggle" disabled title="白黒で印刷 — ON にすると印刷時に overlay (テキスト/スタンプ/印影/丸囲み/形/フォーム枠) の色を黒に変換します。マーカー (黄) は除外。FAX や白黒プリンタでカラー印影が薄くなるのを回避するための保険。">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path class="fill" d="M8 2A6 6 0 0 1 8 14z"/></svg><span>白黒</span></button>
+    <button id="btn-fax-send" class="tb-icon" disabled title="FAX 送信 — 既定の FAX プリンタへ直送 (白黒強制)。右クリックで Adobe 経由切替 + FAX プリンタ変更。">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="6.5" width="11" height="6.5"/><path d="M5 2.5h5.5v4H5z"/><rect class="fill" x="3.8" y="8.6" width="3" height="1.3"/><rect x="9.7" y="8.5" width="3.3" height="3.3"/></svg></button>
+    <button id="btn-print-overlay-only" hidden disabled title="下敷き印刷 — 申請書原本に重ね印刷 (背景なし、フィールドの値だけ印字)">下敷き印刷</button>
     <span class="toolbar-sep"></span>
-    <button id="btn-mode-text" disabled>テキスト</button>
-    <button id="btn-mode-stamp" disabled>スタンプ</button>
-    <button id="btn-mode-redaction" disabled>墨消し</button>
-    <button id="btn-mode-marker" disabled title="ドラッグで半透明マーカーを引きます">マーカー</button>
-    <button id="btn-mode-callout" disabled title="クリック→ドラッグで矢印付き吹き出しテキストを配置します">吹き出し</button>
+    <button id="btn-mode-text" class="tb-icon" disabled title="テキスト — クリックした位置に文字を書き込みます">
+      <span class="ti-A" aria-hidden="true">A</span></button>
+    <button id="btn-mode-stamp" class="tb-icon" disabled title="スタンプ — 日付・印影・画像のスタンプを押します">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.5h4v3l1.5 3h-7L6 5.5z"/><rect class="fill" x="2.5" y="9" width="11" height="2.3"/><path d="M2.5 12.4h11"/></svg></button>
+    <button id="btn-mode-redaction" class="tb-iconlabel" disabled title="墨消し — 黒塗りで隠します (セキュア書き出し時は下の文字も消去)">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="2.5" y="5" width="11" height="3.4"/><path d="M2.5 10.5h11M2.5 12.5h7"/></svg><span>墨消し</span></button>
+    <button id="btn-mode-marker" class="tb-icon" disabled title="マーカー — 蛍光ペンで線を引きます (範囲/直線・太さは下のバーで選択)">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><path d="M8.5 2.5L13.5 7.5L7 14H2.5V9.5z"/><path d="M8.5 2.5L13.5 7.5"/><path d="M2.5 9.5L7 14"/></svg></button>
+    <button id="btn-mode-callout" class="tb-icon" disabled title="吹き出し — 矢印付きの説明文を配置します">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5h13v8H6.5l-3 3v-3h-2z"/></svg></button>
     <span class="toolbar-sep"></span>
-    <button id="btn-form-palette" disabled title="申請書テンプレ用フォームフィールド (枠/チェック/丸囲み/ラジオ + 記入モード)">フォーム</button>
-    <button id="btn-shape-palette" disabled title="図形 (直線・矢印・ブロック矢印・楕円)">図形</button>
+    <button id="btn-form-palette" class="tb-iconlabel" disabled title="フォーム — 申請書テンプレ用フィールド (枠/チェック/丸囲み/ラジオ + 記入モード)">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11"/><path class="thick" d="M5 8l2.2 2.5L12 4.8"/></svg><span>フォーム</span></button>
+    <button id="btn-shape-palette" class="tb-iconlabel" disabled title="図形 — 直線・矢印・ブロック矢印・楕円を配置します">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h10"/><path d="M9 5.3L12.7 8L9 10.7"/></svg><span>図形</span></button>
     <span class="toolbar-sep"></span>
-    <button id="btn-page-numbers" disabled title="全ページのフッターにページ番号を一括追加">＋ページ番号</button>
-    <button id="btn-page-popup" disabled title="現在のページを別ウインドウで表示（比較用）">別窓</button>
-    <button id="btn-detach-tab" disabled title="現在のタブを別ウインドウに分離します">別窓化</button>
+    <button id="btn-page-numbers" hidden disabled title="ページ番号 — 全ページのフッターにページ番号を一括追加">＋ページ番号</button>
+    <button id="btn-page-popup" hidden disabled title="別ウインドウで表示 — 現在のページを別ウインドウで表示（比較用）">別窓</button>
+    <button id="btn-detach-tab" hidden disabled title="タブを分離 — 現在のタブを別ウインドウに分離します">別窓化</button>
+    <button id="btn-split" class="tb-iconlabel" disabled title="分割保存 — ページごとに分けて保存します">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="11" r="1.8"/><circle cx="4" cy="5" r="1.8"/><path d="M5.5 6L13.5 11M5.5 10L13.5 5"/></svg><span>分割</span></button>
+    <button id="btn-mode-region-image" class="tb-iconlabel" disabled title="範囲を画像で保存 — ドラッグで囲んだ範囲を PNG/JPEG として保存します">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" stroke-dasharray="2.2 1.6"/><path d="M5 8h6M8 5v6"/></svg><span>範囲</span></button>
     <span class="toolbar-sep"></span>
-    <button id="btn-split" disabled>分割保存</button>
-    <button id="btn-mode-region-image" disabled title="ドラッグで囲んだ範囲を PNG/JPEG として保存します">範囲画像</button>
-    <span class="toolbar-sep"></span>
-    <label for="zoom-select" class="toolbar-label">表示:</label>
-    <select id="zoom-select" disabled>
-      <option value="0.5">50%</option>
-      <option value="0.75">75%</option>
-      <option value="1.0">100%</option>
-      <option value="1.25">125%</option>
-      <option value="1.5">150%</option>
-      <option value="1.75">175%</option>
-      <option value="2.0">200%</option>
-      <option value="2.5">250%</option>
-      <option value="3.0">300%</option>
-      <option value="fit">幅をウィンドウに合わせる</option>
-      <option value="fit-page">1 ページ全体を表示</option>
-    </select>
-    <button id="btn-rotate-left" disabled title="現在のページを左に 90° 回転">↺</button>
-    <button id="btn-rotate-right" disabled title="現在のページを右に 90° 回転">↻</button>
-    <div class="toolbar-search">
+    <!-- β.146: 表示倍率・回転は tb-unit でまとめ、幅が足りない時に » へ
+         ユニットごと退避する (ばらけない)。 -->
+    <span class="tb-unit" id="tb-zoom" data-ovlabel="表示倍率">
+      <label for="zoom-select" class="toolbar-label">表示:</label>
+      <select id="zoom-select" disabled>
+        <option value="0.5">50%</option>
+        <option value="0.75">75%</option>
+        <option value="1.0">100%</option>
+        <option value="1.25">125%</option>
+        <option value="1.5">150%</option>
+        <option value="1.75">175%</option>
+        <option value="2.0">200%</option>
+        <option value="2.5">250%</option>
+        <option value="3.0">300%</option>
+        <option value="fit">幅をウィンドウに合わせる</option>
+        <option value="fit-page">1 ページ全体を表示</option>
+      </select>
+    </span>
+    <span class="tb-unit" id="tb-rotate" data-ovlabel="ページの回転">
+      <button id="btn-rotate-left" disabled title="現在のページを左に 90° 回転">↺</button>
+      <button id="btn-rotate-right" disabled title="現在のページを右に 90° 回転">↻</button>
+    </span>
+    <div class="toolbar-search" id="tb-search" data-ovlabel="検索">
       <input
         type="search"
         id="menu-search-input"
@@ -1015,6 +1053,11 @@
         disabled
       >🔍</button>
     </div>
+    <span class="toolbar-sep"></span>
+    <!-- β.146: 使用頻度の低い・アイコン化しにくい機能はここに収納。
+         中身は隠した本体ボタンを click() するだけ (配線は既存のまま流用)。 -->
+    <button id="btn-overflow" class="tb-icon" title="その他の機能 / 入りきらない項目（クリックで一覧）">
+      <span class="ti-chevron" aria-hidden="true">»</span></button>
   </div>
 
   <!-- (Tab bar moved inside main-area > main-content so the sidebar's

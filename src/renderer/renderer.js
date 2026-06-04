@@ -952,6 +952,138 @@ $("btn-detach-tab")?.addEventListener("click", () => {
   if (id) void detachTabToNewWindow(id);
 });
 
+// β.146: ツールバー右端「»」= 「その他」+「幅に入りきらない項目の退避先」。
+//  (1) 静的: 下敷き印刷/ページ番号/別窓/別窓化 (常にここ。隠し本体を click 委譲)。
+//  (2) 動的: 幅が足りない時、表示倍率→検索→回転→… の順に実コントロールを
+//      #overflow-dynamic へ移動する (縮めない方式なので高さ一定・アイコン無ズレ)。
+// menu-bar.js には密結合せず、同じ .menu-dropdown の見た目を流用。Win95 流に
+// 外側クリック / Esc で閉じ、メニューバーを開いたら閉じる (逆も)。
+(function wireOverflowMenu() {
+  const btn = $("btn-overflow");
+  const menu = $("menu-overflow");
+  const toolbar = document.querySelector(".toolbar");
+  const dynamic = $("overflow-dynamic");
+  const sep = $("overflow-sep");
+  if (!btn || !menu || !toolbar || !dynamic) return;
+
+  const close = () => {
+    menu.hidden = true;
+    btn.classList.remove("active");
+  };
+  const open = () => {
+    for (const dd of document.querySelectorAll(".menu-dropdown")) {
+      if (dd !== menu) dd.hidden = true;
+    }
+    menu.hidden = false;
+    btn.classList.add("active");
+    // ボタン右辺にメニュー右辺を揃える (画面外はみ出し回避)
+    const rect = btn.getBoundingClientRect();
+    menu.style.left = `${Math.max(2, rect.right - menu.offsetWidth)}px`;
+    menu.style.top = `${rect.bottom}px`;
+  };
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (menu.hidden) open();
+    else close();
+  });
+  // 静的項目: 隠し本体ボタンへ委譲 (disabled なら無反応)
+  for (const mi of menu.querySelectorAll(".menu-item[data-target]")) {
+    mi.addEventListener("click", (e) => {
+      e.stopPropagation();
+      close();
+      const target = $(mi.dataset.target);
+      if (target && !target.disabled) target.click();
+    });
+  }
+  // 退避してきた実ボタンをメニュー内でクリックしたら閉じる (select / 検索入力は
+  // そのまま操作させたいので閉じない)。
+  dynamic.addEventListener("click", (e) => {
+    if (e.target.closest("button")) close();
+  });
+  document.addEventListener("click", close);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+  });
+  // メニューバー項目クリックで » を閉じる (menu-bar.js が stopPropagation する
+  // ため capture で先に拾う)。
+  $("menu-bar")?.addEventListener("click", close, true);
+
+  // ── レスポンシブ退避 ──────────────────────────────────────────────
+  // 先頭ほど先に » へ入る (要望どおり 表示→検索→回転→… の順)。末尾の
+  // ファイル系まで並べておき、極端に狭くても 1 行・一定高を保てるようにする。
+  const ORDER = [
+    "tb-zoom", "tb-search", "tb-rotate",
+    "btn-mode-region-image", "btn-split",
+    "btn-shape-palette", "btn-form-palette",
+    "btn-mode-callout", "btn-mode-marker", "btn-mode-redaction",
+    "btn-mode-stamp", "btn-mode-text",
+    "btn-fax-send", "btn-mono-print", "btn-print", "btn-export", "btn-save",
+  ];
+  // 復元用に元の並び (toolbar 直下要素) を記録。
+  const original = Array.from(toolbar.children);
+  const isVisible = (el) =>
+    !el.hidden &&
+    el.style.display !== "none" &&
+    getComputedStyle(el).display !== "none";
+
+  const restoreAll = () => {
+    for (const el of original) toolbar.appendChild(el);
+  };
+  const fits = () => toolbar.scrollWidth <= toolbar.clientWidth + 1;
+
+  function collapseInto(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    // アイコンのみボタンは title 先頭をメニュー用ラベルに (一度だけ付与)。
+    if (el.tagName === "BUTTON" && !el.querySelector("span") && !el.dataset.ovlabel) {
+      const t = (el.getAttribute("title") || "").split("—")[0].trim();
+      if (t) el.dataset.ovlabel = t;
+    }
+    dynamic.appendChild(el);
+  }
+
+  // 退避で生じる区切り線の重複・先頭/末尾の宙ぶらりんを掃除。
+  function normalizeSeps() {
+    let prevWasSepOrStart = true;
+    for (const el of toolbar.children) {
+      if (el.classList.contains("toolbar-sep")) {
+        el.style.display = prevWasSepOrStart ? "none" : "";
+        prevWasSepOrStart = true;
+      } else if (isVisible(el)) {
+        prevWasSepOrStart = false;
+      }
+    }
+    const kids = Array.from(toolbar.children);
+    for (let i = kids.length - 1; i >= 0; i--) {
+      const el = kids[i];
+      if (el.classList.contains("toolbar-sep")) el.style.display = "none";
+      else if (isVisible(el)) break;
+    }
+  }
+
+  function reflow() {
+    restoreAll();
+    for (const s of toolbar.querySelectorAll(".toolbar-sep")) s.style.display = "";
+    for (const id of ORDER) {
+      if (fits()) break;
+      collapseInto(id);
+    }
+    if (sep) sep.style.display = dynamic.children.length ? "" : "none";
+    normalizeSeps();
+  }
+
+  let raf = 0;
+  const schedule = () => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(reflow);
+  };
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(schedule).observe(toolbar);
+  }
+  window.addEventListener("resize", schedule);
+  schedule();
+})();
+
 // ---- Overlay context menu (right-click) ------------------------------
 const ctxOverlay = $("ctx-overlay");
 
@@ -2298,6 +2430,9 @@ function setOpen(open) {
   if (btnPagePopup) btnPagePopup.disabled = !open;
   const btnDetachTab = $("btn-detach-tab");
   if (btnDetachTab) btnDetachTab.disabled = !open;
+  // β.146: ツールバー右端「»」は常時有効。幅退避で表示倍率/検索などが
+  // 中に入ってくるので、ドキュメント未オープンでも開けるようにしておく
+  // (各項目自身の disabled で操作可否は表現される)。
   // (stampTemplateSel / stampColorSel removed — palette buttons are
   // managed by rebuildStampPalette + the mode-options bar visibility.)
   if (!open) {

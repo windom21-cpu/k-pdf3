@@ -274,7 +274,8 @@ body {
   color: #ffffff;
 }
 .toolbar-search {
-  margin-left: auto;
+  /* β.146: 以前は margin-left:auto で右寄せしていたが、レスポンシブ退避と
+     相性が悪い (退避時に » の右寄せが崩れる) ため左詰めに統一。 */
   display: flex;
   align-items: center;
   gap: 4px;
@@ -404,6 +405,155 @@ body {
 }
 .toolbar button {
   min-width: 0;
+}
+/* β.146: アイコン化ツールバー + 幅あふれ時の » 退避。
+   アイコン (.ti) はツールバー上でも » メニュー内でも同じ見た目になるよう
+   要素単位で指定 (.toolbar スコープにしない)。 */
+.toolbar button.tb-icon,
+.toolbar button.tb-iconlabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+.toolbar button.tb-icon {
+  padding-left: 5px;
+  padding-right: 5px;
+}
+/* レスポンシブの肝: ツールバー直下の項目は縮ませない & 折り返さない。
+   こうすると幅不足を scrollWidth で検知でき (JS が » へ退避)、テキストの
+   縦並び・アイコンと枠のズレ (= 縮小由来) が原理的に起きない。 */
+.toolbar > button,
+.toolbar > .tb-unit,
+.toolbar > .toolbar-search {
+  flex: 0 0 auto;
+}
+.toolbar button {
+  white-space: nowrap;
+}
+.tb-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ti {
+  width: 16px;
+  height: 16px;
+  display: block;
+  flex: 0 0 auto;
+}
+.ti path,
+.ti rect,
+.ti circle {
+  fill: none;
+  stroke: #000;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.ti .fill {
+  fill: #000;
+  stroke: none;
+}
+.ti .thick {
+  stroke-width: 1.6;
+}
+/* 無効時 (ドキュメント未オープン) はアイコンも灰に落として
+   テキストボタンの :disabled と見た目を揃える。 */
+button:disabled .ti path,
+button:disabled .ti rect,
+button:disabled .ti circle {
+  stroke: #808080;
+}
+button:disabled .ti .fill {
+  fill: #808080;
+}
+/* 白黒トグル ON は背景=黒・文字=白。アイコンも白に反転させる。 */
+.toolbar-toggle.is-on .ti path,
+.toolbar-toggle.is-on .ti rect,
+.toolbar-toggle.is-on .ti circle {
+  stroke: #fff;
+}
+.toolbar-toggle.is-on .ti .fill {
+  fill: #fff;
+}
+/* テキストツールは字そのものがアイコン (Win95 の "A" 流儀)。 */
+.ti-A {
+  font: bold 14px "Times New Roman", "Noto Serif CJK JP", serif;
+  width: 16px;
+  text-align: center;
+  display: inline-block;
+  line-height: 1;
+}
+.ti-chevron {
+  font-weight: bold;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 1px;
+}
+
+/* ── » 退避ゾーン: 退避してきた実ボタン/ユニットをメニュー行に見せる ──
+   直接子 (> button) だけをメニュー行化。回転ユニット内の ↺↻ など入れ子の
+   ボタンは対象外にして従来の小ボタンのまま並べる。 */
+#overflow-dynamic > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  box-shadow: none !important;
+  margin: 0;
+  min-width: 0;
+  height: auto;
+  padding: 3px 16px 3px 14px;
+  font: inherit;
+}
+/* アイコンのみボタンは title 由来のラベルを ::after で補う (JS が data-ovlabel
+   を付与)。アイコン+ラベルボタンは元々 <span> ラベルがあるのでそれを表示。 */
+#overflow-dynamic > button::after {
+  content: attr(data-ovlabel);
+}
+#overflow-dynamic .tb-iconlabel span {
+  display: inline;
+}
+#overflow-dynamic > button:hover:not(:disabled),
+#overflow-dynamic .tb-unit:hover,
+#overflow-dynamic .toolbar-search:hover {
+  background: #000080;
+  color: #fff;
+}
+#overflow-dynamic > button:hover:not(:disabled) .ti path,
+#overflow-dynamic > button:hover:not(:disabled) .ti rect,
+#overflow-dynamic > button:hover:not(:disabled) .ti circle {
+  stroke: #fff;
+}
+#overflow-dynamic > button:hover:not(:disabled) .ti .fill {
+  fill: #fff;
+}
+/* tb-unit (表示倍率 / 回転) と 検索 はラベル付きの行に。 */
+#overflow-dynamic .tb-unit,
+#overflow-dynamic .toolbar-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 16px;
+}
+#overflow-dynamic .tb-unit::before,
+#overflow-dynamic .toolbar-search::before {
+  content: attr(data-ovlabel);
+  min-width: 64px;
+}
+#overflow-dynamic .tb-unit > .toolbar-label {
+  display: none;
+}
+/* 退避中の検索は (折り畳まず) 入力欄を常に表示。 */
+#overflow-dynamic .toolbar-search .menu-search-input {
+  display: inline-block !important;
+  width: 150px;
 }
 .toolbar-label {
   font-size: 14px;
