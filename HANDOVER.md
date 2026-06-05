@@ -1,7 +1,7 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-06-05
-現在のバージョン: **v2.0.0-beta.148** (autoUpdater 経由で配布中、β 卒業準備フェーズ bug fix 期間。β.148 = 「»」へ退避した表示倍率 select / 検索が操作できない不具合の修正)。**β.145 で Electron 38→41 化 + セキュリティ hardening (CSP / window.open・遷移制限) + qpdf Linux 同梱 + CI Node24 SHA 固定 + Electron 41 ESM 回帰修正 を配布** (β.144 までは Electron 38)。**Electron 41 の Windows 実機配布は β.145 が初** (CI test:m1 は windows-latest で Electron 41 起動 pass 済)。**β.146 でツールバーをアイコン化 + 幅が足りない時に表示倍率→検索→…の順で「»」へ動的退避 (小さい/低解像度モニターでツールバーが折り返す問題への対応、業務並走フィードバック)**。**β.147 で β.134 巨大 PDF サイドカー (`.kpdf3.source.pdf`) の orphan 掃除を追加 (上書き保存で取り残された外部ソースを「発生源封鎖 + 起動時 best-effort 回収」の 2 層で構造的に閉じる、stable 残務 #7)**。
+最終更新: 2026-06-06
+現在のバージョン: **🎉 v2.0.0 stable (2026-06-05 リリース、β 卒業 = M6 完了)**。β.1 (2026-05-10)〜β.150 の業務並走を経て stable へ。**Win + Mac + Linux の 3 OS 配布** (Win=nsis / Mac=dmg arm64 / Linux=AppImage+deb)、`draft:false prerelease:false` の正式リリース。3 OS CI 初実走が一発成功 (build-windows → build-macos+linux 並列、`needs:build-windows` で 422 race 回避)。**stable 残務は全クローズ** (#5 qpdf 3OS 同梱 / #6 クラッシュ診断ロガー撤去 / annotation proxy / qpdf sanitize / 真の墨消し / 「後で」恒久対応 / CI race / 巨大 PDF サイドカー)。最終 2 β: **β.149 = クラッシュ診断ロガー一式撤去 (判断A=uncaughtException の握りつぶし no-op ハンドラは残置・ログのみ撤去 / 判断B=「クラッシュログを開く」メニュー撤去、正味 −480 行) + byte-copy secure-export 修正** / **β.150 = 業務並走 UX 2 件 (スタンプ配置中の OS 十字カーソル非表示+ゴースト中心点 / 画像スタンプを印刷・書き出しでも縦横比保持=exporter を viewer の object-fit:contain に一致)**。リリース設定を stable 化: `package.json` `build.publish.releaseType` を `prerelease`→`release`、version `2.0.0-beta.150`→`2.0.0`。**⚠️ 次に β を切るなら `releaseType` を `prerelease` に戻すこと** (現状は full release で出る)。**業務でフル運用が実証済なのは Windows のみ。Mac/Linux は配布物が起動し中核 (閲覧/編集/セキュア書き出し) は動くが、印刷/FAX が Windows 専用実装 → Mac/Linux 同等化の作業見積りは §15.6 を参照**。β.145 で Electron 38(EOL)→41.7.1 化 + hardening (CSP / window.open・遷移制限) + CI Node24 SHA 固定。β 期間の全経緯は §6.4 の表。
 リポジトリ: 開発リポ [windom21-cpu/k-pdf3](https://github.com/windom21-cpu/k-pdf3) (Public) / 配布フィード [windom21-cpu/k-pdf3-releases](https://github.com/windom21-cpu/k-pdf3-releases) (Public)
 
 このドキュメントは、K-PDF3 の開発を引き継ぐ次の AI アシスタント（または別環境の自分）が会話履歴なしで作業継続できるよう書かれている。**着手前に §0 → §1 → §2 → §3 → §6 → §8 → §17 の順で必ず読むこと**。
@@ -12,7 +12,7 @@
 
 ## 現状サマリ (1 分で把握)
 
-**フェーズ**: **β 卒業準備 bug fix 期間 (2026-05-25〜06-01 目安、業務並走延長中)**。β.131 機能凍結ライン以降、業務並走で見つかった重大バグを β.133〜β.146 で対応中 (重大バグ修正が主、β.144/.146 は業務並走で明示要望のあった軽微 UX 改善)。並行で stable 残務 (qpdf Mac/Linux 同梱 / 診断ロガー撤去) を仕込み、重大バグなしを確認したら v2.0.0 stable へ。**qpdf Mac は 2026-06-05 に M1 実機検証 PASS で実質クローズ、stable まで残るゲートは診断ロガー撤去 (#6) のみ**。M6 残のうち annotation proxy / qpdf sanitize / 真の墨消しは β.83-.85 で完了、「後で」仮説恒久対応は β.132 で投入、**β.134 で巨大 PDF (712MB 級裁判所謄写) を SQLite BLOB ではなくサイドカーファイル化して開けるように構造修正**、**β.136 で墨消し書き出しの透過 PDF 黒背景バグを修正**、**β.138 で印刷送信中モーダル消失失敗 (Adobe Pro DC 親子分離下の Path B 沈黙) を構造解消**、**β.139 で installer の portable target 撤去 + 関連付け書込を sentinel 付き customInstall macro で初回 install 時のみに限定 (autoUpdater 更新時の「規定アプリリセット」通知 + 「アイコンあり/なし K-PDF3 が 2 つ表示」現象を構造解消)**、**β.140 で 2026-05-27 業務並走フィードバック 9 件 (テキスト UX 6 + 保存 UX 3) + MS 明朝が印刷物で薄くドット化する根本対策 (hairline 経路に fillText 二重描きで AA 縁の濃度のみ上げる、glyph 太さは不変) を投入**、**β.141 で β.140 の追い込み 2 件 — (a) 明朝印刷密度を 2 回打ち → 4 回打ち (AA α 0.75 → 0.9375) に強化して横線のドット感も解消、(b) 配置済みテキスト枠を選択しても options bar が表示されない (β.140 で `refreshModeOptionsBar` に text 選択時の分岐を入れ忘れた配線漏れ) を修正**、**β.142 で回転した元 PDF (/Rotate≠0) の下敷き/通常印刷でオーバーレイ (記入値) だけが天地さかさまに印刷される重大事故を構造解消 (申請書下敷き印刷で実害発生、β4/β5 以来の潜在バグ — `assembleHybridPdf` が userRotation のみ補正しソース /Rotate を無視 + pdf-lib CCW vs PDF/mupdf CW の方向取り違え)**、**β.143 で吹き出しの後付け書式変更 (text 同様にフォント/サイズ/色/太字を選択後に変更) + 吹き出し枠はみ出し (入力画面では収まるのにサムネ/印刷で本文が枠外に漏れる) を構造解消 (採寸と exporter の折返し幅の下限不一致が根因、「枠を本文に合わせて自動拡大」方式で対応)**、**β.144 で業務並走の微調整要望 2 件 — (1) マーカーに「直線」種類を追加 (従来の範囲ドラッグに加え、一定の太さで水平にまっすぐ引く蛍光ペン式。種類/色/太さを options bar で選択・永続化)、(2) テキスト配置を sticky 化して連続入力可能に (1 枠ごとにモードが解除されていたのを維持。編集確定クリックでの二重配置は handlePagePointerDown の編集中ガードで抑止)**、**β.145 で β.144 以降に main へ積んだインフラ/セキュリティ整備を配布 (新機能なし) — Electron 38(EOL)→41 化 (better-sqlite3 12.10.0 で 41 prebuild) + hardening (全 webContents で window.open/リモート遷移拒否 + CSP) + qpdf Linux 同梱 + CI を Node24 対応 actions SHA 固定 + 別窓の ESM `require` 回帰修正。Electron 41 の Windows 実機配布は β.145 が初**、**β.146 でツールバーをアイコン化 (◎ アイコンのみ / ○ アイコン+小ラベル / △ は » 収納) + 全ボタンにホバー用途解説 + 幅あふれ時に表示倍率→検索→回転→… の順で実コントロールを「»」へ ResizeObserver で動的退避 (項目を「縮めない」方式にしたので高さ一定・テキスト縦並び/アイコンずれが起きない)**、**β.147 で β.134 巨大 PDF サイドカー (`.kpdf3.source.pdf`) の orphan 掃除を追加 (stable 残務 #7)**。**stable 残務の qpdf Mac は arm64 専用ビルドに確定 (2026-06-05、`package.json` arch=`["arm64"]`) し、同日 事務所 M1 で自己完結バンドルを `vendor/qpdf/mac/{bin,lib}/` に同梱完了 (commit `5a52bbb`、universal2/Rosetta/lipo 不要)。これで qpdf は 3 OS とも同梱済。**2026-06-05 に事務所 M1 (macOS 26.5) でローカルビルド検証を実施し、同梱 qpdf 配置/単体起動/依存ゼロ・GUI セキュア書き出しでのメタ除去・quarantine 付き (配布相当) での子プロセス qpdf 起動を全 PASS (`MAC-VERIFY-RESULT.md`)。これで stable 残務 #5 は実機確認まで完了**。検証中に発見した **byte-copy 経路 (未編集 PDF を「名前を付けて保存」セキュア ON) で qpdf を迂回しメタが残る全 OS 共通バグを同日修正** (`copy-source-pdf` ハンドラに secureExport を追加、ベクター維持で Info/XMP 除去、commit `1927e64`、未タグ)。
+**フェーズ**: **β 卒業完了 → v2.0.0 stable 配布中 (2026-06-05〜)**。β.1〜β.150 の業務並走を経て stable タグを切り、Win+Mac+Linux の 3 OS で正式配布 (autoUpdater は `allowPrerelease=true` なので β.150 テスターも 2.0.0 を受信)。**今後は stable 運用**: 重大バグは patch (2.0.1 等) で対応、新機能/大物は ADR を起こしてから。**Mac/Linux を Windows 同等にする (印刷/FAX/Office/署名) には相応の追加開発が要る — 必要作業とハードルの分析を §15.6 に記録 (2026-06-06、ユーザー後学メモ依頼)**。以下は β 期間 (2026-05-10〜06-05) の経緯: β.131 機能凍結ライン以降、業務並走で見つかった重大バグを β.133〜β.146 で対応 (重大バグ修正が主、β.144/.146 は業務並走で明示要望のあった軽微 UX 改善)。stable 残務 (qpdf Mac/Linux 同梱 / 診断ロガー撤去) を並行で仕込み、重大バグなしを確認して v2.0.0 stable へ移行。**qpdf Mac は 2026-06-05 に M1 実機検証 PASS で実質クローズ、stable まで残るゲートは診断ロガー撤去 (#6) のみ**。M6 残のうち annotation proxy / qpdf sanitize / 真の墨消しは β.83-.85 で完了、「後で」仮説恒久対応は β.132 で投入、**β.134 で巨大 PDF (712MB 級裁判所謄写) を SQLite BLOB ではなくサイドカーファイル化して開けるように構造修正**、**β.136 で墨消し書き出しの透過 PDF 黒背景バグを修正**、**β.138 で印刷送信中モーダル消失失敗 (Adobe Pro DC 親子分離下の Path B 沈黙) を構造解消**、**β.139 で installer の portable target 撤去 + 関連付け書込を sentinel 付き customInstall macro で初回 install 時のみに限定 (autoUpdater 更新時の「規定アプリリセット」通知 + 「アイコンあり/なし K-PDF3 が 2 つ表示」現象を構造解消)**、**β.140 で 2026-05-27 業務並走フィードバック 9 件 (テキスト UX 6 + 保存 UX 3) + MS 明朝が印刷物で薄くドット化する根本対策 (hairline 経路に fillText 二重描きで AA 縁の濃度のみ上げる、glyph 太さは不変) を投入**、**β.141 で β.140 の追い込み 2 件 — (a) 明朝印刷密度を 2 回打ち → 4 回打ち (AA α 0.75 → 0.9375) に強化して横線のドット感も解消、(b) 配置済みテキスト枠を選択しても options bar が表示されない (β.140 で `refreshModeOptionsBar` に text 選択時の分岐を入れ忘れた配線漏れ) を修正**、**β.142 で回転した元 PDF (/Rotate≠0) の下敷き/通常印刷でオーバーレイ (記入値) だけが天地さかさまに印刷される重大事故を構造解消 (申請書下敷き印刷で実害発生、β4/β5 以来の潜在バグ — `assembleHybridPdf` が userRotation のみ補正しソース /Rotate を無視 + pdf-lib CCW vs PDF/mupdf CW の方向取り違え)**、**β.143 で吹き出しの後付け書式変更 (text 同様にフォント/サイズ/色/太字を選択後に変更) + 吹き出し枠はみ出し (入力画面では収まるのにサムネ/印刷で本文が枠外に漏れる) を構造解消 (採寸と exporter の折返し幅の下限不一致が根因、「枠を本文に合わせて自動拡大」方式で対応)**、**β.144 で業務並走の微調整要望 2 件 — (1) マーカーに「直線」種類を追加 (従来の範囲ドラッグに加え、一定の太さで水平にまっすぐ引く蛍光ペン式。種類/色/太さを options bar で選択・永続化)、(2) テキスト配置を sticky 化して連続入力可能に (1 枠ごとにモードが解除されていたのを維持。編集確定クリックでの二重配置は handlePagePointerDown の編集中ガードで抑止)**、**β.145 で β.144 以降に main へ積んだインフラ/セキュリティ整備を配布 (新機能なし) — Electron 38(EOL)→41 化 (better-sqlite3 12.10.0 で 41 prebuild) + hardening (全 webContents で window.open/リモート遷移拒否 + CSP) + qpdf Linux 同梱 + CI を Node24 対応 actions SHA 固定 + 別窓の ESM `require` 回帰修正。Electron 41 の Windows 実機配布は β.145 が初**、**β.146 でツールバーをアイコン化 (◎ アイコンのみ / ○ アイコン+小ラベル / △ は » 収納) + 全ボタンにホバー用途解説 + 幅あふれ時に表示倍率→検索→回転→… の順で実コントロールを「»」へ ResizeObserver で動的退避 (項目を「縮めない」方式にしたので高さ一定・テキスト縦並び/アイコンずれが起きない)**、**β.147 で β.134 巨大 PDF サイドカー (`.kpdf3.source.pdf`) の orphan 掃除を追加 (stable 残務 #7)**。**stable 残務の qpdf Mac は arm64 専用ビルドに確定 (2026-06-05、`package.json` arch=`["arm64"]`) し、同日 事務所 M1 で自己完結バンドルを `vendor/qpdf/mac/{bin,lib}/` に同梱完了 (commit `5a52bbb`、universal2/Rosetta/lipo 不要)。これで qpdf は 3 OS とも同梱済。**2026-06-05 に事務所 M1 (macOS 26.5) でローカルビルド検証を実施し、同梱 qpdf 配置/単体起動/依存ゼロ・GUI セキュア書き出しでのメタ除去・quarantine 付き (配布相当) での子プロセス qpdf 起動を全 PASS (`MAC-VERIFY-RESULT.md`)。これで stable 残務 #5 は実機確認まで完了**。検証中に発見した **byte-copy 経路 (未編集 PDF を「名前を付けて保存」セキュア ON) で qpdf を迂回しメタが残る全 OS 共通バグを同日修正** (`copy-source-pdf` ハンドラに secureExport を追加、ベクター維持で Info/XMP 除去、commit `1927e64`、未タグ)。
 
 **直近完了 (β71〜β147、2026-05-14〜06-05)**:
 - **β71** — B2 renderer.js モジュール分離完結 (8631→4472 行 / -48.2% / 12 モジュール) + B3 タブ別ウインドウ完成 (右クリック / ツールバー / File menu / drag tearout / drag dock-back の 5 経路)
@@ -780,9 +780,9 @@ M1 Foundation → M2 Core → M3 Editing UI → M4 Export → M5 Feature Migrati
 | ✅ **M5** | tag: `v2.0.0-beta.104` (配布中) | K-PDF2 主要機能 + α (タブ並列編集 / タブ別ウインドウ / 自動アップデート / 印刷 (案 D) / しおり / スタンプ / 画像スタンプ / 検索 / 範囲書出 / 分割保存 / クロス窓ページ挿入 / 申請書テンプレ + 後付け編集 + Tab 順手動編集 / **PDF→画像書き出し + 範囲画像** (β.97) / **オートシェイプ 9 種 + 45° 回転** (β.100-104)) |
 | 🚧 **M6 (大半完了)** | β に同梱 | UI ポリッシュ + 機能投入済 (自前タイトルバー / カスタムファイルダイアログ / 印刷プレビュー / 98 風アップデート / マーカー / 墨消し白 / 吹き出し / 編集可能しおり (階層 + drag-reorder) / フォント設定 / ページ番号フッター / B2 モジュール分離 / B3 タブ別ウインドウ / 案 D 印刷 / 4K DPI 対応)。**残**: annotation read-only proxy / qpdf sanitize / Wayland ショートカット / 「後で」恒久対応 / 診断ロガー撤去 |
 
-### 6.4 β テストフロー（**現在ここ**）
+### 6.4 β テストフロー（**β.1〜β.150 で完了 → 2026-06-05 に v2.0.0 stable へ卒業**）
 
-2026-05-10 以降のフェーズ。新機能着手より、ユーザー（法律実務家本人 + スタッフ）が β を実機で使い込んでフィードバックを集める段階。
+2026-05-10〜06-05 のフェーズ（**完了**）。新機能着手より、ユーザー（法律実務家本人 + スタッフ）が β を実機で使い込んでフィードバックを集める段階だった。β.1 から β.150 まで業務並走で回し、stable 残務をすべてクローズして v2.0.0 stable をリリース（β 卒業）。以降は stable 運用（patch は 2.0.x、大物は ADR 起草）。**Mac/Linux の Windows 同等化は §15.6 参照**。
 
 #### 主要マイルストーン β
 
@@ -1560,7 +1560,7 @@ ADR ファイル名：`docs/adr/00NN-{slug}.md`、連番。
 ### 15.2 将来の判断ポイント
 
 - **IPAex 明朝の同梱方法** (M6): fonts/ 配下に置く方針は確定。テキスト層 flatten export が要件化したら本格実装
-- ~~**qpdf の同梱方法** (M6)~~ ✅ β.84 で Windows 同梱 (`vendor/qpdf/win/` + `--remove-info --remove-metadata`)。Mac/Linux は stable v2.0.0 で追加予定
+- ~~**qpdf の同梱方法** (M6)~~ ✅ **3 OS 同梱完了** — Win (β.84 `vendor/qpdf/win/`) / Linux (β.145 公式 portable v12.3.2) / Mac (2026-06-05 M1 で自己完結バンドル `vendor/qpdf/mac/{bin,lib}/`、arm64 専用・最低 OS 26.0)。全経路 `--remove-info --remove-metadata`
 - ~~**annotation read-only proxy** (M6)~~ ✅ β.83 で実装 (種別ごとアイコン分岐 + native title tooltip)
 - **userData の workspace を別 PC へ持ち運ぶ UI** (M6): 現状は手動コピー、export package (zip) で集約する案
 - **asset DB 共有 by SHA-256 dedup** (M5 / M6): source_pdf BLOB の重複削減
@@ -1605,6 +1605,50 @@ ADR ファイル名：`docs/adr/00NN-{slug}.md`、連番。
 - **S6 (split-view + sidebar-thumbs 抽出)**: B2 残置責務。緊急性なし
 - **`workspaceMutated` フラグは hacky**: 挿入も pending workflow に統合する方が綺麗 (temp pageNo 採番 + Ctrl+S で flush)。ただし削除と並列管理になり複雑度増、現状の hack で実用上は十分
 - **テストカバレッジ不足**: 2026-05-10 以降の追加機能 (ページ削除 / 挿入 / Save As / 検索 / スタンプ管理 / 画像スタンプ / 編集可能しおり / callout / タブ別ウインドウ) は手動確認のみ。Electron runner で round-trip テストを追加すべき
+
+### 15.6 Mac/Linux を Windows 同等にするには（後学メモ、2026-06-06）
+
+> v2.0.0 stable は 3 OS で配布できる（インストーラが起動し、中核機能は動く）が、**業務でフル運用が実証済なのは Windows のみ**。Mac/Linux で「Win 機同等」に使うには追加開発が要る。2026-06-06 にユーザーから「後学のために」必要作業とハードルの整理を依頼され、コードを確認した上でまとめたもの。**Acrobat を Mac/Linux に入れても解決しない**（後述①）点が要旨。
+
+#### 何が Windows 専用か（OS 依存は「外界とやり取りする層」に集中）
+
+中核（mupdf レンダリング / overlay 編集 / qpdf sanitize / PDF 組み立て）は OS 非依存。Windows 専用なのは:
+
+1. **印刷エンジン** — Sumatra (`vendor/sumatradpf`, Win exe) / Adobe `/p` / Chromium silent fallback。`process.platform==="win32"` ガード (`main.js` `printPdfViaReaderDialog` 周辺)
+2. **PDF Reader 検出** (`src/main/pdf-reader-finder.js`) — `C:\Program Files\Adobe\...\Acrobat.exe` 等の **Windows パス/exe のみ** 探索。Mac の `/Applications/Adobe Acrobat.app` は見ない → **Mac に Acrobat を入れても呼ばれない**
+3. **印刷キュー監視 / 自動クローズ** — Win32_PrintJob (PowerShell `Get-CimInstance`) / Adobe MainWindowTitle (PowerShell `Get-Process`) / `taskkill`。すべて win32 専用 (`snapshotPrintJobs` / `snapshotAdobeTitles` / `killNewPdfReaderProcesses`)
+4. **印刷設定の反映** — 用紙/トレイ/両面/カラー = Windows DEVMODE (`src/main/printer-properties-win.js`)
+5. **FAX 送信** — FUJIFILM 等の driver-private DEVMODE 処理 (`applyCleanFaxDevmode` / 宛先 0 埋め)
+6. **Office 挿入** (β.130 `file-to-pdf.js`) — Word/Excel を **COM 自動化** (PowerShell) で PDF 化 → Windows + Office インストール前提
+7. **フォント** — システムフォント列挙 (Win=PowerShell InstalledFontCollection / Linux=fc-list / **Mac=未対応**)、CJK fallback (`mupdf-font-fallback.js` は **Win+Linux のみ、Mac 未実装**、β.113)
+8. **インストーラ/関連付け** — NSIS + `customInstall` sentinel (Win)。Mac=Info.plist、Linux=.desktop で別機構
+
+非 win32 では上記をスキップし `silentPrintPdf` (Chromium `webContents.print()`) にフォールバック → 印刷自体は可だが低精度・FAX 不可・β.91 の縮小懸念。
+
+#### 必要な作業（機能別）
+
+- **印刷（最大の山）**: Mac/Linux 共通の **CUPS** を直接使うのが筋。`lp`/`lpr` で組み立て済み PDF を直送（CUPS は PDF をネイティブ処理 = むしろ Adobe 経由より素直に高品質になり得る）。用紙/両面/トレイは CUPS オプション (`-o media=A4 -o sides=... -o InputSlot=...`) に対応付け = **プリンタの PPD 依存** → PPD を読む層 (DEVMODE 層の作り直し) が要る。**嬉しい副作用**: 外部アプリ (Adobe) 起動→監視→kill の機構 (案 X / taskkill / タイトル監視) が**丸ごと不要**になり構造が単純化、ジョブ状態は `lpstat` で取れる
+- **FAX（最難関）**: 複合機 FAX が CUPS キューとして見えれば `lp` に宛先番号をオプションで渡す形だが、**宛先の渡し方はメーカー/ドライバ完全依存**で汎用解が無い可能性 (Windows の FUJIFILM 個別対応と同質の作り込み)
+- **Office 挿入**: COM が無いので **LibreOffice headless** (`soffice --headless --convert-to pdf`) に置換。ただし同梱は +300MB (過去に却下)、ユーザー別途インストールかの二択
+- **フォント (Mac)**: `pickFontFile` に Mac の CJK パス (ヒラギノ `/System/Library/Fonts/...`) 追加 = 小。システムフォント列挙は `system_profiler SPFontsDataType` 等 = 小
+- **配布/インストール**: Mac=**署名 + 公証**(Apple Developer $99/年 + 証明書 + 毎リリース公証、**未署名だと Mac の autoUpdater も効かない**)、最低 OS 26.0 の見直し。Linux=AppImage の **`--no-sandbox` ラッパ or user namespaces**（2026-06-05 実機で素の起動が SUID サンドボックスで FATAL を確認、`--no-sandbox --ozone-platform-hint=x11` で正常起動）、.desktop 関連付け、Wayland のショートカット不発 ([[project_kpdf3_shortcut_unresolved]])
+
+#### ハードル
+
+1. **実機テスト必須** — 印刷バグは実プリンタ×実ドライバ×実 OS でしか出ない。Windows の印刷経路は β.54〜.138（案 M/N/N'/ζ/C/D/X の約3週間）かかった。CUPS は Windows ドライバより統一的なので短縮見込みだが、各 OS で実機サイクルは要る
+2. **FAX は別格** — 機種依存で汎用解が無い恐れ。「その複合機で本当に必要か」を見極めてから着手
+3. **Mac 署名/公証は恒常コスト** — 一度きりでなく毎リリース。これ無しでは Mac autoUpdater も動かない
+4. **Office 変換のジレンマ** — 機能パリティ(LibreOffice +300MB)と配布サイズのトレードオフ
+5. **分岐の保守コスト** — `process.platform` 分岐と OS 別経路が増える（3-layer 分離で印刷は main 側に閉じてはいる）
+6. **人的リソース** — Windows 版は専属テスター1名+約1ヶ月。Mac/Linux 同等化は特に印刷でプラットフォームごとに相応の工数
+
+#### 現実的な進め方（段階）
+
+- **Step 1（軽・効果大）**: Mac/Linux の印刷を Chromium 印刷 → **CUPS 直送 (`lp`) + 用紙サイズ指定**に置換（「普通に正しく印刷」+ Adobe 監視の複雑さ不要）。Mac の CJK フォント追加も併せて
+- **Step 2（中）**: 印刷設定 (両面/トレイ) の PPD 対応、システムフォント列挙 (Mac)、関連付け・ランチャ整備
+- **Step 3（重・要判断）**: FAX、Office 挿入 (LibreOffice)、Mac 署名/公証 ← **その OS の利用者が実際に必要とするかで取捨選択**
+
+要点: **印刷の土台 (CUPS) は意外と素直で、むしろ Windows より単純になり得る。重いのは FAX・Office・Mac 署名という周辺の特殊事情**。どの OS を本気で使うか（誰が使うか）を先に決めると範囲が絞れる。現状の業務主力は Windows。
 
 ---
 
