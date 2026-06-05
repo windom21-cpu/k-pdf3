@@ -1381,14 +1381,30 @@ async function drawOverlay(ctx, ov, zoom, monoOverlays = false) {
         : null;
       const src = tinted || (await getAssetBitmap(props.assetId));
       if (src) {
+        // 画像スタンプは縦横比を保持して枠 (w×h) 内に収める (= viewer の
+        // object-fit:contain と一致)。box が画像と非比例でも歪まず、中央寄せ
+        // で letterbox する。これまで w×h に引き伸ばしていたため、画面では
+        // contain なのに印刷だけ枠なりに伸びる不整合があった (β.131 で
+        // palette 画像スタンプの resize は自由のままにした副作用)。
+        const natW = src.width;
+        const natH = src.height;
+        let dw = w;
+        let dh = h;
+        if (natW > 0 && natH > 0) {
+          const scale = Math.min(w / natW, h / natH);
+          dw = natW * scale;
+          dh = natH * scale;
+        }
+        const offX = (w - dw) / 2;
+        const offY = (h - dh) / 2;
         const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
         if (rot === 0) {
-          ctx.drawImage(src, x, y, w, h);
+          ctx.drawImage(src, x + offX, y + offY, dw, dh);
         } else {
           ctx.save();
           ctx.translate(x + w / 2, y + h / 2);
           ctx.rotate((rot * Math.PI) / 180);
-          ctx.drawImage(src, -w / 2, -h / 2, w, h);
+          ctx.drawImage(src, -dw / 2, -dh / 2, dw, dh);
           ctx.restore();
         }
       }
