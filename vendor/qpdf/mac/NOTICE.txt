@@ -1,0 +1,53 @@
+qpdf 12.3.2 — macOS arm64 (Apple Silicon) self-contained bundle
+===============================================================
+
+出所 (Source)
+-------------
+macOS 公式プリビルドは存在しないため、Apple Silicon (arm64) 実機の Homebrew で
+インストールした qpdf を、依存 dylib ごと自己完結化して再パッケージしたもの。
+  - qpdf            12.3.2   (Homebrew bottle, arm64)   ※ Win/Linux 同梱版と同一バージョン
+  - 依存 jpeg-turbo 3.1.3    (libjpeg.8.dylib を提供)
+  - 依存 openssl@3  3.6.2    (libcrypto.3.dylib を提供)
+
+ビルド日: 2026-06-05 / アーキテクチャ: arm64 単独 (universal2 ではない)。
+配布先は Apple Silicon (M1 以上) のみ・Intel 機なし (2026-06-05 ユーザー確認済) の方針による。
+
+同梱内容
+--------
+- bin/qpdf                実行バイナリ (arm64、依存は @executable_path/../lib を参照)
+- lib/libqpdf.30.dylib    本体ライブラリ (Homebrew の symlink を実体化)
+- lib/libjpeg.8.dylib     libqpdf の依存 (jpeg-turbo)
+- lib/libcrypto.3.dylib   libqpdf の依存 (OpenSSL crypto)
+
+自己完結化の方法
+----------------
+install_name_tool で各 dylib の id と相互参照を @executable_path/../lib/<name> に
+書き換え、qpdf 本体の @rpath/libqpdf.30.dylib 参照も同様に固定。改変後に
+`codesign -s - --force` で ad-hoc 署名し直し済 (Apple Silicon はロード時に
+署名検証が必須のため)。
+
+移植性 (検証済 2026-06-05)
+--------------------------
+`env -i`(システム環境変数を排除)でも `bin/qpdf --version` が 12.3.2 を返すことを確認。
+`otool -L` の全出力に /opt/homebrew・/usr/local 依存はゼロ。残る外部依存は OS 同梱の
+base dylib のみ:
+  /usr/lib/libSystem.B.dylib, /usr/lib/libc++.1.dylib, /usr/lib/libz.1.dylib
+よって追加インストール不要でどの Apple Silicon Mac でも動作する。
+セキュア書き出し相当 (`--remove-info --remove-metadata`) で Info 辞書の
+Author/Producer/Title が出力から除去されることも実 PDF で確認済。
+
+ライセンス
+----------
+- qpdf:        Apache License 2.0
+- jpeg-turbo:  IJG / BSD 系 (libjpeg-turbo の条件に従う)
+- OpenSSL 3:   Apache License 2.0
+いずれも動的リンクの共有ライブラリとして個別ファイルで同梱しており、各ファイルは
+差し替え可能。各ライセンス全文は上流 (https://github.com/qpdf/qpdf,
+https://github.com/libjpeg-turbo/libjpeg-turbo, https://www.openssl.org/) を参照。
+
+SHA256 (本バンドルのファイル)
+-----------------------------
+  bin/qpdf               6a4c38d0681e3650ce5d7a5cb71ef12f2cdd3141c05a9f71bda27a1b11b7e13d
+  lib/libqpdf.30.dylib   0cbcb666d54f036f5426815923a115e72519fc963b9f096f065a72fed5b18e84
+  lib/libjpeg.8.dylib    f394305f389c467d227bc5d1414d5a863484508beccbbab21d04e99151185bb6
+  lib/libcrypto.3.dylib  9dd45350dc7af2aad222a9d85d1d90bb68fd70e581d0ceb07baf261e7e78c888
