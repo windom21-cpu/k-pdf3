@@ -35,7 +35,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   // β.97 機能 1+2: image export (PDF → PNG/JPEG)
   saveImageFile:      (payload) => ipcRenderer.invoke("kpdf3:save-image-file", payload),
   saveImageFiles:     (payload) => ipcRenderer.invoke("kpdf3:save-image-files", payload),
-  copySourcePdf:      (savePath) => ipcRenderer.invoke("kpdf3:copy-source-pdf", savePath),
+  copySourcePdf:      (savePath, opts) => ipcRenderer.invoke("kpdf3:copy-source-pdf", { savePath, ...(opts ?? {}) }),
   listPrinters:       ()         => ipcRenderer.invoke("kpdf3:list-printers"),
   listPrintEngines:   ()         => ipcRenderer.invoke("kpdf3:list-print-engines"),
   hasPdfReader:       ()         => ipcRenderer.invoke("kpdf3:has-pdf-reader"),

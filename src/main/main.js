@@ -1801,15 +1801,34 @@ ipcMain.handle("kpdf3:save-overlays", async (event, overlays) => {
  * original PDF bytes (text layer, exact size) instead of degrading to
  * the rasterized flatten path. ADR-0008.
  */
-ipcMain.handle("kpdf3:copy-source-pdf", async (_, savePath) => {
+ipcMain.handle("kpdf3:copy-source-pdf", async (_, arg) => {
   if (!activeWorkspace) throw new Error("No active workspace");
+  // 後方互換: 旧シグネチャは savePath 文字列を直接渡していた。
+  const { savePath, secureExport = false } =
+    typeof arg === "string" ? { savePath: arg } : (arg ?? {});
   if (!savePath) throw new Error("copy-source-pdf: savePath missing");
-  const bytes = activeWorkspace.getSourceBytes();
+  let bytes = activeWorkspace.getSourceBytes();
   if (!bytes) throw new Error("copy-source-pdf: workspace has no source PDF");
+  // セキュア書き出し: overlay 無しでも secureExport=ON なら元バイトを
+  // そのまま流さず qpdf で Info/XMP を除去する (ベクター品質は維持される。
+  // export-pdf-rasterized と同じ qpdfMissing 方針: 未検出なら raw を書いて
+  // フラグで知らせ、sanitize エラーは throw して「セキュアでない」誤認を防ぐ)。
+  let secureExportApplied = false;
+  let qpdfMissing = false;
+  if (secureExport) {
+    const qpdfPath = findQpdfBinary();
+    if (!qpdfPath) {
+      qpdfMissing = true;
+      console.warn("[copy-source-pdf] secureExport requested but qpdf not found — writing raw");
+    } else {
+      bytes = await sanitizePdfBytes(bytes, { qpdfPath });
+      secureExportApplied = true;
+    }
+  }
   writeFileSync(savePath, bytes);
   const rev = activeWorkspace.recordExport(bytes, {
-    note: "byte-copy of source PDF",
-    isSecure: false,
+    note: secureExportApplied ? "secure byte-copy of source PDF" : "byte-copy of source PDF",
+    isSecure: secureExportApplied,
   });
   return {
     savedAt: rev.timestamp,
@@ -1819,6 +1838,8 @@ ipcMain.handle("kpdf3:copy-source-pdf", async (_, savePath) => {
     outputHash: rev.outputHash,
     outputSize: rev.outputSize,
     byteCopy: true,
+    secureExportApplied,
+    qpdfMissing,
   };
 });
 

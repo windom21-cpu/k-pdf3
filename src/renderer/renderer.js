@@ -4081,9 +4081,10 @@ async function actionSave() {
  * @param {string} savePath - absolute target PDF path
  * @param {{ verb?: string, secureExport?: boolean }} [opts]
  *   - verb: status-message verb (default "書き出し")
- *   - secureExport: run the assembled PDF through qpdf to strip metadata +
- *     rebuild xref. Ignored on the byte-copy path (no overlays / deletions
- *     / insertions — we're just byte-copying the source).
+ *   - secureExport: run the output through qpdf to strip metadata + rebuild
+ *     xref. Applies on BOTH paths — the assembled-export path and the
+ *     byte-copy path (unedited source): on the copy path main sanitizes the
+ *     source bytes before writing, preserving vectors while removing Info/XMP.
  */
 async function actionExportToPath(
   savePath,
@@ -4105,8 +4106,10 @@ async function actionExportToPath(
   try {
     let result;
     if (isCopy) {
-      updateBusy("元 PDF をコピー中...", 50);
-      result = await kpdf3.copySourcePdf(savePath);
+      // overlay/削除/挿入が無いので元バイトを流用するが、secureExport=ON の
+      // ときは main 側で qpdf を通して Info/XMP を除去する (ベクター維持)。
+      updateBusy(secureExport ? "元 PDF をコピー + メタ除去中..." : "元 PDF をコピー中...", 50);
+      result = await kpdf3.copySourcePdf(savePath, { secureExport });
     } else {
       const composed = await composePagesForExport({
         pages,
