@@ -1000,7 +1000,17 @@ $("btn-detach-tab")?.addEventListener("click", () => {
   dynamic.addEventListener("click", (e) => {
     if (e.target.closest("button")) close();
   });
-  document.addEventListener("click", close);
+  // 外側クリックで閉じる。ただし「メニュー内」(退避した表示倍率 select・検索入力を
+  // 含む) と「» ボタン自身」のクリックは閉じない。
+  // ※ β.146 不具合修正: 無条件 close だと、退避した #zoom-select を開こうとした
+  //   click が document まで伝播して menu が hidden になり、native ドロップダウンが
+  //   即 dismiss されて「倍率を選べない」状態になっていた。退避ボタンのクリックは
+  //   上の dynamic ハンドラが明示 close するので、ここはメニュー外だけを閉じる。
+  document.addEventListener("click", (e) => {
+    if (menu.hidden) return;
+    if (menu.contains(e.target) || btn.contains(e.target)) return;
+    close();
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") close();
   });
