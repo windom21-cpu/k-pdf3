@@ -944,6 +944,12 @@ button.toggled {
 .viewer-container.placement-text .viewer-page {
   cursor: text;
 }
+/* While a stamp ghost preview follows the cursor, hide the OS crosshair
+ * so it doesn't cover the (often small) preview. The ghost + its center
+ * dot (.stamp-ghost::after) are the placement feedback instead. */
+.viewer-container.stamp-ghost-active .viewer-page {
+  cursor: none;
+}
 
 /* Overlay layer sits on top of the page canvas. */
 .overlay-layer {
@@ -1615,6 +1621,23 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
 /* No-frame variant — no ::before border, just the centered text. */
 .stamp-ghost.stamp-ghost-none::before {
   border: none;
+}
+/* Center anchor dot — marks the exact placement point (= where the
+ * stamp's center lands) now that the OS crosshair is hidden during
+ * stamp placement. Small black dot + white halo so it stays visible on
+ * both light text stamps and dark/red image seals. */
+.stamp-ghost::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #000;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+  pointer-events: none;
 }
 
 /* Trial-stamp ghost (§17.5 "できれば"): a transparent preview placed on

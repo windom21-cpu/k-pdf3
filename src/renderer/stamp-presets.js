@@ -334,7 +334,7 @@ function updateStampGhostPreset() {
   );
   if (!preset) {
     // No active preset — hide the ghost; placement is a no-op anyway.
-    stampGhostEl.hidden = true;
+    setStampGhostVisible(false);
     return;
   }
   if (preset.kind === "image" && preset.assetId) {
@@ -448,6 +448,16 @@ function moveStampGhost(clientX, clientY) {
   el.style.top = `${clientY - (preset.h * z) / 2}px`;
 }
 
+/** Show/hide the placement ghost AND sync the container's
+ *  `stamp-ghost-active` flag. While the ghost is the active cursor we
+ *  hide the OS crosshair (CSS) so it doesn't cover small stamps — the
+ *  ghost + its center dot become the placement feedback instead. */
+function setStampGhostVisible(visible) {
+  if (visible) ensureStampGhost();
+  if (stampGhostEl) stampGhostEl.hidden = !visible;
+  if (_viewerContainer) _viewerContainer.classList.toggle("stamp-ghost-active", !!visible);
+}
+
 function onViewerMouseMoveForStampGhost(e) {
   if (_placementMode() !== "stamp") return;
   // While 試し置き is hunting for a click, the trial cursor follows
@@ -457,18 +467,18 @@ function onViewerMouseMoveForStampGhost(e) {
   // once ("違うスタンプのプレビューも付いてきている" — β28 testers).
   // Suppress the placement ghost for the duration of the trial.
   if (_isStampTrialPlacing()) {
-    if (stampGhostEl) stampGhostEl.hidden = true;
+    setStampGhostVisible(false);
     return;
   }
   // Size has to track viewer.zoom which the user can change while in
   // stamp mode; cheap enough to set on every move.
   updateStampGhostSize();
   moveStampGhost(e.clientX, e.clientY);
-  ensureStampGhost().hidden = false;
+  setStampGhostVisible(true);
 }
 
 function onViewerMouseLeaveForStampGhost() {
-  if (stampGhostEl) stampGhostEl.hidden = true;
+  setStampGhostVisible(false);
 }
 
 export function syncStampGhostMode() {
@@ -478,7 +488,7 @@ export function syncStampGhostMode() {
     _viewerContainer.addEventListener("mousemove", onViewerMouseMoveForStampGhost);
     _viewerContainer.addEventListener("mouseleave", onViewerMouseLeaveForStampGhost);
   } else {
-    if (stampGhostEl) stampGhostEl.hidden = true;
+    setStampGhostVisible(false);
     _viewerContainer.removeEventListener("mousemove", onViewerMouseMoveForStampGhost);
     _viewerContainer.removeEventListener("mouseleave", onViewerMouseLeaveForStampGhost);
   }
@@ -487,5 +497,5 @@ export function syncStampGhostMode() {
 /** Hide the placement ghost. Public so the trial-placement flow can
  *  suppress it while the user is hunting for a click. */
 export function hideStampGhost() {
-  if (stampGhostEl) stampGhostEl.hidden = true;
+  setStampGhostVisible(false);
 }
