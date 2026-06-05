@@ -36,6 +36,11 @@ base dylib のみ:
 セキュア書き出し相当 (`--remove-info --remove-metadata`) で Info 辞書の
 Author/Producer/Title が出力から除去されることも実 PDF で確認済。
 
+⚠️ 最低 OS 要件: 本バンドルは Homebrew bottle (macOS 26 Tahoe ビルド) 由来のため
+全ファイルが LC_BUILD_VERSION minos=26.0。**macOS 26.0 未満では dyld が起動を拒否する**。
+配布先は全台 macOS 26 以上であることを確認済 (2026-06-05、ユーザー確認)。将来 macOS 26
+未満へ配布する必要が出たら、より低い deployment target の bottle / ソースビルドで作り直すこと。
+
 ライセンス
 ----------
 - qpdf:        Apache License 2.0
