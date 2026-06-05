@@ -172,15 +172,19 @@ K-PDF3 は未署名配布（初回「右クリック→開く」運用、ADR / H
 
 ## 7. チェックリスト
 
-- [ ] `brew install qpdf dylibbundler`
-- [ ] `dylibbundler` で依存 dylib を `@executable_path/../lib/` に再配置
-- [ ] `otool -L` で `/opt/homebrew` `/usr/local` 依存ゼロを確認（自己完結）
-- [ ] `bin/qpdf --version` 起動確認
+- [x] `brew install qpdf dylibbundler`（2026-06-05、qpdf 12.3.2 / dylibbundler 1.0.5）
+- [x] 依存 dylib を `@executable_path/../lib/` に再配置（dylibbundler が 1.0.5 で病的ループに陥ったため
+      `install_name_tool` で手動バンドル。依存は閉じグラフ 3 個 = libqpdf.30 / libjpeg.8 / libcrypto.3）
+- [x] `otool -L` で `/opt/homebrew` `/usr/local` 依存ゼロを確認（自己完結。残るは OS 同梱 libSystem/libc++/libz のみ）
+- [x] `bin/qpdf --version` 起動確認（`env -i` のクリーン環境でも 12.3.2）
 - [x] 配布アーキを arm64 専用に確定 (2026-06-05、`arch: ["arm64"]` 反映済 / universal2 不要)
-- [ ] `lipo -info bin/qpdf` が `arm64` 単独であることを確認
-- [ ] `vendor/qpdf/mac/{bin,lib}/` に配置 + `NOTICE.txt` 作成
-- [ ] `git update-index --chmod=+x vendor/qpdf/mac/bin/qpdf`（`git ls-files -s` で 100755 確認）
-- [ ] Gatekeeper / quarantine で子プロセス起動が弾かれないか実機確認
-- [ ] Mac でアプリ起動 → セキュア書き出し成功 + メタデータ除去を確認
-- [ ] コミット & push（stable タグはこの確認が全部済んでから）
-- [ ] 完了したら HANDOVER の stable 残務 #5 と `package.json` の arch 設定を最終確認
+- [x] `lipo -info bin/qpdf` が `arm64` 単独であることを確認
+- [x] `vendor/qpdf/mac/{bin,lib}/` に配置 + `NOTICE.txt` 作成（README.md も配置済へ更新）
+- [x] `git update-index --chmod=+x vendor/qpdf/mac/bin/qpdf`（`git ls-files -s` = 100755 確認済）
+- [x] qpdf 単体での機能確認: 実 PDF を `--remove-info --remove-metadata` で Info(Author/Producer/Title) 除去を確認
+- [x] コミット & push（commit `5a52bbb`）
+- [ ] ⚠️ Gatekeeper / quarantine で子プロセス起動が弾かれないか **実機 dmg で確認**（← stable ビルド時。bin/qpdf と
+      全 dylib は ad-hoc 署名済なので弾かれない見込みだが、dmg からインストールした配布形態での最終確認が必要）
+- [ ] ⚠️ Mac でアプリ起動 → セキュア書き出し成功 + メタデータ除去を **アプリ経由で確認**（← stable ビルド時。
+      qpdf 単体は確認済だが Electron からの spawn + extraResources コピー経路は dmg ビルドで確認）
+- [x] 完了したら HANDOVER の stable 残務 #5 と `package.json` の arch 設定を最終確認（arch=`["arm64"]` / extraResources OK）
