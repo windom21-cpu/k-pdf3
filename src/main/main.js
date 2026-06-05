@@ -11,7 +11,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, shell, globalShortcut, screen } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
-import { existsSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -99,41 +99,12 @@ function legacySidecarPath(pdfPath) {
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
 
-// β51 J7: crash log. ユーザー報告「PDF 開いて閉じて、次の PDF を開こう
-// とするとクラッシュ」「アップデート時に zombie が残る」など、ハード
-// 落ち系の事象が再現性低めで根本原因の特定が難しい。 main process
-// のあらゆる例外 / 子プロセス死亡 / renderer 死亡を timestamp 付き
-// で userData/crash.log に append しておけば、次に発生したときに
-// ユーザーがファイルを共有してくれれば確実に診断できる。
-function crashLogPath() {
-  return join(app.getPath("userData"), "crash.log");
-}
-function logCrash(label, err) {
-  try {
-    const ts = new Date().toISOString();
-    let detail;
-    if (err == null) detail = "(no detail)";
-    else if (err instanceof Error) detail = err.stack ?? err.message ?? String(err);
-    else if (typeof err === "object") {
-      try { detail = JSON.stringify(err); } catch { detail = String(err); }
-    } else detail = String(err);
-    appendFileSync(crashLogPath(), `[${ts}] ${label}: ${detail}\n`);
-  } catch {
-    // Can't log? nothing we can do — don't cascade into another crash.
-  }
-}
-process.on("uncaughtException", (err) => {
-  logCrash("uncaughtException", err);
-});
-process.on("unhandledRejection", (reason) => {
-  logCrash("unhandledRejection", reason);
-});
-app.on("render-process-gone", (_event, webContents, details) => {
-  logCrash("render-process-gone", details);
-});
-app.on("child-process-gone", (_event, details) => {
-  logCrash("child-process-gone", details);
-});
+// 未捕捉例外 / 未処理 rejection を握りつぶしてプロセスを継続させる
+// (= β.51 以降の挙動を維持)。診断ロガーは stable リリース時に撤去したが、
+// 「予期しない内部エラーで業務中にアプリが突然消える」のを避けるため、
+// クラッシュ抑止の no-op ハンドラだけは残す。
+process.on("uncaughtException", () => {});
+process.on("unhandledRejection", () => {});
 
 // セキュリティ hardening (2026-06-03, Electron 41 化に合わせた CI/脆弱性整備):
 // 全 webContents に対し「新窓生成」と「リモート遷移」を一律拒否する。
@@ -163,28 +134,13 @@ app.on("web-contents-created", (_event, contents) => {
   contents.on("will-navigate", blockRemote);
   contents.on("will-redirect", blockRemote);
 });
-// Mark each session start so the log is easy to read chronologically.
-// Deferred to whenReady because logCrash uses app.getPath('userData')
-// which is only safe after the app is initialised.
-app.whenReady().then(() => {
-  logCrash("session-start", `pid=${process.pid} version=${app.getVersion()}`);
-});
 // β.113: mupdf に CJK 用 OS native font fallback を登録。renderer が
 // 初めて render-page を呼ぶ前に installLoadFontFunction が登録済である
 // 必要があるので、whenReady の前に同期実行 (mupdf module は import 時点で
 // ready)。エラーは握りつぶす — fallback 未登録でも従来の見た目に戻るだけ。
-// logFn として logCrash を渡し、最初の N 回 callback 発火を crash.log
-// に残す (= 実機検証で「fallback が効いたか」をユーザー報告から追跡可能)。
 try {
-  registerFontFallback(logCrash);
-} catch (err) {
-  logCrash("font-fallback-register-failed", err);
-}
-// β75 diag: renderer から fire-and-forget でログを残せるチャンネル。
-// D&D 経路の追跡 (drop event 発火 / path 解決 / openPdfSmart 結果) に使う。
-ipcMain.on("kpdf3:log-diag", (_event, label, data) => {
-  try { logCrash(String(label ?? "diag"), data); } catch { /* swallow */ }
-});
+  registerFontFallback();
+} catch { /* fallback 未登録でも従来の見た目に戻るだけ */ }
 // ---- Tab registry (ADR-0015 案 B) ----------------------------------------
 //
 // Each tab owns an open Workspace + mupdf Document handle. The
@@ -458,8 +414,8 @@ const registerShortcuts = () => {
 const unregisterShortcuts = () => {
   // β74: 2nd instance が singleton lock を取れず app.quit() 経由で
   // will-quit に入った時、whenReady 未到達のため globalShortcut が
-  // "cannot be used before the app is ready" で throw する。crash.log
-  // に "PDF 開閉繰り返しでクラッシュ" として記録され続けていた症状の根治。
+  // "cannot be used before the app is ready" で throw する。"PDF 開閉
+  // 繰り返しでクラッシュ" として現れていた症状の根治。
   if (!app.isReady()) return;
   globalShortcut.unregisterAll();
 };
@@ -543,16 +499,6 @@ function configureWindowChrome(win, { isPrimary }) {
     // Dispose tabs this window owned (closes their workspaces).
     unregisterWindow(win.id);
     if (isPrimary) {
-      // β.90 diag: primary window 閉鎖時点で生き残っているウインドウ
-      // 数を記録。survivingWindows > 0 のとき、process 自体は終わら
-      // ず zombie 状態に入る (window-all-closed が発火しないため
-      // app.quit() が走らない)。次の second-instance で復旧経路に
-      // 入る予定だが、トリガー検知のため記録を残す。
-      let survivingWindows = 0;
-      try {
-        survivingWindows = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length;
-      } catch { /* ignore */ }
-      logCrash("primary-window-closed", { survivingWindows });
       disposeActiveDoc();
       if (activeWorkspace) {
         try { activeWorkspace.close(); } catch { /* ignore */ }
@@ -714,10 +660,10 @@ function pdfPathsFromArgv(argv) {
 //     mutex to release, then retry. If retry succeeds, continue
 //     normally.
 let gotInstanceLock = app.requestSingleInstanceLock();
-const _diagInitArgvPdfs = pdfPathsFromArgv(process.argv);
+const initArgvPdfs = pdfPathsFromArgv(process.argv);
 if (!gotInstanceLock
     && process.platform === "win32"
-    && _diagInitArgvPdfs.length === 0) {
+    && initArgvPdfs.length === 0) {
   // β48 J5b: β47 used Atomics.wait + SharedArrayBuffer for a precise
   // synchronous sleep but Electron's main process disables shared
   // memory by default → the call threw, the unhandled error escaped
@@ -725,10 +671,6 @@ if (!gotInstanceLock
   // user saw the same "click does nothing" symptom and had to manually
   // kill via Task Manager. Replace with a plain busy-wait inside a
   // try/catch so any koffi/taskkill failure can't take down startup.
-  // β75 diag: zombie-kill が生きた 1st instance を誤殺している疑い
-  // を晴らす / 確定させるため、attempt と result をログに残す。
-  const _j5Start = Date.now();
-  logCrash("j5-zombie-kill-attempt", { pid: process.pid });
   try {
     spawnSync(
       "taskkill",
@@ -750,37 +692,13 @@ if (!gotInstanceLock
     // or when the user attaches a console. Never throw from here.
     console.warn("[startup] zombie-kill recovery failed:", err?.message ?? err);
   }
-  logCrash("j5-zombie-kill-result", {
-    pid: process.pid,
-    gotLockAfter: gotInstanceLock,
-    elapsedMs: Date.now() - _j5Start,
-  });
 }
 if (!gotInstanceLock) {
-  // β75 diag: 2nd instance が silent quit する瞬間を残す。hadPdfArg=true
-  // なら 1st instance の second-instance event で開かれるはず、false
-  // なら β47 J5 が動かなかった経路 (zombie-kill 失敗 / non-win32)。
-  logCrash("second-instance-quit", {
-    pid: process.pid,
-    hadPdfArg: _diagInitArgvPdfs.length > 0,
-    argvPdfs: _diagInitArgvPdfs,
-  });
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
     const paths = pdfPathsFromArgv(argv);
     const mwAlive = !!(mainWindow && !mainWindow.isDestroyed());
-    // β75 diag: 2nd instance が PDF arg を持って来た時の routing を残す。
-    // mainWindow 死亡 + B3 子ウインドウ alive のケースで paths が宙に
-    // 浮く疑いを確証 / 否認するための情報。
-    let allWindowsCount = 0;
-    try { allWindowsCount = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length; } catch { /* noop */ }
-    logCrash("second-instance-received", {
-      paths,
-      mainWindowAlive: mwAlive,
-      mainWindowMinimized: mwAlive ? mainWindow.isMinimized() : null,
-      totalWindows: allWindowsCount,
-    });
     if (mwAlive) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
@@ -798,12 +716,10 @@ if (!gotInstanceLock) {
       // ここで新しい primary main window を生成すると、createMainWindow
       // 内の did-finish-load → pendingOpens 消化が走って PDF が開く。
       pendingOpens.push(...paths);
-      logCrash("second-instance-deferred", { paths, reason: "no-main-window" });
       try {
         createMainWindow();
-        logCrash("second-instance-recovery-window-spawned", { paths });
       } catch (err) {
-        logCrash("second-instance-recovery-failed", err);
+        console.warn("[startup] second-instance recovery window failed:", err?.message ?? err);
       }
     }
   });
@@ -1297,137 +1213,102 @@ ipcMain.handle("kpdf3:import-pdf", async (_, pdfPath) => {
  *   4. Open the mupdf doc, cache page rows, return overlays to renderer.
  */
 ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null) => {
-  // β.133 diag: 巨大 PDF (e.g. 712MB 裁判所謄写) で「開けない / window が
-  // すぐ閉じる」事象を切り分けるため、各ステージの所要時間 + ファイル
-  // サイズ + 失敗時のスタックを crash.log に記録。真因が確定したら
-  // 撤去 (stable リリース時の cleanup 対象)。
-  const _t0 = Date.now();
-  let _fileSize = -1;
-  try { _fileSize = (await stat(pdfPath)).size; } catch { /* swallow — readFileSync が真因を出す */ }
-  const _diag = (stage, extra = {}) => {
-    try { logCrash("open-pdf-stage", { stage, pdfPath, fileSize: _fileSize, elapsedMs: Date.now() - _t0, ...extra }); } catch { /* swallow */ }
-  };
-  _diag("start");
-  try {
-    // ADR-0015: each tab gets its own workspace handle. If a tabId is
-    // passed, we register the new handle under that id (replacing any
-    // existing one for the same id). Otherwise generate a fresh tabId.
-    const targetTabId = tabId ?? `tab-${Date.now().toString(36)}`;
-    // If we're reusing an existing tabId, drop its previous handle so
-    // we don't leak the old workspace + doc. (Renderer drives re-opens
-    // by passing the same tabId.)
-    if (tabHandles.has(targetTabId)) disposeTab(targetTabId);
-    // Detach the active-* refs first; we'll re-point them via
-    // activateTab() once the new handle is built.
-    if (activeTabId === targetTabId) {
-      disposeActiveDoc();
-      activeWorkspace = null;
-      activeSourcePdfPath = null;
-    }
-
-    const _tRead = Date.now();
-    const pdfBytes = readFileSync(pdfPath);
-    _diag("read-done", { readMs: Date.now() - _tRead, bytes: pdfBytes.length });
-
-    const _tFp = Date.now();
-    const fingerprint = await computePdfFingerprint(pdfBytes);
-    _diag("fingerprint-done", { fingerprintMs: Date.now() - _tFp });
-
-    const sourceName = basename(pdfPath);
-
-    let isNew = false;
-    let migrated = false;
-    let workspace;
-    const existing = findWorkspaceByFingerprint(fingerprint);
-    if (existing && existsSync(existing.workspacePath)) {
-      workspace = Workspace.open(existing.workspacePath);
-      touchWorkspace(fingerprint, pdfPath, sourceName);
-      _diag("workspace-reopened");
-    } else {
-      const id = generateWorkspaceId();
-      const wsPath = workspacePathFor(id);
-      const legacy = legacySidecarPath(pdfPath);
-      if (existsSync(legacy)) {
-        // Migrate the ADR-0006 sidecar into userData/.
-        try {
-          renameSync(legacy, wsPath);
-        } catch (err) {
-          console.error("[main] sidecar migration rename failed:", err);
-          throw err;
-        }
-        workspace = Workspace.open(wsPath);
-        migrated = true;
-        _diag("workspace-migrated");
-      } else {
-        const _tImp = Date.now();
-        workspace = Workspace.create(wsPath);
-        await workspace.importPdfFromFile(pdfPath);
-        isNew = true;
-        _diag("workspace-imported", { importMs: Date.now() - _tImp });
-      }
-      registerWorkspace({
-        fingerprint,
-        workspaceId: id,
-        workspacePath: wsPath,
-        sourcePdfPath: pdfPath,
-        sourcePdfName: sourceName,
-      });
-    }
-
-    // Open the mupdf Document for this tab. Each tab carries its own
-    // handle so a tab switch is just pointer-swapping the active-* refs.
-    const _tDoc = Date.now();
-    const bytes = workspace.getSourceBytes();
-    const doc = bytes ? openPdfDocument(bytes) : null;
-    _diag("open-document-done", { openDocMs: Date.now() - _tDoc, hasDoc: !!doc, sourceBytes: bytes?.length ?? 0 });
-
-    const pages = workspace.getPages({ includeDeleted: true });
-    tabHandles.set(targetTabId, {
-      workspace,
-      doc,
-      pages,
-      sourcePdfPath: pdfPath,
-      sourceName,
-    });
-    activateTab(targetTabId);
-    // Mark this tab as owned by the calling window so window-close
-    // disposes it (B3-α multi-window).
-    const winSt = windowStateForEvent(event);
-    if (winSt) {
-      winSt.ownedTabIds.add(targetTabId);
-      winSt.activeTabId = targetTabId;
-    }
-
-    // First-run migration of workspace-local stamp presets to the
-    // global stamps.db. Idempotent — only fires when the global store
-    // is empty AND the just-opened workspace has presets to copy. Runs
-    // every open so β testers who registered presets in any of several
-    // workspaces under the old design get the first one's set surfaced.
-    try {
-      migrateStampPresetsToGlobalIfEmpty(workspace);
-    } catch (err) {
-      console.warn("[stamp-presets] global migration failed (non-fatal):", err);
-    }
-
-    const result = {
-      tabId: targetTabId,
-      pdfPath,
-      pageCount: workspace.getSourceMeta()?.pageCount ?? 0,
-      isNew,
-      migrated,
-      overlays: workspace.loadOverlays(),
-    };
-    _diag("done", { pageCount: result.pageCount });
-    return result;
-  } catch (err) {
-    _diag("error", {
-      errName: err?.name ?? "Error",
-      errMessage: String(err?.message ?? err),
-      errCode: err?.code,
-      errStack: (err?.stack ?? "").split("\n").slice(0, 5).join(" | "),
-    });
-    throw err;
+  // ADR-0015: each tab gets its own workspace handle. If a tabId is
+  // passed, we register the new handle under that id (replacing any
+  // existing one for the same id). Otherwise generate a fresh tabId.
+  const targetTabId = tabId ?? `tab-${Date.now().toString(36)}`;
+  // If we're reusing an existing tabId, drop its previous handle so
+  // we don't leak the old workspace + doc. (Renderer drives re-opens
+  // by passing the same tabId.)
+  if (tabHandles.has(targetTabId)) disposeTab(targetTabId);
+  // Detach the active-* refs first; we'll re-point them via
+  // activateTab() once the new handle is built.
+  if (activeTabId === targetTabId) {
+    disposeActiveDoc();
+    activeWorkspace = null;
+    activeSourcePdfPath = null;
   }
+
+  const pdfBytes = readFileSync(pdfPath);
+  const fingerprint = await computePdfFingerprint(pdfBytes);
+  const sourceName = basename(pdfPath);
+
+  let isNew = false;
+  let migrated = false;
+  let workspace;
+  const existing = findWorkspaceByFingerprint(fingerprint);
+  if (existing && existsSync(existing.workspacePath)) {
+    workspace = Workspace.open(existing.workspacePath);
+    touchWorkspace(fingerprint, pdfPath, sourceName);
+  } else {
+    const id = generateWorkspaceId();
+    const wsPath = workspacePathFor(id);
+    const legacy = legacySidecarPath(pdfPath);
+    if (existsSync(legacy)) {
+      // Migrate the ADR-0006 sidecar into userData/.
+      try {
+        renameSync(legacy, wsPath);
+      } catch (err) {
+        console.error("[main] sidecar migration rename failed:", err);
+        throw err;
+      }
+      workspace = Workspace.open(wsPath);
+      migrated = true;
+    } else {
+      workspace = Workspace.create(wsPath);
+      await workspace.importPdfFromFile(pdfPath);
+      isNew = true;
+    }
+    registerWorkspace({
+      fingerprint,
+      workspaceId: id,
+      workspacePath: wsPath,
+      sourcePdfPath: pdfPath,
+      sourcePdfName: sourceName,
+    });
+  }
+
+  // Open the mupdf Document for this tab. Each tab carries its own
+  // handle so a tab switch is just pointer-swapping the active-* refs.
+  const bytes = workspace.getSourceBytes();
+  const doc = bytes ? openPdfDocument(bytes) : null;
+
+  const pages = workspace.getPages({ includeDeleted: true });
+  tabHandles.set(targetTabId, {
+    workspace,
+    doc,
+    pages,
+    sourcePdfPath: pdfPath,
+    sourceName,
+  });
+  activateTab(targetTabId);
+  // Mark this tab as owned by the calling window so window-close
+  // disposes it (B3-α multi-window).
+  const winSt = windowStateForEvent(event);
+  if (winSt) {
+    winSt.ownedTabIds.add(targetTabId);
+    winSt.activeTabId = targetTabId;
+  }
+
+  // First-run migration of workspace-local stamp presets to the
+  // global stamps.db. Idempotent — only fires when the global store
+  // is empty AND the just-opened workspace has presets to copy. Runs
+  // every open so β testers who registered presets in any of several
+  // workspaces under the old design get the first one's set surfaced.
+  try {
+    migrateStampPresetsToGlobalIfEmpty(workspace);
+  } catch (err) {
+    console.warn("[stamp-presets] global migration failed (non-fatal):", err);
+  }
+
+  return {
+    tabId: targetTabId,
+    pdfPath,
+    pageCount: workspace.getSourceMeta()?.pageCount ?? 0,
+    isNew,
+    migrated,
+    overlays: workspace.loadOverlays(),
+  };
 });
 
 ipcMain.handle("kpdf3:switch-tab", async (event, tabId) => {
@@ -1655,17 +1536,6 @@ ipcMain.handle("kpdf3:detach-tab", async (event, payload) => {
   // bootstrap which also calls switch-tab once the renderer is up.
   spawnDetachedTabWindow(payload);
   return { ok: true, dockedTo: null };
-});
-
-ipcMain.handle("kpdf3:open-crash-log", async () => {
-  const path = crashLogPath();
-  if (!existsSync(path)) return { ok: false, reason: "missing" };
-  try {
-    await shell.openPath(path);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: err?.message ?? String(err) };
-  }
 });
 
 ipcMain.handle("kpdf3:list-recent-pdfs", async () => {
@@ -2270,13 +2140,6 @@ function silentPrintPdf(pdfPath, opts) {
               if (success) {
                 settle(resolve, { success: true });
               } else {
-                // β52 J7b: log full context so the next failure tells us
-                // *why* Chromium rejected the job (empty errorType is the
-                // common case and was previously opaque).
-                logCrash("silent-print-failed", {
-                  errorType: errorType ?? "(empty)",
-                  opts: printOpts,
-                });
                 settle(reject, new Error(errorType || "silent print failed"));
               }
             },
@@ -2419,7 +2282,6 @@ function listAdobeRelatedProcesses() {
       if (settled) return;
       settled = true;
       try { sp?.kill(); } catch { /* ignore */ }
-      try { logCrash("listAdobeRelatedProcesses-timeout", { timeoutMs: 5000 }); } catch { /* ignore */ }
       resolve({ kill: [], wide: [] });
     }, 5000);
     try {
@@ -2480,7 +2342,6 @@ function getProcessPidsByName(exeName) {
       if (settled) return;
       settled = true;
       try { sp?.kill(); } catch { /* ignore */ }
-      try { logCrash("getProcessPidsByName-timeout", { exeName, timeoutMs: 5000 }); } catch { /* ignore */ }
       resolve([]);
     }, 5000);
     try {
@@ -2545,222 +2406,53 @@ const PDF_READER_HELPER_EXES = {
  *  「印刷完了後は全 Adobe を閉じてよい」方針に切替えた。並行 Adobe 作業
  *  は K-PDF3 viewer に置き換える前提。
  *  失敗時は no-op (kill 失敗してもユーザの業務は継続可能なので最善 effort)。
- *  beforePidsByExe は kill 対象選定には使わなくなったが、診断ログで
- *  「pre-existing / 新規」を区別するために残置。
+ *  beforePidsByExe は kill 対象の exe 名を知るために使う (PID 配列自体は
+ *  使わず、現時点で alive な PID を再取得して全 kill)。
  *  @param {{exePath:string, engine:string, displayName:string}} readerInfo
- *  @param {Record<string, number[]>} beforePidsByExe  exe 名ごとの PID 一覧 (診断用)
+ *  @param {Record<string, number[]>} beforePidsByExe  対象 exe 名の一覧 (キーのみ使用)
  */
 async function killNewPdfReaderProcesses(readerInfo, beforePidsByExe) {
-  // β.106: 「cleanup 経路に入ったか」を切り分けるための入口ログ。
-  // β.105 までは pdfreader-dialog-finish の後に必ず出るはずの
-  // pdfreader-cleanup ログが「無い」ユーザー報告があり、関数冒頭から
-  // 最初の await まで logCrash 呼出が無いせいで「cleanup に入って hang
-  // した」のか「そもそも入っていない」のか判別できなかった。
+  // 印刷完了後の Adobe/Reader プロセス掃除 (best effort)。before/after の
+  // 差分は取らず、現時点で alive な対象を全 kill する (β.95 方針)。失敗は
+  // 無視 (kill できなくてもユーザ業務は継続可能)。
+  const killPid = (pid) => new Promise((resolveKill) => {
+    try {
+      const tk = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+        windowsHide: true,
+        detached: false,
+      });
+      tk.on("error", () => resolveKill());
+      tk.on("close", () => resolveKill());
+    } catch {
+      resolveKill();
+    }
+  });
+
+  // β.96 + β.116: 旧固定 list (Acrobat.exe + helpers) で捕捉できない
+  // Adobe DC 2024+ 系プロセスを名前パターンで列挙 (.kill = 実際に kill する
+  // Acro/RdrCEF/Acrobat 系)。第 1 ループより前に snapshot を取り、二重 kill
+  // 防止のため既に kill 試行済の PID を後段で除く。
+  let adobeRelatedAtCleanup = [];
   try {
-    logCrash("pdfreader-cleanup-start", {
-      engine: readerInfo?.engine,
-      beforePidsByExe,
-    });
+    adobeRelatedAtCleanup = (await listAdobeRelatedProcesses()).kill ?? [];
   } catch { /* ignore */ }
 
-  const killedCounts = {};
-  /** β.85: per-PID outcome trace for diagnostics. taskkill exit code (0 =
-   *  成功 / 128 = 既に終了 / 1 = アクセス拒否 / その他は OS message)。 */
-  const killDetails = {};
-  const newPidsByExe = {};
-  const preExistingPidsByExe = {};
-  // β.96 + β.116: 拡張検出 — 旧 fixed list (Acrobat.exe + 3 helpers) では
-  // 捕捉できない Adobe DC 2024+ 系プロセスを名前パターンで全列挙。
-  // β.116 で listAdobeRelatedProcesses は {kill, wide} を返すように拡張。
-  //   - kill: ADOBE_KILL_PATTERN にマッチ (= 実際に kill するもの、Acro/
-  //     RdrCEF/Acrobat 系)
-  //   - wide: ADOBE_WIDE_PATTERN にマッチ (= 診断用、Adobe/Reader を含む
-  //     全プロセス、kill 対象に入らないものも含む)
-  let adobeRelatedAtCleanup = [];
-  let adobeRelatedAtCleanupWide = [];
-  try {
-    const r = await listAdobeRelatedProcesses();
-    adobeRelatedAtCleanup = r.kill ?? [];
-    adobeRelatedAtCleanupWide = r.wide ?? [];
-  } catch { /* ignore */ }
-  for (const [exeName, beforePids] of Object.entries(beforePidsByExe)) {
+  // 第 1 ループ: before に居た exe 名ごとに、現時点で alive な PID を全 kill。
+  const killedPids = new Set();
+  for (const exeName of Object.keys(beforePidsByExe)) {
     try {
       const afterPids = await getProcessPidsByName(exeName);
-      // β.95: 診断用に「pre-existing (= 印刷前から alive)」と「新規 (= 印刷
-      // 起因で新規 spawn)」を分けて記録するが、実際の kill 対象は両方の
-      // 合算 (= afterPids 全て)。Adobe `/n` が効かないケースで pre-existing
-      // を残すと「Adobe 消えない」になるため、ユーザ判断で全 kill に切替。
-      const newPids = afterPids.filter((pid) => !beforePids.includes(pid));
-      const preExisting = afterPids.filter((pid) => beforePids.includes(pid));
-      newPidsByExe[exeName] = newPids;
-      preExistingPidsByExe[exeName] = preExisting;
-      const killTargets = afterPids; // 全 alive PID を kill
-      killedCounts[exeName] = killTargets.length;
-      const details = [];
-      for (const pid of killTargets) {
-        // β.85: spawn を await 化して exit code を回収。これまで fire-and-
-        // forget で「kill 投げたが実は failed」が見えなかった。
-        const outcome = await new Promise((resolveKill) => {
-          try {
-            const tk = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
-              windowsHide: true,
-              detached: false,
-            });
-            let stderr = "";
-            tk.stderr?.on("data", (d) => { stderr += d.toString(); });
-            tk.on("error", (err) => {
-              resolveKill({ pid, exitCode: -1, error: err?.message ?? String(err) });
-            });
-            tk.on("close", (code) => {
-              resolveKill({ pid, exitCode: code, stderr: stderr.trim() || undefined });
-            });
-          } catch (err) {
-            resolveKill({ pid, exitCode: -2, error: err?.message ?? String(err) });
-          }
-        });
-        details.push(outcome);
+      for (const pid of afterPids) {
+        killedPids.add(pid);
+        await killPid(pid);
       }
-      killDetails[exeName] = details;
-    } catch (err) {
-      killedCounts[exeName] = -1; // 取得失敗
-      killDetails[exeName] = [{ error: err?.message ?? String(err) }];
-    }
+    } catch { /* ignore — best effort */ }
   }
-  // β.96: 旧固定 list (exeName 4 つ) で捕捉できなかった Adobe 系プロセスも
-  // ここで kill する。listAdobeRelatedProcesses で広く列挙した結果から、
-  // 既に上で kill 試行済の PID を除いた残りを taskkill /F /T する。
-  const knownKilled = new Set();
-  for (const arr of Object.values(killDetails)) {
-    for (const d of arr) {
-      if (d.pid != null) knownKilled.add(d.pid);
-    }
-  }
-  const extraKilled = [];
-  for (const { name, pid } of adobeRelatedAtCleanup) {
-    if (knownKilled.has(pid)) continue;
-    const outcome = await new Promise((resolveKill) => {
-      try {
-        const tk = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
-          windowsHide: true,
-          detached: false,
-        });
-        let stderr = "";
-        tk.stderr?.on("data", (d) => { stderr += d.toString(); });
-        tk.on("error", (err) => {
-          resolveKill({ name, pid, exitCode: -1, error: err?.message ?? String(err) });
-        });
-        tk.on("close", (code) => {
-          resolveKill({ name, pid, exitCode: code, stderr: stderr.trim() || undefined });
-        });
-      } catch (err) {
-        resolveKill({ name, pid, exitCode: -2, error: err?.message ?? String(err) });
-      }
-    });
-    extraKilled.push(outcome);
-  }
-  // β.85: 500ms 後に再 snapshot して taskkill /T で消えなかった生存
-  // プロセスを記録する。ユーザ報告「印刷後 Adobe が消えない」の
-  // 根因切り分け用 (Pro DC が helpers を遅延 spawn して /T 漏れ /
-  // 別 exe 名で spawn / アクセス拒否 のいずれかを特定する)。
-  //
-  // 待ち時間が長いとユーザが「Adobe 消えないから手動 × する」操作と
-  // 競合して survivors が空に見える誤判定が起きる。500ms なら taskkill
-  // /F の完了に十分かつ手動 × より十分早い。survivors に PID がいる
-  // 時点で「自動消去失敗」が確定するので、後続のユーザー × による
-  // 死亡は判定に影響しない (audit はスナップショット記録)。
-  // β.95: 全 kill 方針に切替えたので survivors は「kill 後も alive な
-  // 全 PID」を見る (pre-existing 含む)。1 個でも残っていれば「自動消去
-  // 失敗」が確定。
-  let survivors = {};
-  let survivorsExtra = [];
-  let survivorsExtraWide = [];
-  try {
-    await new Promise((r) => setTimeout(r, 500));
-    for (const exeName of Object.keys(beforePidsByExe)) {
-      const stillAlive = await getProcessPidsByName(exeName);
-      if (stillAlive.length > 0) {
-        survivors[exeName] = stillAlive;
-      }
-    }
-    // β.96 + β.116: 拡張検出した Adobe 系プロセスの生存確認 + 診断用 wide list
-    const sr = await listAdobeRelatedProcesses();
-    survivorsExtra = sr.kill ?? [];
-    survivorsExtraWide = sr.wide ?? [];
-  } catch { /* ignore */ }
-  try {
-    logCrash("pdfreader-cleanup", {
-      engine: readerInfo.engine,
-      killed: killedCounts,
-      killDetails,
-      newPidsByExe,
-      preExistingPidsByExe,
-      adobeRelatedAtCleanup,
-      // β.116: ADOBE_WIDE_PATTERN にマッチした全プロセスを診断用に同梱。
-      // ADOBE_KILL_PATTERN を素通りした「未知の Adobe 関連プロセス」を
-      // 次回ユーザー報告で特定するための情報源。
-      adobeRelatedAtCleanupWide,
-      extraKilled,
-      survivors,
-      survivorsExtra,
-      survivorsExtraWide,
-      survivorsCount: Object.keys(survivors).length,
-    });
-  } catch { /* ignore */ }
 
-  // β.125: cleanup-end の +5s / +15s / +30s に追跡 snapshot を記録。
-  // 既存の最終 survivors snapshot は cleanup 完了から 500ms 後の 1 回のみ
-  // → 「タスクバーに残った」報告に対し cleanup 後の挙動が観測できない
-  // 盲点があった。fire-and-forget で再 snapshot を 3 回出し、各 tick で
-  // 「前回 snapshot との差分 (= 新規 PID = 復活した可能性)」も併記する
-  // ことで「cleanup 直後は死亡 → N 秒後に Adobe が復活した」パターンを
-  // ログから直接特定可能にする。診断目的なので副作用ゼロ (kill しない)。
-  //
-  // 区別補助: 各 tick の `wide` リストにいる PID が直前 tick にも居れば
-  // 「ユーザー側が触っていない」、消えていれば「ユーザー手動 kill か
-  // Adobe 自然 exit」、新規出現すれば「外部要因で復活」と確定できる。
-  // exitCode (taskkill 0 vs 128) と組み合わせて「誰が消したか」が
-  // 復元しやすくなる。
-  const followupSchedule = [5000, 15000, 30000];
-  /** @type {Array<{name:string,pid:number}>} */
-  let prevWide = adobeRelatedAtCleanupWide.slice();
-  let prevKill = adobeRelatedAtCleanup.slice();
-  for (const offsetMs of followupSchedule) {
-    setTimeout(async () => {
-      try {
-        const r = await listAdobeRelatedProcesses();
-        const wide = r.wide ?? [];
-        const kill = r.kill ?? [];
-        const prevWidePids = new Set(prevWide.map((p) => p.pid));
-        const prevKillPids = new Set(prevKill.map((p) => p.pid));
-        const widePids = new Set(wide.map((p) => p.pid));
-        const killPids = new Set(kill.map((p) => p.pid));
-        const appeared = wide.filter((p) => !prevWidePids.has(p.pid));
-        const disappeared = prevWide.filter((p) => !widePids.has(p.pid));
-        const appearedKillable = kill.filter((p) => !prevKillPids.has(p.pid));
-        const disappearedKillable = prevKill.filter((p) => !killPids.has(p.pid));
-        logCrash("pdfreader-followup-snapshot", {
-          engine: readerInfo.engine,
-          offsetMs,
-          aliveCount: wide.length,
-          aliveKillCount: kill.length,
-          alive: wide,
-          aliveKill: kill,
-          appeared,            // 前回から増えた PID (復活 = 外部要因確定)
-          disappeared,         // 前回から消えた PID (ユーザー手動 kill or 自然 exit)
-          appearedKillable,    // appeared のうち KILL_PATTERN マッチ
-          disappearedKillable, // disappeared のうち KILL_PATTERN マッチ
-        });
-        prevWide = wide;
-        prevKill = kill;
-      } catch (err) {
-        try {
-          logCrash("pdfreader-followup-snapshot-error", {
-            offsetMs,
-            err: err?.message ?? String(err),
-          });
-        } catch { /* ignore */ }
-      }
-    }, offsetMs).unref();
+  // extra ループ: 固定 list で捕捉できなかった Adobe 系 PID を追加 kill。
+  for (const { pid } of adobeRelatedAtCleanup) {
+    if (killedPids.has(pid)) continue;
+    await killPid(pid);
   }
 }
 
@@ -2953,14 +2645,6 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
       if (settled) return;
       settled = true;
       _activePdfReaderProcess = null;
-      try {
-        logCrash("pdfreader-dialog-finish", {
-          engine: readerInfo.engine,
-          reason,
-          elapsedMs: Date.now() - startMs,
-          submittedJobCount: submittedJobIds.size,
-        });
-      } catch { /* ignore */ }
       // β.118: ジョブ drain 待ち。fire-and-forget は維持 (IPC ハンドラの
       // resolve は即時)、ただし内部では submitted ジョブが queue から
       // 消えるまで cleanup を遅延 → Adobe が転送し切る前に kill されて
@@ -2970,13 +2654,10 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
       (async () => {
         try {
           if (submittedJobIds.size > 0) {
-            const drainResult = await waitForJobsToDrain();
-            try { logCrash("pdfreader-jobs-drained", drainResult); } catch { /* ignore */ }
+            await waitForJobsToDrain();
           }
           await killNewPdfReaderProcesses(readerInfo, beforePidsByExe);
-        } catch (err) {
-          try { logCrash("pdfreader-cleanup-error", err); } catch { /* ignore */ }
-        }
+        } catch { /* cleanup は best effort */ }
       })();
       resolve({ success: true, reason });
     };
@@ -2987,21 +2668,9 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
       _activePdfReaderProcess = null;
       reject(err);
     });
-    sp.on("close", (code, signal) => {
+    sp.on("close", () => {
       // Reader 自身が exit (主に Reader DC の自然 exit / ユーザ × 閉じ)
       // → 印刷せずに終了したと判断、即 finish (helpers cleanup のみ)。
-      // β.85: settled 済 (= 既に job-detected で finish 済) でも close イベ
-      // ントはログに残す。ユーザー × を kill の前 / 後で時系列判別する
-      // ための裏付け (詳細は pdfreader-cleanup の survivors と合わせ読み)。
-      try {
-        logCrash("pdfreader-process-closed", {
-          engine: readerInfo.engine,
-          code,
-          signal,
-          settled,
-          elapsedMs: Date.now() - startMs,
-        });
-      } catch { /* ignore */ }
       if (settled) return;
       finish("reader-closed");
     });
@@ -3031,13 +2700,6 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
     const tempPdfMarker = basename(pdfPath, ".pdf");
     let docOpenedSeen = false;
 
-    // β.137 diag: 「印刷の送信中ダイアログが消えない」事象の切り分け用。
-    // β.137 で 30 tick 全て adobeTitleLen:0 を確認 → β.138 で全 Acrobat /
-    // AcroCEF プロセス scan に変更済。引き続き real-world 挙動確認のため
-    // 残置 (titles 配列も追加で出す)。真因確定後に撤去 (stable cleanup #6 対象)。
-    let _tickN = 0;
-    let _lastLoggedTitlesKey = null;
-
     const tick = async () => {
       if (settled) return;
       const elapsed = Date.now() - startMs;
@@ -3060,37 +2722,6 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
         ]);
 
         const titleHasMarker = adobeTitles.some((t) => t.includes(tempPdfMarker));
-
-        _tickN++;
-        // β.137 diag: tick の raw を crash.log に。最初の 3 tick は無条件、
-        // 以降は titles 変化時 or 10 tick 毎、または job 検出時に出す
-        // (ノイズ抑制しつつ転機を取り逃さない)。
-        const titlesKey = adobeTitles.join("");
-        const titlesChanged = titlesKey !== _lastLoggedTitlesKey;
-        const shouldLogTick =
-          _tickN <= 3
-          || titlesChanged
-          || (_tickN % 10) === 0
-          || currentJobs.length > 0;
-        if (shouldLogTick) {
-          try {
-            logCrash("print-tick", {
-              tickN: _tickN,
-              elapsedMs: elapsed,
-              spPid: sp?.pid ?? null,
-              currentJobsLen: currentJobs.length,
-              currentJobIds: currentJobs.slice(0, 8),
-              beforeJobIdsLen: beforeJobIds.length,
-              everSeenNewJobsSize: everSeenNewJobs.size,
-              docOpenedSeen,
-              titlesLen: adobeTitles.length,
-              titles: adobeTitles.map((t) => t.slice(0, 120)),
-              titleHasMarker,
-              marker: tempPdfMarker,
-            });
-          } catch { /* ignore */ }
-          _lastLoggedTitlesKey = titlesKey;
-        }
 
         // Path A: Win32_PrintJob diff + cumulative tracking
         const newJobs = currentJobs.filter((id) => !beforeJobIds.includes(id));
@@ -3218,10 +2849,7 @@ ipcMain.handle("kpdf3:cancel-print", async () => {
   if (printWindow && !printWindow.isDestroyed()) killed.push("chromium");
   try {
     cancelInFlightPrint();
-    logCrash("print-cancel-by-user", { killed });
-  } catch (err) {
-    logCrash("print-cancel-failed", err);
-  }
+  } catch { /* best effort — busy modal は呼び出し側で解除 */ }
   return { ok: true, killed };
 });
 
@@ -3513,26 +3141,6 @@ ipcMain.handle("kpdf3:print-via-reader-dialog", async (_, payload) => {
   const reader = findPdfReader();
   if (!reader) throw new Error("No PDF Reader detected");
 
-  // β.117: 書き出した temp PDF のパスとサイズを診断ログに残す。Xerox 系の
-  // 016-721 (PDL 処理エラー) は K-PDF3 側の責任範囲外で発火するが、その
-  // 切り分けに「Adobe に渡した PDF 自体を取り出して Adobe で直接印刷
-  // できるか」のテストが要る。temp ファイルは pdfreader-cleanup の数秒
-  // 後に削除されない (現状仕様) ので、ユーザーがこのパスをコピーして
-  // 手動印刷検証できる。
-  let tempBytes = -1;
-  try { tempBytes = pdfBytes?.length ?? -1; } catch { /* ignore */ }
-  logCrash("print-via-reader-dialog-start", {
-    source,
-    pageCount: Array.isArray(pages) ? pages.length : 0,
-    engine: reader.engine,
-    exe: reader.exePath,
-    defaultPrinterHint: defaultPrinterHint ?? null,
-    tempPath,
-    tempBytes,
-    tempBytesHuman: tempBytes > 0
-      ? `${(tempBytes / 1024 / 1024).toFixed(2)} MB`
-      : "(unknown)",
-  });
   // OS 規定プリンタ切替 (Win + hint あり時のみ)。失敗しても続行 (best-effort)
   let defaultToken = null;
   if (defaultPrinterHint && process.platform === "win32") {
@@ -3621,21 +3229,6 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     process.platform === "win32"
     && !isFax
     && sumatraExe !== null;
-  logCrash("print-route", {
-    deviceName,
-    source,
-    pageCount: Array.isArray(pages) ? pages.length : 0,
-    isFax,
-    sumatraExe: sumatraExe ?? "(missing)",
-    canSumatra,
-    forceSumatra,
-    forceChromium,
-    copies,
-    landscape,
-    duplex,
-    bin,
-    color,
-  });
   // β48 J4b: push the user-modified DEVMODE as per-user default for the
   // Sumatra / Chromium fallback paths.
   // β61: FAX のときは applyCleanFaxDevmode を呼んで dmDriverExtra (driver-
@@ -3680,7 +3273,6 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
       await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color, pageSize });
       usedEngine = "chromium";
     }
-    logCrash("print-route-end", { engine: usedEngine, deviceName, engineOverride });
   } finally {
     _printInFlight = false;
     if (devmodeToken) await restoreUserPrinterDevmode(devmodeToken);

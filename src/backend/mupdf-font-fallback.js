@@ -15,8 +15,6 @@
 //   - bold は引数 bold OR font name 末尾の ",Bold" / "Bold" で拾う
 //   - フォント file は readFileSync で 1 度読んで Buffer をキャッシュ
 //     (load-font callback は内部 C 側からの同期呼出、await 不可)
-//   - logFn が渡されていれば最初の 10 回だけ「どんな name/script で呼ばれた
-//     か」を crash.log に記録 (= 実機で callback が発火しているか追跡用)
 //
 // 副作用: PDF ファイル自体には一切書き込まない (= K-PDF3 の「PDF は
 // immutable background」原則を維持)。pixmap 描画の見た目だけが変わる。
@@ -104,16 +102,10 @@ function loadFontCached(choice, name) {
 }
 
 /**
- * mupdf に load-font callback を登録する。複数回呼んでも 1 度だけ有効。
- *
- * @param {(label: string, data: any) => void} [logFn] crash.log への
- *   診断ロガー (main.js の logCrash を想定)。最初の 10 回だけ呼出を記録、
- *   それ以降は silent (ログ容量爆発を回避)。 */
-export function registerFontFallback(logFn = null) {
+ * mupdf に load-font callback を登録する。複数回呼んでも 1 度だけ有効。 */
+export function registerFontFallback() {
   if (_registered) return;
   _registered = true;
-  let logCount = 0;
-  const MAX_LOG = 10;
   mupdf.installLoadFontFunction((name, script, bold, italic) => {
     const cjk = isCjkRequest(name, script);
     let result = null;
@@ -122,17 +114,6 @@ export function registerFontFallback(logFn = null) {
       const choice = pickFontFile(script, isBold);
       if (choice) result = loadFontCached(choice, name);
     }
-    if (logFn && logCount < MAX_LOG) {
-      logCount++;
-      try {
-        logFn("font-fallback-callback", {
-          name, script, bold: !!bold, italic: !!italic, cjk, hit: !!result,
-        });
-      } catch { /* ignore */ }
-    }
     return result;
   });
-  if (logFn) {
-    try { logFn("font-fallback-registered", { platform: process.platform }); } catch { /* ignore */ }
-  }
 }

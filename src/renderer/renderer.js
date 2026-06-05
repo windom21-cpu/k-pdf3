@@ -2941,13 +2941,6 @@ async function openPdfPath(pdfPath) {
     renderTabBar();
   } catch (err) {
     console.error("[renderer] openPdfFile (recent) failed:", err);
-    // β.133 diag: main 側の open-pdf-stage error と対応付けるため
-    // renderer 側にも残す。撤去は stable リリース時。
-    kpdf3.logDiag?.("open-pdf-renderer-error", {
-      pdfPath,
-      errName: err?.name ?? "Error",
-      errMessage: String(err?.message ?? err),
-    });
     wsStatus.textContent = `エラー: ${err.message ?? err}`;
   } finally {
     // β.135: タイマー未発火なら busy 未表示なので clear のみ、
@@ -5151,9 +5144,6 @@ function attachInsertGapDrop(gap, afterPageNo, afterKey = null) {
     e.stopPropagation();
     const file = e.dataTransfer.files[0];
     const path = kpdf3.getPathForFile?.(file) || file.path || "";
-    // β75 diag: ユーザがサムネ間の "+" 帯にうっかり落として「open でなく
-    // insert になった」のを区別するために、gap drop での file 受領を残す。
-    kpdf3.logDiag?.("gap-drop-file", { path, afterPageNo, afterKey });
     // β.130: PDF に加えて画像 / Word / Excel も挿入対象。拡張子リストは
     // main 側 file-to-pdf.js の classifyInsertFile と揃えること。
     const insertKind =
@@ -5918,19 +5908,6 @@ async function actionCheckForUpdates() {
   // Otherwise the response is handled via the updater events.
 }
 
-async function actionOpenCrashLog() {
-  // β51 J7: open the crash log in the OS default editor (メモ帳 on
-  // Windows). If the file doesn't exist yet, main returns ok:false
-  // and we surface a friendly status — no log means no crash, that's
-  // the happy path.
-  const r = await kpdf3.openCrashLog?.();
-  if (!r?.ok) {
-    wsStatus.textContent = r?.reason === "missing"
-      ? "クラッシュログはまだありません (前回起動以降の例外なし)"
-      : `クラッシュログを開けませんでした: ${r?.reason ?? "unknown"}`;
-  }
-}
-
 function actionExit() {
   window.close();
 }
@@ -6146,7 +6123,6 @@ const menuBar = new MenuBar({
     exit: actionExit,
     about: actionAbout,
     "check-update": actionCheckForUpdates,
-    "open-crash-log": actionOpenCrashLog,
     undo: actionUndo,
     redo: actionRedo,
     find: () => $("menu-search-btn")?.click(),
@@ -6614,7 +6590,6 @@ const MENU_HINTS = {
   "font-settings": "スタンプの全角・半角フォント既定を設定",
   about: "K-PDF3 のバージョン情報",
   "check-update": "新しいバージョンの有無を確認します",
-  "open-crash-log": "クラッシュログをメモ帳で開きます (β51〜)",
 };
 const DEFAULT_STATUS = "PDF を「開く」で読み込みます";
 let statusHintActive = false;
@@ -6680,42 +6655,24 @@ document.addEventListener("drop", async (e) => {
   e.preventDefault();
   _clearFileDragging();
   const files = e.dataTransfer?.files;
-  // β75 diag: D&D「開かない」現象の追跡。各 early-return / openPdfSmart
-  // 呼出をログに残して、どこで止まったか / そもそも drop event が
-  // 発火したかを crash.log で判別できるようにする。
-  const _diagBase = {
-    target: e.target instanceof Element ? `${e.target.tagName}.${e.target.className || ""}`.slice(0, 80) : "?",
-    isOpen,
-  };
   if (!files || files.length === 0) {
-    kpdf3.logDiag?.("drop-no-files", _diagBase);
     return;
   }
   const file = files[0];
   // Electron 32+ removed File.path on the renderer side; resolve the
   // backing OS path via the preload helper instead.
-  const fromWebUtils = kpdf3.getPathForFile?.(file) || "";
-  const path = fromWebUtils || file.path || "";
+  const path = kpdf3.getPathForFile?.(file) || file.path || "";
   if (!path) {
-    kpdf3.logDiag?.("drop-no-path", { ..._diagBase, fileName: file?.name, fileSize: file?.size });
     wsStatus.textContent = "ドロップされたファイルのパスを取得できませんでした";
     return;
   }
   if (!/\.pdf$/i.test(path)) {
-    kpdf3.logDiag?.("drop-not-pdf", { ..._diagBase, path });
     wsStatus.textContent = "PDF ファイルを指定してください";
     return;
   }
-  kpdf3.logDiag?.("drop-opening", { ..._diagBase, path, source: fromWebUtils ? "webUtils" : "file.path" });
   // No dirty check — drop opens in a fresh tab when the active one is
   // already busy, mirroring the toolbar 開く button.
-  try {
-    await openPdfSmart(path);
-    kpdf3.logDiag?.("drop-opened", { path });
-  } catch (err) {
-    kpdf3.logDiag?.("drop-error", { path, msg: String(err?.message ?? err) });
-    throw err;
-  }
+  await openPdfSmart(path);
 });
 // Belt-and-braces: ensure the file-dragging class clears even when the
 // dragenter/dragleave pair gets out of sync (which is easy to do on
@@ -6822,10 +6779,6 @@ kpdf3.onReloadRequest?.(() => reloadRenderer());
 // path opens in a fresh tab when the active one is already in use
 // (preserves the user's editing context).
 kpdf3.onOpenPdfByOS?.((pdfPath) => {
-  // β75 diag: second-instance routing が renderer 側に届いた瞬間を残す。
-  // main の "second-instance-received" と対応付けて、IPC で paths が
-  // 落ちていないか・受領後に openPdfSmart が成功したかを追跡できる。
-  kpdf3.logDiag?.("os-open-received", { pdfPath, isOpen });
   if (!pdfPath || typeof pdfPath !== "string") return;
   void openPdfSmart(pdfPath);
 });
