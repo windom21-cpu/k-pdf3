@@ -21,7 +21,7 @@ import { openPdfDocument } from "../backend/mupdf-render.js";
 import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
 import { rotatedSourcePlacement } from "./rotate-place.js";
-import { computePdfFingerprint, extractPdfProperties, pdfNeedsPassword } from "../backend/mupdf-pdf-info.js";
+import { computePdfFingerprint, extractPdfProperties, pdfIsEncrypted } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
@@ -1223,29 +1223,34 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null, opts 
   const sourceName = basename(pdfPath);
 
   // Fingerprint indexes the *original* (possibly encrypted) on-disk file,
-  // so reopening the same file maps to the same workspace and never re-
-  // prompts for a password.
+  // so reopening the same file maps to the same workspace.
   const existing = findWorkspaceByFingerprint(fingerprint);
   const legacy = legacySidecarPath(pdfPath);
-  const haveWorkspace =
-    (existing && existsSync(existing.workspacePath)) || existsSync(legacy);
 
-  // Encryption gate (ADR-0025 候補): a password is only ever needed for a
-  // brand-new import — an existing workspace already holds the decrypted
-  // source. We resolve it here, *before* any tab/active-state teardown, so
-  // an early "needs password" return leaves all state untouched. The
-  // decryption is confined to this import boundary: the workspace stores
-  // the decrypted bytes and every downstream consumer reads
+  // Encryption gate (ADR-0025 候補), keyed off the *file* and resolved here,
+  // before any tab/active-state teardown, so an early "needs password" return
+  // leaves all state untouched. Decryption is confined to this import boundary:
+  // the workspace stores plaintext bytes and every downstream consumer reads
   // workspace.getSourceBytes(), so no other layer is encryption-aware.
+  //
+  // We try the empty password first — permission-only / empty-user-password
+  // PDFs decrypt silently (no prompt); only a real user password fails the
+  // empty attempt and triggers { needsPassword }. `didDecrypt` lets us also
+  // self-heal an *existing* workspace whose source was imported encrypted by a
+  // pre-decryption build (the "開いたら白紙" case): such a workspace is reused
+  // by fingerprint, so the gate must run regardless of new-vs-existing.
   let importBytes = pdfBytes;
-  if (!haveWorkspace && pdfNeedsPassword(pdfBytes)) {
-    const password = opts && opts.password;
-    if (!password) return { needsPassword: true };
+  let didDecrypt = false;
+  if (pdfIsEncrypted(pdfBytes)) {
+    const provided = opts && opts.password;
     try {
-      importBytes = await decryptPdfBytes(pdfBytes, password);
+      importBytes = await decryptPdfBytes(pdfBytes, provided ?? "");
+      didDecrypt = true;
     } catch (err) {
       if (err && err.code === "WRONG_PASSWORD") {
-        return { needsPassword: true, wrongPassword: true };
+        // Empty password failed → a real user password is required. Surface
+        // the prompt; flag wrongPassword only when the *user* supplied one.
+        return provided ? { needsPassword: true, wrongPassword: true } : { needsPassword: true };
       }
       if (err && err.code === "QPDF_MISSING") {
         return { needsPassword: true, qpdfMissing: true };
@@ -1273,6 +1278,18 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null, opts 
   if (existing && existsSync(existing.workspacePath)) {
     workspace = Workspace.open(existing.workspacePath);
     touchWorkspace(fingerprint, pdfPath, sourceName);
+    // Self-heal: a workspace imported by a pre-decryption build holds the
+    // encrypted source and renders blank. If we decrypted the file and the
+    // stored source is still encrypted, replace it with the plaintext bytes.
+    // (importPdfBytes only rewrites source_pdf + page metrics; overlays are
+    // keyed separately and survive.) Re-import only when still encrypted so an
+    // already-healed workspace isn't rewritten on every open.
+    if (didDecrypt) {
+      const stored = workspace.getSourceBytes();
+      if (stored && pdfIsEncrypted(stored)) {
+        await workspace.importPdfBytes(importBytes, sourceName);
+      }
+    }
   } else {
     const id = generateWorkspaceId();
     const wsPath = workspacePathFor(id);
@@ -1286,6 +1303,12 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null, opts 
       }
       workspace = Workspace.open(wsPath);
       migrated = true;
+      if (didDecrypt) {
+        const stored = workspace.getSourceBytes();
+        if (stored && pdfIsEncrypted(stored)) {
+          await workspace.importPdfBytes(importBytes, sourceName);
+        }
+      }
     } else {
       workspace = Workspace.create(wsPath);
       // importBytes === pdfBytes unless the source was encrypted, in which

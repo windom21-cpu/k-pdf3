@@ -81,21 +81,21 @@ export function extractPdfInfo(data) {
 }
 
 /**
- * Detect whether a PDF needs a password to be *opened* (= a user/open
- * password is set). Non-throwing: mupdf's openDocument succeeds for an
- * encrypted PDF and auto-authenticates with the empty password, so a
- * permission-restricted PDF (empty user password) returns false and opens
- * normally; only a PDF that genuinely requires a password to view returns
- * true.
+ * Detect whether a PDF is encrypted *at all* — either it needs a password to
+ * open (user password set) OR it carries an /Encrypt dict (permission-only /
+ * owner-password / empty-user-password). This is intentionally broader than
+ * "needs a password": some encrypted PDFs let mupdf read the page tree (so
+ * countPages / MediaBox succeed) yet fail to decode the content streams,
+ * rendering blank. Treating any /Encrypt PDF as "decrypt at import" (via qpdf)
+ * guarantees the stored source is plaintext and renders correctly.
  *
- * If openDocument itself throws (corrupt / non-PDF), we return false so the
- * normal import path surfaces the real error instead of masking it as a
- * password prompt.
+ * Non-throwing: if openDocument throws (corrupt / non-PDF) we return false so
+ * the normal import path surfaces the real error instead of masking it.
  *
  * @param {Buffer | Uint8Array | ArrayBuffer} data
  * @returns {boolean}
  */
-export function pdfNeedsPassword(data) {
+export function pdfIsEncrypted(data) {
   const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
   let doc = null;
   try {
@@ -104,8 +104,15 @@ export function pdfNeedsPassword(data) {
     return false;
   }
   try {
-    return !!doc.needsPassword();
-  } catch {
+    try { if (doc.needsPassword()) return true; } catch { /* ignore */ }
+    const pdfDoc = typeof doc.asPDF === "function" ? doc.asPDF() : null;
+    if (pdfDoc) {
+      try {
+        const trailer = pdfDoc.getTrailer();
+        const enc = trailer && trailer.get("Encrypt");
+        if (enc && !enc.isNull()) return true;
+      } catch { /* ignore */ }
+    }
     return false;
   } finally {
     try { doc.destroy(); } catch { /* ignore */ }
