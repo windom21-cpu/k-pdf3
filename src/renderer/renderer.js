@@ -26,7 +26,7 @@ import {
 } from "./fonts.js";
 import { appendSystemFontsToSelect } from "./system-fonts.js";
 import { showBusy, updateBusy, hideBusy } from "./busy-modal.js";
-import { customConfirm } from "./dialogs.js";
+import { customConfirm, customPasswordPrompt } from "./dialogs.js";
 import { showFileBrowser } from "./file-browser.js";
 import {
   initOverlayEdit,
@@ -2898,7 +2898,35 @@ async function openPdfPath(pdfPath) {
     // ADR-0015: bind the workspace handle on the main side to the
     // active tab's id. Phase 4's "+ button" creates a fresh TabState
     // first, so this same path also opens into NEW tabs.
-    const result = await kpdf3.openPdfFile(pdfPath, getActiveTabId());
+    let result = await kpdf3.openPdfFile(pdfPath, getActiveTabId());
+    // パスワード保護 PDF: main 側が { needsPassword } sentinel を返す。
+    // 入力を促して qpdf で復号 → 復号版を取り込む。誤入力は再試行、
+    // キャンセルなら静かに中断 (エラー扱いにしない)。
+    if (result && result.needsPassword) {
+      const fileName = pdfPath.split(/[\\/]/).pop() ?? "";
+      // 入力ダイアログを出す間は読み込み中 modal を隠す。
+      if (_busyTimer) { clearTimeout(_busyTimer); _busyTimer = null; }
+      else { try { hideBusy(); } catch { /* ignore */ } }
+      let wrong = false;
+      for (;;) {
+        if (result.qpdfMissing) {
+          await customConfirm({
+            title: "パスワード付き PDF",
+            message: "この PDF を開くには復号が必要ですが、復号ツール (qpdf) が見つかりませんでした。配布版のアプリには同梱されています。",
+            cancelLabel: null,
+          });
+          return;
+        }
+        const pw = await customPasswordPrompt({ fileName, wrong });
+        if (pw == null) return; // ユーザーがキャンセル
+        try { showBusy("PDF を復号中", "パスワードを確認しています...", 0); } catch { /* ignore */ }
+        result = await kpdf3.openPdfFile(pdfPath, getActiveTabId(), { password: pw });
+        try { hideBusy(); } catch { /* ignore */ }
+        if (!result || !result.needsPassword) break;
+        wrong = !!result.wrongPassword;
+      }
+    }
+    if (!result || result.needsPassword) return;
     projectStore.reset(result.overlays ?? []);
     pendingDeletedPages.clear();
     workspaceMutated = false;

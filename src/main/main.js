@@ -21,10 +21,10 @@ import { openPdfDocument } from "../backend/mupdf-render.js";
 import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
 import { rotatedSourcePlacement } from "./rotate-place.js";
-import { computePdfFingerprint, extractPdfProperties } from "../backend/mupdf-pdf-info.js";
+import { computePdfFingerprint, extractPdfProperties, pdfNeedsPassword } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
-import { findQpdfBinary, sanitizePdfBytes } from "./qpdf-sanitize.js";
+import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
   closeRegistry,
@@ -1212,11 +1212,49 @@ ipcMain.handle("kpdf3:import-pdf", async (_, pdfPath) => {
  *             and migrate it into userData; or create a fresh workspace.
  *   4. Open the mupdf doc, cache page rows, return overlays to renderer.
  */
-ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null) => {
+ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null, opts = null) => {
   // ADR-0015: each tab gets its own workspace handle. If a tabId is
   // passed, we register the new handle under that id (replacing any
   // existing one for the same id). Otherwise generate a fresh tabId.
   const targetTabId = tabId ?? `tab-${Date.now().toString(36)}`;
+
+  const pdfBytes = readFileSync(pdfPath);
+  const fingerprint = await computePdfFingerprint(pdfBytes);
+  const sourceName = basename(pdfPath);
+
+  // Fingerprint indexes the *original* (possibly encrypted) on-disk file,
+  // so reopening the same file maps to the same workspace and never re-
+  // prompts for a password.
+  const existing = findWorkspaceByFingerprint(fingerprint);
+  const legacy = legacySidecarPath(pdfPath);
+  const haveWorkspace =
+    (existing && existsSync(existing.workspacePath)) || existsSync(legacy);
+
+  // Encryption gate (ADR-0025 候補): a password is only ever needed for a
+  // brand-new import — an existing workspace already holds the decrypted
+  // source. We resolve it here, *before* any tab/active-state teardown, so
+  // an early "needs password" return leaves all state untouched. The
+  // decryption is confined to this import boundary: the workspace stores
+  // the decrypted bytes and every downstream consumer reads
+  // workspace.getSourceBytes(), so no other layer is encryption-aware.
+  let importBytes = pdfBytes;
+  if (!haveWorkspace && pdfNeedsPassword(pdfBytes)) {
+    const password = opts && opts.password;
+    if (!password) return { needsPassword: true };
+    try {
+      importBytes = await decryptPdfBytes(pdfBytes, password);
+    } catch (err) {
+      if (err && err.code === "WRONG_PASSWORD") {
+        return { needsPassword: true, wrongPassword: true };
+      }
+      if (err && err.code === "QPDF_MISSING") {
+        return { needsPassword: true, qpdfMissing: true };
+      }
+      throw err;
+    }
+  }
+
+  // Gate passed — now it's safe to mutate tab/active state.
   // If we're reusing an existing tabId, drop its previous handle so
   // we don't leak the old workspace + doc. (Renderer drives re-opens
   // by passing the same tabId.)
@@ -1229,21 +1267,15 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null) => {
     activeSourcePdfPath = null;
   }
 
-  const pdfBytes = readFileSync(pdfPath);
-  const fingerprint = await computePdfFingerprint(pdfBytes);
-  const sourceName = basename(pdfPath);
-
   let isNew = false;
   let migrated = false;
   let workspace;
-  const existing = findWorkspaceByFingerprint(fingerprint);
   if (existing && existsSync(existing.workspacePath)) {
     workspace = Workspace.open(existing.workspacePath);
     touchWorkspace(fingerprint, pdfPath, sourceName);
   } else {
     const id = generateWorkspaceId();
     const wsPath = workspacePathFor(id);
-    const legacy = legacySidecarPath(pdfPath);
     if (existsSync(legacy)) {
       // Migrate the ADR-0006 sidecar into userData/.
       try {
@@ -1256,7 +1288,9 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null) => {
       migrated = true;
     } else {
       workspace = Workspace.create(wsPath);
-      await workspace.importPdfFromFile(pdfPath);
+      // importBytes === pdfBytes unless the source was encrypted, in which
+      // case it's the qpdf-decrypted copy produced above.
+      await workspace.importPdfBytes(importBytes, sourceName);
       isNew = true;
     }
     registerWorkspace({

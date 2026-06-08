@@ -81,6 +81,38 @@ export function extractPdfInfo(data) {
 }
 
 /**
+ * Detect whether a PDF needs a password to be *opened* (= a user/open
+ * password is set). Non-throwing: mupdf's openDocument succeeds for an
+ * encrypted PDF and auto-authenticates with the empty password, so a
+ * permission-restricted PDF (empty user password) returns false and opens
+ * normally; only a PDF that genuinely requires a password to view returns
+ * true.
+ *
+ * If openDocument itself throws (corrupt / non-PDF), we return false so the
+ * normal import path surfaces the real error instead of masking it as a
+ * password prompt.
+ *
+ * @param {Buffer | Uint8Array | ArrayBuffer} data
+ * @returns {boolean}
+ */
+export function pdfNeedsPassword(data) {
+  const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
+  let doc = null;
+  try {
+    doc = mupdf.Document.openDocument(buf, "application/pdf");
+  } catch {
+    return false;
+  }
+  try {
+    return !!doc.needsPassword();
+  } catch {
+    return false;
+  } finally {
+    try { doc.destroy(); } catch { /* ignore */ }
+  }
+}
+
+/**
  * Read a numeric value from a PDF page dictionary, walking up /Parent
  * if the value is inheritable (PDF spec: /MediaBox, /CropBox, /Rotate, /Resources).
  *

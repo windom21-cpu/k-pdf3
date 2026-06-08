@@ -115,3 +115,70 @@ confirmDialog.addEventListener("keydown", (e) => {
     settleConfirm(true);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Password prompt (パスワード保護 PDF を開く時)。
+//
+// Returns Promise<string | null>. OK / Enter (入力あり) → 入力文字列、
+// Esc / 背景クリック / キャンセル → null。settle 時に input.value を必ず
+// 空にして、パスワードを DOM に残さない。
+// ---------------------------------------------------------------------------
+
+const passwordDialog = document.getElementById("password-dialog");
+const passwordMessageEl = document.getElementById("password-message");
+const passwordErrorEl = document.getElementById("password-error");
+const passwordInputEl = document.getElementById("password-input");
+const passwordOkBtn = document.getElementById("password-ok");
+const passwordCancelBtn = document.getElementById("password-cancel");
+
+/** @type {((value: string | null) => void) | null} */
+let passwordResolve = null;
+
+/**
+ * @param {object} [opts]
+ * @param {string}  [opts.fileName]  ダイアログ本文に出すファイル名
+ * @param {boolean} [opts.wrong]     直前の入力が誤りだった (再入力)
+ * @returns {Promise<string | null>}
+ */
+export function customPasswordPrompt({ fileName = "", wrong = false } = {}) {
+  passwordMessageEl.textContent = fileName
+    ? `「${fileName}」はパスワードで保護されています。開くにはパスワードを入力してください。`
+    : "この PDF はパスワードで保護されています。開くにはパスワードを入力してください。";
+  passwordErrorEl.hidden = !wrong;
+  if (wrong) passwordErrorEl.textContent = "パスワードが違います。もう一度入力してください。";
+  passwordInputEl.value = "";
+  passwordDialog.hidden = false;
+  setTimeout(() => passwordInputEl.focus(), 0);
+  return new Promise((resolve) => {
+    passwordResolve = resolve;
+  });
+}
+
+function settlePassword(value) {
+  passwordDialog.hidden = true;
+  // パスワードを DOM に残さない。
+  passwordInputEl.value = "";
+  if (passwordResolve) {
+    passwordResolve(value);
+    passwordResolve = null;
+  }
+}
+
+passwordOkBtn.addEventListener("click", () => {
+  const v = passwordInputEl.value;
+  if (v) settlePassword(v);
+});
+passwordCancelBtn.addEventListener("click", () => settlePassword(null));
+passwordDialog.addEventListener("click", (e) => {
+  if (e.target === passwordDialog) settlePassword(null);
+});
+passwordDialog.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    settlePassword(null);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    const v = passwordInputEl.value;
+    if (v) settlePassword(v);
+  }
+});

@@ -736,6 +736,30 @@
     </div>
   </div>
 
+  <!-- Password dialog (パスワード保護 PDF を開く時の入力。qpdf --decrypt で
+       復号し、復号版をワークスペースに取り込む。入力値は保存しない) -->
+  <div class="busy-modal" id="password-dialog" hidden>
+    <div class="window range-window">
+      <div class="title-bar">
+        <div class="title-bar-text" id="password-title">パスワードの入力</div>
+      </div>
+      <div class="window-body">
+        <p class="range-message" id="password-message"></p>
+        <p class="range-message" id="password-error" hidden
+           style="color:#a00;font-weight:bold;"></p>
+        <div class="open-row">
+          <label for="password-input">パスワード</label>
+          <input type="password" id="password-input" autocomplete="off"
+                 spellcheck="false" style="flex:1;">
+        </div>
+        <div class="range-buttons">
+          <button id="password-ok" class="default">開く</button>
+          <button id="password-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Phase 2: FAX プリンタ初回設定 / 変更ダイアログ。fax/ファックス/
        ファクス を含むプリンタ名だけ select に表示。OK で localStorage に
        保存し、以降の FAX 送信ボタンは picker を出さず直送する。 -->

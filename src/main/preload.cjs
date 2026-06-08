@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   getExportDefaults:  ()        => ipcRenderer.invoke("kpdf3:get-export-defaults"),
   fileExists:         (p)       => ipcRenderer.invoke("kpdf3:file-exists", p),
   // workspace lifecycle (PDF-first)
-  openPdfFile:        (pdfPath, tabId) => ipcRenderer.invoke("kpdf3:open-pdf-file", pdfPath, tabId ?? null),
+  openPdfFile:        (pdfPath, tabId, opts) => ipcRenderer.invoke("kpdf3:open-pdf-file", pdfPath, tabId ?? null, opts ?? null),
   closeWorkspace:     ()        => ipcRenderer.invoke("kpdf3:close-workspace"),
   switchTab:          (tabId)   => ipcRenderer.invoke("kpdf3:switch-tab", tabId),
   closeTab:           (tabId)   => ipcRenderer.invoke("kpdf3:close-tab", tabId),

@@ -137,3 +137,73 @@ function runQpdf(exe, args) {
     });
   });
 }
+
+/**
+ * Decrypt a password-protected PDF via qpdf. Returns a fresh, unencrypted
+ * buffer with the source vector content intact (no rasterization).
+ *
+ * The password is fed to qpdf over stdin (`--password-file=-`) so it never
+ * appears in the process argument list (Task Manager / `ps`). Nothing is
+ * persisted or logged here — the caller decides what to do with the result.
+ *
+ * Throws an Error with a `.code`:
+ *   - "QPDF_MISSING"   binary not found (bundled / vendor / PATH all empty)
+ *   - "WRONG_PASSWORD" qpdf reported the supplied password is invalid
+ * Other qpdf failures throw a generic Error (caller surfaces the message).
+ *
+ * @param {Buffer | Uint8Array} bytes
+ * @param {string} password
+ * @param {{ qpdfPath?: string }} [opts]
+ * @returns {Promise<Buffer>}
+ */
+export async function decryptPdfBytes(bytes, password, opts = {}) {
+  const qpdfPath = opts.qpdfPath ?? findQpdfBinary();
+  if (!qpdfPath) {
+    const err = new Error(
+      "qpdf binary not found (checked bundled resources, vendor/qpdf, and PATH)",
+    );
+    err.code = "QPDF_MISSING";
+    throw err;
+  }
+  const tag = randomUUID();
+  const inPath = join(tmpdir(), `kpdf3-qpdf-dec-in-${tag}.pdf`);
+  const outPath = join(tmpdir(), `kpdf3-qpdf-dec-out-${tag}.pdf`);
+  const buf = bytes instanceof Buffer ? bytes : Buffer.from(bytes);
+  await writeFile(inPath, buf);
+  try {
+    // --decrypt strips encryption entirely; --password-file=- reads the
+    // password from stdin (first line). --warning-exit-0 keeps recoverable
+    // warnings (e.g. minor xref repairs) from being treated as failure.
+    await runQpdfWithStdin(
+      qpdfPath,
+      ["--warning-exit-0", "--decrypt", "--password-file=-", inPath, outPath],
+      `${password ?? ""}\n`,
+    );
+    return await readFile(outPath);
+  } finally {
+    await Promise.allSettled([unlink(inPath), unlink(outPath)]);
+  }
+}
+
+function runQpdfWithStdin(exe, args, stdinData) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(exe, args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stderr = "";
+    proc.stderr.on("data", (b) => (stderr += b.toString("utf8")));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) return resolve();
+      // qpdf prints "invalid password" (exit 2) when the supplied password
+      // can't open the document — map it so the caller can re-prompt.
+      if (/invalid password/i.test(stderr)) {
+        const err = new Error("qpdf: invalid password");
+        err.code = "WRONG_PASSWORD";
+        return reject(err);
+      }
+      reject(new Error(`qpdf exited with code ${code}: ${stderr.trim() || "(no stderr)"}`));
+    });
+    proc.stdin.on("error", () => { /* ignore EPIPE if qpdf exits early */ });
+    proc.stdin.write(stdinData);
+    proc.stdin.end();
+  });
+}
