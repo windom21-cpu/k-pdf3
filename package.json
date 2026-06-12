@@ -1,6 +1,6 @@
 {
   "name": "k-pdf3",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "法律実務向け PDF Workspace（K-PDF2 の全面再設計版）",
   "private": true,
   "main": "src/main/main.js",
@@ -18,7 +18,8 @@
     "test:project-store": "node test/project-store.test.mjs",
     "test:history": "node test/history.test.mjs",
     "test:sidecar-sweep": "node test/sidecar-sweep.test.mjs",
-    "test": "npm run test:coord && npm run test:page-registry && npm run test:project-store && npm run test:history && npm run test:sidecar-sweep && npm run test:m1 && npm run test:render && npm run test:render-service && npm run test:rotation-overlay",
+    "test:session-store": "node test/session-store.test.mjs",
+    "test": "npm run test:coord && npm run test:page-registry && npm run test:project-store && npm run test:history && npm run test:sidecar-sweep && npm run test:session-store && npm run test:m1 && npm run test:render && npm run test:render-service && npm run test:rotation-overlay",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "electron-builder install-app-deps",
     "build:icon": "node scripts/build-icon.mjs",

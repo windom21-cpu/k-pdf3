@@ -86,6 +86,11 @@ contextBridge.exposeInMainWorld("kpdf3", {
   // their file manager (or chose K-PDF3 via "Open with…"). Main passes
   // the absolute path; renderer routes into openPdfSmart.
   onOpenPdfByOS:      (cb)      => ipcRenderer.on("kpdf3:open-pdf-by-os", (_, p) => cb(p)),
+  // Session restore-after-update: report this window's open source PDFs so
+  // main can persist them; onSessionRestored fires once at boot when the
+  // previous session's files were reopened because the version changed.
+  sessionSetOpenFiles:(files)   => ipcRenderer.send("kpdf3:session-set-open-files", files),
+  onSessionRestored:  (cb)      => ipcRenderer.on("kpdf3:session-restored", (_, info) => cb(info)),
   // Drag&drop helper — Electron 32+ removed File.path from the renderer,
   // so dropped files now need webUtils.getPathForFile() (preload-only).
   getPathForFile:     (file)    => webUtils.getPathForFile(file),

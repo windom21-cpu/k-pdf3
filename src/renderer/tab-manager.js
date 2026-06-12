@@ -466,6 +466,22 @@ export function renderTabBar() {
     attachTabDragHandlers(item, id);
     list.appendChild(item);
   }
+  reportOpenFilesToSession();
+}
+
+/** Report this window's open source-PDF paths to main for the
+ *  restore-after-update session. Called on every tab-bar render (open /
+ *  close / save-as), which is when the open-file set can change. Cheap +
+ *  idempotent; main skips redundant disk writes. */
+function reportOpenFilesToSession() {
+  try {
+    const paths = [
+      ...new Set(
+        [...tabs.values()].map((t) => t.activeSourcePdfPath).filter(Boolean),
+      ),
+    ];
+    globalThis.kpdf3?.sessionSetOpenFiles?.(paths);
+  } catch { /* never let session bookkeeping break the tab bar */ }
 }
 
 // ---- Tab right-click menu (B3-α detach-via-menu) ----------------------

@@ -62,6 +62,7 @@ import {
 } from "./printer-properties-win.js";
 import { findPdfReader, findAllPdfReaders } from "./pdf-reader-finder.js";
 import { convertFileToPdfBytes } from "./file-to-pdf.js";
+import { readSession, writeSession, computeRestore } from "./session-store.js";
 // β59: PS/PCL raw print 経路は撤去。C2360 で auto-detect エラー
 // (016-726 / 106-726) を引き起こすことが判明し、raw datatype で
 // ドライバを完全バイパスする経路は本機種では使えないと結論。
@@ -538,6 +539,14 @@ function createMainWindow() {
       const p = pendingOpens.shift();
       mainWindow.webContents.send("kpdf3:open-pdf-by-os", p);
     }
+    // Tell the renderer how many of those were an after-update restore so
+    // it can show a status line. Fire once, then clear.
+    if (pendingRestoreCount > 0) {
+      mainWindow.webContents.send("kpdf3:session-restored", {
+        count: pendingRestoreCount,
+      });
+      pendingRestoreCount = 0;
+    }
   });
   configureWindowChrome(mainWindow, { isPrimary: true });
   // The main window is created after app.whenReady, so it's the
@@ -624,6 +633,58 @@ function spawnDetachedTabWindow(detachPayload) {
 
 /** @type {string[]} */
 const pendingOpens = [];
+
+// ---- Session (restore-after-update) -------------------------------------
+// Each window reports the source-PDF paths open in its tabs; we union them
+// across windows and persist (with the running app version) so that the
+// NEXT boot, if the version changed (= an update installed), can reopen
+// them. A same-version restart restores nothing. See session-store.js.
+/** @type {Map<number, string[]>} per-webContents-id open file lists */
+const sessionFilesByWindow = new Map();
+/** last JSON written, to skip redundant disk writes on tab switches */
+let lastSessionJson = null;
+/** count of files queued for restore this boot, for the renderer toast */
+let pendingRestoreCount = 0;
+
+function userDataDir() {
+  return app.getPath("userData");
+}
+
+/** Union all windows' open files and persist (skipping no-op writes). */
+function persistSession() {
+  try {
+    const union = [];
+    for (const list of sessionFilesByWindow.values()) union.push(...list);
+    const payload = writeSession(userDataDir(), {
+      version: app.getVersion(),
+      openFiles: union,
+    });
+    lastSessionJson = payload;
+  } catch (err) {
+    console.warn("[session] persist failed:", err?.message ?? err);
+  }
+}
+
+ipcMain.on("kpdf3:session-set-open-files", (event, files) => {
+  try {
+    const id = event.sender.id;
+    const isNew = !sessionFilesByWindow.has(id);
+    sessionFilesByWindow.set(
+      id,
+      Array.isArray(files) ? files.filter((p) => typeof p === "string") : [],
+    );
+    // Auto-clean the entry when this window goes away (register once).
+    if (isNew && !event.sender.isDestroyed()) {
+      event.sender.once("destroyed", () => {
+        sessionFilesByWindow.delete(id);
+        persistSession();
+      });
+    }
+    persistSession();
+  } catch (err) {
+    console.warn("[session] set-open-files failed:", err?.message ?? err);
+  }
+});
 
 /** Walk argv looking for a .pdf path the OS handed us. argv[0] is the
  *  electron binary; subsequent entries can include CLI flags (which we
@@ -780,6 +841,26 @@ app.whenReady().then(() => {
     join(app.getPath("userData"), "printer-devmode-cache.json"),
   );
   loadDevmodeCacheFromDisk();
+  // Restore-after-update: if the persisted session was written by a
+  // DIFFERENT app version (= an update installed since), reopen the PDFs
+  // that were open then. Seed them into pendingOpens BEFORE the window is
+  // created so its did-finish-load flush opens them. A same-version restart
+  // restores nothing. Files that no longer exist are dropped.
+  try {
+    const prev = readSession(userDataDir());
+    const { restore, files } = computeRestore(prev, app.getVersion(), existsSync);
+    if (restore) {
+      for (const f of files) if (!pendingOpens.includes(f)) pendingOpens.push(f);
+      pendingRestoreCount = files.length;
+    }
+    // Record the running version now so a normal restart won't re-restore.
+    writeSession(userDataDir(), {
+      version: app.getVersion(),
+      openFiles: restore ? files : [],
+    });
+  } catch (err) {
+    console.warn("[session] restore check failed:", err?.message ?? err);
+  }
   createMainWindow();
   // 巨大 PDF サイドカー (.kpdf3.source.pdf で兄弟 .kpdf3 が無いもの) の
   // orphan 掃除 (stable 残務 #7)。上書き保存等で過去に取り残された分を

@@ -815,7 +815,10 @@ button.toggled {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 4px 2px;
+  /* Extra bottom room so the trailing +gap's enlarged (file-drag) hit
+   * area — which extends ~10px below its line via negative margin — is
+   * never clipped at the scroll-container edge. */
+  padding: 4px 2px 16px;
 }
 .thumb-item {
   display: flex;
@@ -2096,24 +2099,34 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
 .split-thumbs-row {
   display: flex;
   flex-wrap: wrap;
-  /* `flex-start` instead of `stretch` so the leading insert gap (and
-   * any inner separators) don't stretch to the tallest thumb. With
-   * `stretch` the leading gap's height pushed the first thumb's
-   * cross-axis alignment off by a few pixels relative to the rest —
-   * visually the page-1 thumbnail looked vertically lower than its
-   * siblings. */
+  /* `flex-start` instead of `stretch` so the inner separators don't
+   * stretch to the tallest thumb. */
   align-items: flex-start;
-  /* Reserve 18px of left padding (= leading +gap width 16 + a 2px
-   * shadow allowance) so every wrapped row's first thumb lands at
-   * the same x as row-1's first thumb, which sits *after* the
-   * leading +gap. The leading gap itself uses a negative margin
-   * (rule below) to slide back into the reserved padding band, so
-   * it's visually flush with the row's outer-left edge. */
+  /* 18px left gutter holds the leading +gap's badge (rule below). The
+   * leading +gap itself is zero-width, so page-1's thumbnail starts at the
+   * SAME x as every wrapped row's first thumbnail (padding-left + thumb
+   * margin) — the whole grid shares one left edge, and the lone leading +
+   * no longer juts out to the left of page 1. */
   padding: 4px 0 4px 18px;
   gap: 0;
 }
+/* Leading +gap (insert before page 1): zero width so it doesn't push
+ * page-1's thumbnail right; align-self centers it within row 1's flex line
+ * (= the thumbnail's vertical center, matching the trailing +badges), and
+ * the badge is nudged left into the gutter. */
 .split-thumbs-row > .thumb-insert-gap-vertical:first-child {
-  margin-left: -18px;
+  width: 0;
+  min-width: 0;
+  align-self: center;
+  margin: 0;
+  overflow: visible;
+}
+.split-thumbs-row > .thumb-insert-gap-vertical:first-child::after {
+  transform: translateX(-9px);
+}
+.split-thumbs-row > .thumb-insert-gap-vertical:first-child:hover::after,
+.split-thumbs-row > .thumb-insert-gap-vertical:first-child:focus::after {
+  transform: translateX(-9px) scale(1.1);
 }
 /* Thumb + its trailing +gap glued together so flex-wrap can't break
  * the row between them. Without this the +gap was sometimes pushed to
@@ -2886,11 +2899,19 @@ body.thumb-dragging .thumb-insert-gap.drop-target {
  * already easy to hit and changing it breaks the wrapped-row alignment
  * the .split-thumbs-row padding/margin pair is calibrated against. */
 body.file-dragging .thumb-insert-gap {
+  /* Enlarge the droppable + visual box to 28px WITHOUT changing the
+   * column height: the box grows, equal negative margins cancel it in
+   * layout (border-box 28 − margins 20 = 8px margin box = unchanged). The
+   * old plain `height: 28px` (no margin offset) added ~20px per gap, so
+   * dragging a file over a long sidebar list grew the list and pushed the
+   * trailing +gap below the scroll viewport — exactly when the user had
+   * scrolled to the end to drop there. Layout-stable now: the last +gap
+   * stays put. The hovered gap still gets the green `.drop-target`
+   * highlight; the box is centered on the line so the ＋ doesn't move. */
   height: 28px;
+  margin-top: -10px;
+  margin-bottom: -10px;
   color: #000080;
-  border-top-color: #aab8e0;
-  border-bottom-color: #aab8e0;
-  background: #eef3ff;
   font-size: 14px;
   font-weight: bold;
 }
@@ -2910,30 +2931,62 @@ body.file-dragging .thumb-insert-gap-vertical {
  * tied to a single thumb pair instead of stretching the full wrapped
  * row — that stretch was what made the gaps look like a continuous
  * vertical channel running through every visual line. */
+/* Split-save view: make the blank-page insert point read as an obvious
+ * "add here" divider (k-bunkatu style) — a faint dotted guide line with a
+ * persistent blue "＋" badge, instead of the old near-invisible navy glyph
+ * that only showed on hover. The width stays 16px: .split-thumbs-row's
+ * 18px leading padding + the leading gap's -18px margin are calibrated
+ * against it, so changing the width would re-introduce the wrapped-row
+ * vertical misalignment. The badge's white halo is a box-shadow (no layout
+ * width), so prominence rises without disturbing that calibration. */
 .thumb-insert-gap-vertical {
   width: 16px;
   align-self: center;
-  height: 60%;
-  min-height: 40px;
+  height: 70%;
+  min-height: 64px;
   margin: 0 1px;
-  border-top: none;
-  border-bottom: none;
-  border-left: 1px dashed transparent;
-  border-right: 1px dashed transparent;
-  font-size: 14px;
-  color: #000080;
-  font-weight: bold;
-}
-/* Row-level hover dims them slightly so the user knows they exist;
- * the gap's own hover/focus brightens just that one. */
-.split-thumbs-row:hover .thumb-insert-gap-vertical {
-  opacity: 0.35;
-}
-.thumb-insert-gap-vertical:hover,
-.thumb-insert-gap-vertical:focus {
+  border: none;
+  position: relative;
+  /* hide the raw "＋" text node; the ::after badge renders the glyph */
+  font-size: 0;
   opacity: 1;
-  border-left-color: #000080;
-  border-right-color: #000080;
+}
+/* faint dotted guide line so the gap visibly reads as an insertion divider */
+.thumb-insert-gap-vertical::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-1px);
+  border-left: 2px dotted #aab8e0;
+  pointer-events: none;
+}
+/* persistent blue "＋" badge — always visible so the feature is findable */
+.thumb-insert-gap-vertical::after {
+  content: "＋";
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: bold;
+  color: #ffffff;
+  background: #3a5bbf;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px #ffffff;
+}
+.thumb-insert-gap-vertical:hover::after,
+.thumb-insert-gap-vertical:focus::after {
+  background: #14266e;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #c9d4f5;
+}
+.thumb-insert-gap-vertical:hover::before,
+.thumb-insert-gap-vertical:focus::before {
+  border-color: #3a5bbf;
 }
 
 /* About / version info dialog */

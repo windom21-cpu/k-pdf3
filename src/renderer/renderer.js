@@ -6811,6 +6811,14 @@ kpdf3.onOpenPdfByOS?.((pdfPath) => {
   void openPdfSmart(pdfPath);
 });
 
+// Restore-after-update: main reopens the PDFs that were open before an
+// update installed (via the OS-open path above) and fires this once so we
+// can tell the user what happened.
+kpdf3.onSessionRestored?.((info) => {
+  const n = info?.count ?? 0;
+  if (n > 0) wsStatus.textContent = `更新前に開いていた PDF を復元しました（${n} 件）`;
+});
+
 // ---- Tab bar (ADR-0015 Phase 3) --------------------------------------
 $("tab-add")?.addEventListener("click", () => {
   void newTabAndOpen(null);
