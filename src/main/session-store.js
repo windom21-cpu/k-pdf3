@@ -64,3 +64,18 @@ export function computeRestore(prev, currentVersion, fileExists) {
   if (typeof fileExists === "function") files = files.filter(fileExists);
   return { restore: changed && files.length > 0, files };
 }
+
+/**
+ * When a window closes, decide whether to re-persist the (trimmed) session.
+ * Re-persist ONLY when other windows are still alive — the app is staying
+ * up, so dropping the closed window's files keeps the union accurate. If it
+ * was the LAST window the app is quitting (possibly to install an update),
+ * so we must NOT rewrite session.json or we'd wipe the very file list the
+ * next version needs to restore. The last renderer report already persisted
+ * the correct state.
+ *
+ * @param {number} otherWindowsAlive number of OTHER live windows
+ */
+export function shouldRepersistOnWindowClose(otherWindowsAlive) {
+  return otherWindowsAlive > 0;
+}

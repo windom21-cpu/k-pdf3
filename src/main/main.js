@@ -62,7 +62,12 @@ import {
 } from "./printer-properties-win.js";
 import { findPdfReader, findAllPdfReaders } from "./pdf-reader-finder.js";
 import { convertFileToPdfBytes } from "./file-to-pdf.js";
-import { readSession, writeSession, computeRestore } from "./session-store.js";
+import {
+  readSession,
+  writeSession,
+  computeRestore,
+  shouldRepersistOnWindowClose,
+} from "./session-store.js";
 // β59: PS/PCL raw print 経路は撤去。C2360 で auto-detect エラー
 // (016-726 / 106-726) を引き起こすことが判明し、raw datatype で
 // ドライバを完全バイパスする経路は本機種では使えないと結論。
@@ -677,7 +682,15 @@ ipcMain.on("kpdf3:session-set-open-files", (event, files) => {
     if (isNew && !event.sender.isDestroyed()) {
       event.sender.once("destroyed", () => {
         sessionFilesByWindow.delete(id);
-        persistSession();
+        // CRITICAL: only re-persist when OTHER windows remain (app staying
+        // alive). On the LAST window's close the app is quitting — possibly
+        // to install an update — and re-persisting here would wipe the file
+        // list to empty, so the next version would have nothing to restore.
+        // Leave session.json as the last renderer report wrote it.
+        const otherAlive = BrowserWindow.getAllWindows().filter(
+          (w) => !w.isDestroyed() && w.webContents?.id !== id,
+        ).length;
+        if (shouldRepersistOnWindowClose(otherAlive)) persistSession();
       });
     }
     persistSession();

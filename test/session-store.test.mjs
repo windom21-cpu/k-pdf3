@@ -9,6 +9,7 @@ import {
   readSession,
   writeSession,
   computeRestore,
+  shouldRepersistOnWindowClose,
 } from "../src/main/session-store.js";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,6 +66,15 @@ console.log("[5] computeRestore — null prev (first ever run) → no restore");
 {
   const r = computeRestore({ version: null, openFiles: [] }, "2.0.3");
   ok(r.restore === false, "fresh install has nothing to restore");
+}
+
+console.log("[5b] shouldRepersistOnWindowClose — last window must NOT wipe");
+{
+  // The regression that broke v2.0.3: the last window's close re-persisted
+  // an empty union, wiping the file list a pending update needed to restore.
+  ok(shouldRepersistOnWindowClose(0) === false, "last window → do not re-persist (preserve for restore)");
+  ok(shouldRepersistOnWindowClose(1) === true, "other windows alive → re-persist trimmed union");
+  ok(shouldRepersistOnWindowClose(3) === true, "several others alive → re-persist");
 }
 
 // ---- IO: read / write round-trip -----------------------------------------
