@@ -13,6 +13,9 @@ const confirmTitle = document.getElementById("confirm-title");
 const confirmMessageEl = document.getElementById("confirm-message");
 const confirmOkBtn = document.getElementById("confirm-ok");
 const confirmCancelBtn = document.getElementById("confirm-cancel");
+// 強調警告ブロック (赤枠)。重要操作 (例: 下敷き印刷の「向き=縦」) で
+// 見落とされない位置に出す。指定が無ければ hidden。
+const confirmWarningEl = document.getElementById("confirm-warning");
 // β.111: 任意 checkbox 行。"白黒で上書き" のような副次オプションを
 // 確定ダイアログに 1 つだけ載せる用途。複数 checkbox は範囲外。
 const confirmCheckboxRow = document.getElementById("confirm-checkbox-row");
@@ -26,27 +29,36 @@ let confirmDialogResolve = null;
 let confirmReturnsObject = false;
 /** localStorage key for the current invocation's checkbox (or null). */
 let confirmCheckboxStorageKey = null;
+/** checkbox.required 指定時 true。OK は checkbox が ON になるまで disabled。 */
+let confirmCheckboxRequired = false;
 
 /**
  * @param {object} opts
  * @param {string} [opts.title]
  * @param {string} [opts.message]
+ * @param {string} [opts.warning]           赤枠の強調警告 (省略時は非表示)
  * @param {string} [opts.okLabel]
  * @param {string|null} [opts.cancelLabel]  null → hide cancel
  * @param {object} [opts.checkbox]          β.111 副次オプション
  * @param {string}  opts.checkbox.label
  * @param {boolean} [opts.checkbox.defaultChecked=false]
  * @param {string}  [opts.checkbox.storageKey] localStorage で永続化
+ * @param {boolean} [opts.checkbox.required=false] ON になるまで OK を無効化
  */
 export function customConfirm({
   title = "確認",
   message,
+  warning = null,
   okLabel = "OK",
   cancelLabel = "キャンセル",
   checkbox = null,
 } = {}) {
   confirmTitle.textContent = title;
   confirmMessageEl.textContent = message ?? "";
+  if (confirmWarningEl) {
+    confirmWarningEl.textContent = warning ?? "";
+    confirmWarningEl.hidden = !warning;
+  }
   confirmOkBtn.textContent = okLabel;
   // cancelLabel === null hides the cancel button — useful for purely-
   // informational warnings where OK is the only choice.
@@ -60,6 +72,7 @@ export function customConfirm({
   // boolean resolve に戻す。
   confirmReturnsObject = !!checkbox;
   confirmCheckboxStorageKey = null;
+  confirmCheckboxRequired = false;
   if (checkbox) {
     confirmCheckboxRow.hidden = false;
     confirmCheckboxLabel.textContent = checkbox.label ?? "";
@@ -70,10 +83,14 @@ export function customConfirm({
       if (stored != null) initial = stored === "1";
     }
     confirmCheckboxEl.checked = initial;
+    // required: 重要操作の確認用。checkbox が ON になるまで OK を押せない。
+    confirmCheckboxRequired = !!checkbox.required;
   } else {
     confirmCheckboxRow.hidden = true;
     confirmCheckboxEl.checked = false;
   }
+  // 必須チェック未了なら OK を無効化 (Esc / キャンセルでは抜けられる)。
+  confirmOkBtn.disabled = confirmCheckboxRequired && !confirmCheckboxEl.checked;
   confirmDialog.hidden = false;
   setTimeout(() => confirmOkBtn.focus(), 0);
   return new Promise((resolve) => {
@@ -83,6 +100,9 @@ export function customConfirm({
 
 function settleConfirm(value) {
   confirmDialog.hidden = true;
+  // 次回の呼出に required の disabled が残らないよう必ず戻す。
+  confirmOkBtn.disabled = false;
+  confirmCheckboxRequired = false;
   // β.111: checkbox の値を永続化 (用意されていれば)。
   if (confirmCheckboxStorageKey && confirmCheckboxEl) {
     try {
@@ -101,8 +121,17 @@ function settleConfirm(value) {
   }
 }
 
-confirmOkBtn.addEventListener("click", () => settleConfirm(true));
+confirmOkBtn.addEventListener("click", () => {
+  if (confirmOkBtn.disabled) return; // required checkbox 未了
+  settleConfirm(true);
+});
 confirmCancelBtn.addEventListener("click", () => settleConfirm(false));
+// required 時は checkbox の ON/OFF で OK ボタンの活殺を切り替える。
+confirmCheckboxEl.addEventListener("change", () => {
+  if (confirmCheckboxRequired) {
+    confirmOkBtn.disabled = !confirmCheckboxEl.checked;
+  }
+});
 confirmDialog.addEventListener("click", (e) => {
   if (e.target === confirmDialog) settleConfirm(false);
 });
@@ -112,7 +141,7 @@ confirmDialog.addEventListener("keydown", (e) => {
     settleConfirm(false);
   } else if (e.key === "Enter") {
     e.preventDefault();
-    settleConfirm(true);
+    if (!confirmOkBtn.disabled) settleConfirm(true); // 必須チェック未了は無視
   }
 });
 

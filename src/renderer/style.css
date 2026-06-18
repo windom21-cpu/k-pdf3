@@ -2269,6 +2269,19 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
 .confirm-message {
   white-space: pre-line;
 }
+/* 強調警告ブロック (赤枠)。下敷き印刷の「向き=縦」など、見落とすと
+ * 実害が出る注意を最上部に目立たせる。改行は保持。 */
+.confirm-warning {
+  white-space: pre-line;
+  margin: 0 0 10px 0;
+  padding: 8px 10px;
+  border: 2px solid #c00000;
+  background: #ffecec;
+  color: #a00000;
+  font-weight: bold;
+  line-height: 1.45;
+  max-width: 460px;
+}
 /* 保存ダイアログは okLabel/cancelLabel に \n を埋めた 2 行ラベル
  * ("確定保存 / 画像として上書き" 等) を使うため、改行を保持しつつ
  * 単語間で勝手に折り返さないよう white-space: pre。min-width は
