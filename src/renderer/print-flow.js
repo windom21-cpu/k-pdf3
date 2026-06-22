@@ -469,8 +469,15 @@ async function actionPrintViaReader(pages, preselected, preselectedSource, opts 
   const projectStore = _projectStore();
   const overlayCount = projectStore.count();
   const allPagesSelected = filteredPages.length === pages.length;
+  // 回転 (userRotation) は元 PDF に焼かれていない viewer 専用変換なので、
+  // byte-copy すると他ビューア / 紙で回転が落ちる。回転ありページがあれば
+  // 再合成経路へ (assembleHybridPdf がベクター維持で回転をベイク)。
+  const hasUserRotation = filteredPages.some(
+    (p) => ((((p.userRotation ?? 0) % 360) + 360) % 360) !== 0,
+  );
   // FAX 経路では byte-copy は使わない (mono 化のため必ず再合成が必要)
-  const isCopy = !forceMono && overlayCount === 0 && allPagesSelected;
+  const isCopy =
+    !forceMono && overlayCount === 0 && allPagesSelected && !hasUserRotation;
 
   // β.118: 中止ボタンを表示する (旧コメント: 「Adobe ダイアログを × で
   // 閉じれば中止」だったが、Adobe が hand-off で固まる / 印刷ダイアログが
@@ -600,7 +607,12 @@ export async function actionPrint() {
   const allPagesSelected =
     choice.pageNos.length === pages.length &&
     choice.pageNos.every((n, i) => n === i + 1);
-  const isCopy = overlayCount === 0 && allPagesSelected;
+  // 回転 (userRotation) は元 PDF に焼かれていないため byte-copy では落ちる。
+  // 回転ありページがあれば再合成経路へ (assembleHybridPdf がベイク)。
+  const hasUserRotation = pages.some(
+    (p) => ((((p.userRotation ?? 0) % 360) + 360) % 360) !== 0,
+  );
+  const isCopy = overlayCount === 0 && allPagesSelected && !hasUserRotation;
 
   // 中止ボタンを有効化。spawn 中の SumatraPDF や silent print の途中で
   // 「もう待たない」をユーザに渡せる。fire-and-forget: handler 内で

@@ -4121,7 +4121,16 @@ async function actionExportToPath(
   const hasDeletions =
     pendingDeletedPages.size > 0
     || (meta && sourcePagesCount < (meta.pageCount ?? sourcePagesCount));
-  const isCopy = overlayCount === 0 && !hasDeletions && !hasInsertions;
+  // 回転 (userRotation) は元 PDF バイトに焼かれていない viewer 専用変換。
+  // byte-copy で元バイトを流用すると他ビューア / 印刷で回転が落ちるので、
+  // 回転ありのページがあれば再合成経路へ回し、assembleHybridPdf に
+  // userRotation をベクター維持のままベイクさせる (回転ページのみ
+  // _placeRotatedSourcePage、非回転ページは従来どおり copyPages verbatim)。
+  const hasUserRotation = pages.some(
+    (p) => ((((p.userRotation ?? 0) % 360) + 360) % 360) !== 0,
+  );
+  const isCopy =
+    overlayCount === 0 && !hasDeletions && !hasInsertions && !hasUserRotation;
   const verb = verbOverride ?? (isCopy ? "コピー" : "書き出し");
   showBusy(`${verb}準備`, "ページを描画しています...", 0);
   try {
