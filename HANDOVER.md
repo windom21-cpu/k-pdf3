@@ -61,6 +61,7 @@ stable 後の patch (要約。full 詳細は git log / `CHANGELOG-history.md`):
 - `docs/adr/0001..0016.md` — 重要な設計判断の根拠
 - `schema/schema.sql` — SQLite テーブル定義
 - `ROADMAP.md` — マイルストーン一覧
+- `CHANGELOG-history.md` — **2026-06-22 に本書から分離した履歴の保管庫**。完了 β (β.1〜β.150) の詳細変更ログ・§6.4 β 全表・各 patch の full 詳細・§8 完了済リストを保持。**HANDOVER.md = 現役の正 / これ = 経緯 (いつ何をなぜ)**。印刷・Adobe・FAX・render・D&D 等の試行錯誤の経緯を追うときは両方 grep する
 
 ---
 
@@ -1091,6 +1092,7 @@ ADR ファイル名：`docs/adr/00NN-{slug}.md`、連番。
 - **明示的に依頼された時のみ大幅更新**
 - マイルストーン完了時は §6.3 の状態欄と §7（実装済み機能）を更新
 - 新しい ADR を起草したら §4.5 / §15.3 に反映
+- **履歴の退避先 (2026-06-22 整理)**: 肥大化対策 (本書が 264KB に達し Read 上限超) として、完了 β の詳細変更ログ・§6.4 β.1〜β.150 全表・各 patch の full 詳細・§8 の完了済リストを `CHANGELOG-history.md` へ分離した。**役割分担: `HANDOVER.md` = 現役の正 (現状サマリ / 設計思想・禁止事項 / オープン項目 / ユーザー要件)、`CHANGELOG-history.md` = 経緯の保管庫 (いつ何をなぜ)**。本書の各ポインタ (現状サマリ / §6.4 / §8) から該当章を案内している。再び肥大したら、完了・確定したものを同様に archive へ移し、本書は要約 + ポインタに保つ。印刷 / Adobe / FAX / render の試行錯誤を追うときは両ファイルを grep ([[feedback_handover_first_before_judgment]])。
 
 ### 16.2 バージョンバンプ運用
 
