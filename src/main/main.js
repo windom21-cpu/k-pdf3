@@ -2850,6 +2850,20 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
     // (例: "kpdf3-print-649dc133-350a-4738-8d8f-e0bf2a6de737")
     const tempPdfMarker = basename(pdfPath, ".pdf");
     let docOpenedSeen = false;
+    // v2.0.9: Path B (doc-closed) の早期発火対策。armed 後にマーカーが
+    // 「消えた」と見えても、ユーザーが Adobe の印刷ダイアログで設定を調整
+    // している最中はタイトルが一時的にマーカーを失うことがある (印刷ダイアログ
+    // がモーダルで主ウィンドウ報告が揺れる / 文書窓が背面化する等)。1 tick の
+    // 消失で即 kill すると「調整中に Adobe が勝手に落ちて印刷が進まない」
+    // 事象になる (ユーザー報告)。対策は 2 段:
+    //   (1) マーカー消失が DOC_CLOSED_CONFIRM_TICKS 連続したときだけ doc-closed
+    //       判定に進む (一過性の揺れを無視)。マーカーが戻ったら streak をリセット。
+    //   (2) さらに POST_JOB_BUFFER_MS 後にもう一度タイトルを取り直し、まだ
+    //       マーカーが無いときだけ kill する。バッファ中に復帰したら誤検出と
+    //       みなしてキャンセルし polling を再開。
+    // 本当に文書を閉じた場合はマーカーが戻らないので β.138 の自動 close は維持。
+    const DOC_CLOSED_CONFIRM_TICKS = 3;
+    let markerAbsentStreak = 0;
 
     const tick = async () => {
       if (settled) return;
@@ -2893,12 +2907,34 @@ async function printPdfViaReaderDialog(readerInfo, pdfPath) {
         // 印刷完了とみなす (β.138 で sp.pid 限定を解除)。
         if (titleHasMarker) {
           docOpenedSeen = true;
+          markerAbsentStreak = 0; // マーカー復帰 → 連続消失をリセット
         } else if (docOpenedSeen) {
           // armed 後に marker を含む title が全部消えた = Adobe 内で
-          // document tab がクローズされた = 印刷完了 (or 手動 close)
-          // → 3 秒バッファ後に Reader を kill。Path A と同じ semantics。
-          setTimeout(() => finish("doc-closed"), POST_JOB_BUFFER_MS);
-          return;
+          // document tab がクローズされた可能性 (印刷完了 or 手動 close)。
+          // ただし調整中の一過性の揺れと区別するため、(1) 連続消失を確認し、
+          // (2) バッファ後に再確認してから確定する。
+          markerAbsentStreak += 1;
+          if (markerAbsentStreak >= DOC_CLOSED_CONFIRM_TICKS) {
+            setTimeout(async () => {
+              if (settled) return;
+              let stillGone = true;
+              try {
+                const titles = await snapshotAdobeTitles();
+                stillGone = !titles.some((t) => t.includes(tempPdfMarker));
+              } catch { /* スナップショット失敗時は従来どおり close 扱い */ }
+              if (settled) return;
+              if (stillGone) {
+                // バッファ後もマーカー無し = 文書は本当に閉じた → kill。
+                finish("doc-closed");
+              } else {
+                // バッファ中にマーカーが復帰 = 調整中の一時的な揺れだった。
+                // 誤検出としてキャンセルし、polling を再開する。
+                markerAbsentStreak = 0;
+                setTimeout(tick, POLL_MS);
+              }
+            }, POST_JOB_BUFFER_MS);
+            return;
+          }
         }
       } catch { /* ignore — keep polling */ }
       setTimeout(tick, POLL_MS);
