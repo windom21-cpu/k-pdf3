@@ -1,8 +1,10 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-06-22
-現在のバージョン: **v2.0.7 stable (2026-06-22 リリース)**。β.1〜β.150 の業務並走を経て 2026-06-05 に v2.0.0 stable へ卒業 (Win+Mac+Linux 3 OS 配布、releaseType=release)。**今後も stable 運用** (重大バグは patch 2.0.x、新機能/大物は ADR 起草後)。**⚠️ β を切る場合のみ `package.json` `build.publish.releaseType` を `release`→`prerelease` に戻す**。**Mac/Linux を Windows 同等 (印刷/FAX/Office/署名) にするには追加開発が要る (§15.6)**。
+最終更新: 2026-06-23
+現在のバージョン: **v2.0.9 stable (2026-06-23 リリース)**。β.1〜β.150 の業務並走を経て 2026-06-05 に v2.0.0 stable へ卒業 (Win+Mac+Linux 3 OS 配布、releaseType=release)。**今後も stable 運用** (重大バグは patch 2.0.x、新機能/大物は ADR 起草後)。**⚠️ β を切る場合のみ `package.json` `build.publish.releaseType` を `release`→`prerelease` に戻す**。**Mac/Linux を Windows 同等 (印刷/FAX/Office/署名) にするには追加開発が要る (§15.6)**。
 stable 後の patch (要約。full 詳細は git log / `CHANGELOG-history.md`):
+- **v2.0.9** = 印刷ダイアログ調整中に Adobe が勝手に閉じて印刷が進まない事象を構造対策 (案D 監視ループの Path B `doc-closed` 早期発火。armed 後マーカー消失の 1 tick で無条件 kill 確定していたのを、消失 3 tick 連続のデバウンス + バッファ後の再確認に変更。調整中のタイトル一過性揺れで誤 kill しない / 本当に閉じれば β.138 の自動 close は維持=回帰なし。win32 専用で実機確認要。memory [[project_print_adobe_cleanup_history]])
+- **v2.0.8** = 回転 (userRotation) のみページの上書き保存 (Ctrl+S) が no-op で他ビューア/紙に回転が反映されない不具合修正 (真因は v2.0.7 の一段手前: `rotatePageBy` が `markWorkspaceMutated` を呼ばず dirty を立てないため、回転のみページは `actionSave` 冒頭の dirty ガードで early-return し `actionExportToPath` に到達していなかった。別名書き出しはゲート無しで v2.0.7 修正済だった。修正は `rotatePageBy` に `markWorkspaceMutated()` 1 行=全回転経路をカバー + ダーティ表示も点灯。memory [[project_rotation_only_bytecopy_bug]])
 - **v2.0.7** = 回転 (userRotation) のみページが byte-copy で書き出し/全ページ印刷時に回転落ちする不具合修正 (`isCopy` 判定 3 か所に rotation チェック追加、回転ページのみ `_placeRotatedSourcePage` でベクター維持ベイク。memory [[project_rotation_only_bytecopy_bug]])
 - **v2.0.6** = 下敷き印刷の上下さかさま対策 (真因は Adobe「向き=自動」誤判定、自動補正せず赤枠警告+必須チェックで「縦」を毎回確認させる運用。memory [[project_underlay_print_180flip_adobe]])
 - **v2.0.5** = 更新後 PDF 復元の検証用テストリリース (コード変更なし)
@@ -20,9 +22,9 @@ stable 後の patch (要約。full 詳細は git log / `CHANGELOG-history.md`):
 
 ## 現状サマリ (1 分で把握)
 
-**フェーズ**: **stable 運用中 — 現在 v2.0.7 (2026-06-22)**。β.1〜β.150 → 2026-06-05 に v2.0.0 stable、以降 patch を v2.0.7 まで。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。**stable に残る主なオープン項目は §8 を参照** (クラッシュ診断ロガー撤去 #6 が最後のゲート、前倒し NG → memory [[project_crash_logger_removal_prepared]])。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
+**フェーズ**: **stable 運用中 — 現在 v2.0.9 (2026-06-23)**。β.1〜β.150 → 2026-06-05 に v2.0.0 stable、以降 patch を v2.0.9 まで。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。**stable 残務は全クローズ済** — クラッシュ診断ロガーは β.149 で撤去済 (`logCrash`/`crashLogPath`/`print-tick` 等は src から消滅、残るは comment 1 件のみ。**§8.2 #3 と末尾の撤去 TODO リストは履歴**=既に適用済)。**現在のオープン項目は §8 の実機確認待ちが中心** (直近 patch の Windows 実機検証: v2.0.8 回転のみ上書き保存 / v2.0.9 印刷ダイアログ調整中の Adobe 早期 close)。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
 
-> **β71〜β147 の詳細変更ログ + β 卒業ロードマップ (2026-05-25 確定) は `CHANGELOG-history.md` へ退避 (2026-06-22 整理)。** 製品は stable v2.0.7 で β は履歴。設計の現役根拠は §2 (設計思想・禁止事項) / §15 (既知懸念) / `docs/adr/` / memory を参照。印刷・Adobe・FAX・render・D&D の試行錯誤経緯を追うときは `CHANGELOG-history.md` を grep (memory [[feedback_handover_first_before_judgment]])。
+> **β71〜β147 の詳細変更ログ + β 卒業ロードマップ (2026-05-25 確定) は `CHANGELOG-history.md` へ退避 (2026-06-22 整理)。** 製品は stable v2.0.9 で β は履歴。設計の現役根拠は §2 (設計思想・禁止事項) / §15 (既知懸念) / `docs/adr/` / memory を参照。印刷・Adobe・FAX・render・D&D の試行錯誤経緯を追うときは `CHANGELOG-history.md` を grep (memory [[feedback_handover_first_before_judgment]])。
 
 **HANDOVER 更新ルール**: HANDOVER.md は **ユーザーが明示的に依頼した時だけ** 書き換える。β タグを切る毎に勝手に refresh しない (2026-05-12 にユーザーから明示)。
 
