@@ -4332,6 +4332,15 @@ async function rotatePageBy(pageNo, delta) {
   const next = ((oldUser + delta) % 360 + 360) % 360;
   try {
     await kpdf3.setPageRotation(pageNo, next);
+    // 回転 (userRotation) は workspace の変更だが、元 PDF バイトには
+    // 焼かれていない。これを dirty として記録しないと、回転だけのページ
+    // (overlay 無し) では projectStore も pendingDeletedPages も動かず、
+    // 上書き保存 (actionSave) が冒頭の dirty ガードで no-op になり、回転が
+    // 元 PDF に書き戻されない → 他ビューア / 紙で回転が落ちる (v2.0.7 で
+    // actionExportToPath の byte-copy ゲートは直したが、上書き保存はそこへ
+    // 到達する前に return していた)。markWorkspaceMutated で dirty 表示も
+    // 点灯し、ユーザーに未保存の回転があることを知らせる。
+    markWorkspaceMutated();
     await refreshViewer();
     // Keep the user looking at the same page after the rebuild.
     viewer.scrollToPage(pageNo);
