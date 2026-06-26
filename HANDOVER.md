@@ -1,8 +1,9 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-06-23
-現在のバージョン: **v2.0.9 stable (2026-06-23 リリース)**。β.1〜β.150 の業務並走を経て 2026-06-05 に v2.0.0 stable へ卒業 (Win+Mac+Linux 3 OS 配布、releaseType=release)。**今後も stable 運用** (重大バグは patch 2.0.x、新機能/大物は ADR 起草後)。**⚠️ β を切る場合のみ `package.json` `build.publish.releaseType` を `release`→`prerelease` に戻す**。**Mac/Linux を Windows 同等 (印刷/FAX/Office/署名) にするには追加開発が要る (§15.6)**。
+最終更新: 2026-06-27
+現在のバージョン: **v2.0.10 stable (2026-06-27 リリース)**。β.1〜β.150 の業務並走を経て 2026-06-05 に v2.0.0 stable へ卒業 (Win+Mac+Linux 3 OS 配布、releaseType=release)。**今後も stable 運用** (重大バグは patch 2.0.x、新機能/大物は ADR 起草後)。**⚠️ β を切る場合のみ `package.json` `build.publish.releaseType` を `release`→`prerelease` に戻す**。**Mac/Linux を Windows 同等 (印刷/FAX/Office/署名) にするには追加開発が要る (§15.6)**。
 stable 後の patch (要約。full 詳細は git log / `CHANGELOG-history.md`):
+- **v2.0.10** = サムネイルからページ削除後に選択が常に先頭ページへ戻る UX 不具合を修正 (`deleteSelectedPages`。従来は選択 set をクリア → `refreshViewer` の `viewer.load` がビューアを先頭に巻き戻し → `onPageChange` が先頭で発火 → `highlightCurrentThumb` が p.1 に `is-current` 付与、が正体。修正は削除適用前に最先頭削除ページの表示位置 0-based を記録し、`refreshViewer` 後にその位置へ繰り上がったページ=末尾削除なら新末尾を選択 + サイドバー文脈なら `viewer.scrollToPage`。registry の `count`/`pageNoAtPos`/`posOfPageNo` のみ使用、全 OS で挙動共通=win32 依存なし。`renderer.js` UI 層のため自動テスト対象外、実機で中間削除→隣選択 / 末尾削除→末尾選択を確認要)
 - **v2.0.9** = 印刷ダイアログ調整中に Adobe が勝手に閉じて印刷が進まない事象を構造対策 (案D 監視ループの Path B `doc-closed` 早期発火。armed 後マーカー消失の 1 tick で無条件 kill 確定していたのを、消失 3 tick 連続のデバウンス + バッファ後の再確認に変更。調整中のタイトル一過性揺れで誤 kill しない / 本当に閉じれば β.138 の自動 close は維持=回帰なし。win32 専用で実機確認要。memory [[project_print_adobe_cleanup_history]])
 - **v2.0.8** = 回転 (userRotation) のみページの上書き保存 (Ctrl+S) が no-op で他ビューア/紙に回転が反映されない不具合修正 (真因は v2.0.7 の一段手前: `rotatePageBy` が `markWorkspaceMutated` を呼ばず dirty を立てないため、回転のみページは `actionSave` 冒頭の dirty ガードで early-return し `actionExportToPath` に到達していなかった。別名書き出しはゲート無しで v2.0.7 修正済だった。修正は `rotatePageBy` に `markWorkspaceMutated()` 1 行=全回転経路をカバー + ダーティ表示も点灯。memory [[project_rotation_only_bytecopy_bug]])
 - **v2.0.7** = 回転 (userRotation) のみページが byte-copy で書き出し/全ページ印刷時に回転落ちする不具合修正 (`isCopy` 判定 3 か所に rotation チェック追加、回転ページのみ `_placeRotatedSourcePage` でベクター維持ベイク。memory [[project_rotation_only_bytecopy_bug]])
@@ -22,9 +23,9 @@ stable 後の patch (要約。full 詳細は git log / `CHANGELOG-history.md`):
 
 ## 現状サマリ (1 分で把握)
 
-**フェーズ**: **stable 運用中 — 現在 v2.0.9 (2026-06-23)**。β.1〜β.150 → 2026-06-05 に v2.0.0 stable、以降 patch を v2.0.9 まで。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。**stable 残務は全クローズ済** — クラッシュ診断ロガーは β.149 で撤去済 (`logCrash`/`crashLogPath`/`print-tick` 等は src から消滅、残るは comment 1 件のみ。**§8.2 #3 と末尾の撤去 TODO リストは履歴**=既に適用済)。**現在のオープン項目は §8 の実機確認待ちが中心** (直近 patch の Windows 実機検証: v2.0.8 回転のみ上書き保存 / v2.0.9 印刷ダイアログ調整中の Adobe 早期 close)。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
+**フェーズ**: **stable 運用中 — 現在 v2.0.10 (2026-06-27)**。β.1〜β.150 → 2026-06-05 に v2.0.0 stable、以降 patch を v2.0.10 まで。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。**stable 残務は全クローズ済** — クラッシュ診断ロガーは β.149 で撤去済 (`logCrash`/`crashLogPath`/`print-tick` 等は src から消滅、残るは comment 1 件のみ。**§8.2 #3 と末尾の撤去 TODO リストは履歴**=既に適用済)。**現在のオープン項目は §8 の実機確認待ちが中心** (直近 patch の実機検証: v2.0.8 回転のみ上書き保存 / v2.0.9 印刷ダイアログ調整中の Adobe 早期 close / v2.0.10 サムネ削除後の選択位置)。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
 
-> **β71〜β147 の詳細変更ログ + β 卒業ロードマップ (2026-05-25 確定) は `CHANGELOG-history.md` へ退避 (2026-06-22 整理)。** 製品は stable v2.0.9 で β は履歴。設計の現役根拠は §2 (設計思想・禁止事項) / §15 (既知懸念) / `docs/adr/` / memory を参照。印刷・Adobe・FAX・render・D&D の試行錯誤経緯を追うときは `CHANGELOG-history.md` を grep (memory [[feedback_handover_first_before_judgment]])。
+> **β71〜β147 の詳細変更ログ + β 卒業ロードマップ (2026-05-25 確定) は `CHANGELOG-history.md` へ退避 (2026-06-22 整理)。** 製品は stable v2.0.10 で β は履歴。設計の現役根拠は §2 (設計思想・禁止事項) / §15 (既知懸念) / `docs/adr/` / memory を参照。印刷・Adobe・FAX・render・D&D の試行錯誤経緯を追うときは `CHANGELOG-history.md` を grep (memory [[feedback_handover_first_before_judgment]])。
 
 **HANDOVER 更新ルール**: HANDOVER.md は **ユーザーが明示的に依頼した時だけ** 書き換える。β タグを切る毎に勝手に refresh しない (2026-05-12 にユーザーから明示)。
 
@@ -573,6 +574,7 @@ npm run dev                        # electronmon (推奨、自動 reload。Wayla
 - **β145 (Electron 41 化の Windows 初配布・要重点確認)**: (a) アプリが起動し PDF を開ける・編集できる (better-sqlite3 41 ABI 正常)、(b) **別窓 (ページポップアップ) が開き、ページ縦横比にフィットしてリサイズされる** (ESM `require` 回帰の修正確認、β.144 までは Electron 38)、(c) 印刷 (Adobe `/p`) / FAX / 下敷き印刷が従来どおり動く、(d) **画像スタンプ (クリップボード貼り付け) が Windows ネイティブで表示される** (WSLg では検証できなかった経路)、(e) 一般操作で白画面・崩れ・落ちが無い (CSP/hardening が正常機能を阻害しない)。**何か壊れたら hardening は CSP コミット `6c6b004` のみ revert 可、Electron は ADR-0004 §更新の手順で 38 へ戻せる**
 - **β146 ツールバー アイコン化 + 動的退避**: (a) PDF を開いた状態でツールバーの各アイコンが意図どおりか・**ホバーで用途解説 (title) が出るか**、(b) **ウインドウ幅を狭めると、ボタンが折り返さず高さ一定のまま、表示倍率→検索→回転→… の順で右端「»」に入っていくか**、(c) 「»」を開いて中の **表示倍率の変更・検索入力・回転** が機能するか、(d) 幅を広げると退避項目がツールバーに戻るか、(e) **どの幅でもアイコンと枠がズレない**か (縮小由来のズレ解消確認)、(f) 白黒トグル ON でアイコンが白に反転して見えるか、(g) △ (下敷き印刷/ページ番号/別窓/別窓化) が「»」の静的ゾーンから従来どおり起動するか・メニューバー経由も無事か。**Wayland 実機でのウインドウリサイズ追従** (ResizeObserver) を特に確認したい (β.146 はアップデート配信でユーザー実機確認済・OK)
 - **β147 orphan サイドカー掃除**: 主に内部整理 (新 UI なし)。確認するなら (a) 200MB 超 PDF を開いて編集→保存後、`userData/workspaces/` に `*.kpdf3.source.pdf` が `.kpdf3` 無しで残っていないか、(b) 巨大 PDF ワークスペースを通常利用していて、起動時掃除で**生きているワークスペースのソースが誤って消えていない**か (兄弟 `.kpdf3` がある限り保持される設計)。実害が出る経路ではないので低優先
+- **v2.0.10 サムネ削除後の選択位置**: 左サイドバーのサムネで (a) 中間ページ (例 3/10 ページ目) を削除 → 選択と表示が**元 4 ページ目=今の 3 ページ目**へ移り、先頭に戻らないか、(b) **末尾ページを削除 → 新しい末尾**が選択されるか、(c) 複数選択削除 → 最も先頭側の削除位置に繰り上がったページが選択されるか、(d) 全ページ削除で空表示になり例外が出ないか、(e) 挿入(白紙)ページを混在させた状態でも表示位置ベースで正しく繰り上がるか。分割保存ビュー側は選択復元のみ (メインビューアはスクロールしない) なので、分割の選択ハイライトが残ることも併せて確認
 
 #### 🟠 繰越項目 (β 卒業前の検討候補)
 
