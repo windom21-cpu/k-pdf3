@@ -5619,6 +5619,15 @@ async function deleteSelectedPages(state = sidebarThumbSelection) {
     okLabel: "削除",
   });
   if (!ok) return;
+  // Remember where the deletion happens (0-based visual position of the
+  // earliest deleted page) so focus can land on the page that slides into
+  // the gap. Captured *before* the delete is applied, while the registry
+  // still holds the doomed pages. Without this the viewer reloads to the
+  // top and the selection snaps back to page 1 after every delete.
+  const deletedPositions = all
+    .map((n) => viewer.registry?.posOfPageNo?.(n))
+    .filter((p) => Number.isInteger(p) && p >= 0);
+  const focusPos = deletedPositions.length ? Math.min(...deletedPositions) : null;
   // Synthetic pages: remove immediately from DB (no pending state).
   for (const n of syntheticDeletes) {
     try {
@@ -5640,6 +5649,24 @@ async function deleteSelectedPages(state = sidebarThumbSelection) {
   refreshDirtyIndicator();
   await refreshViewer();
   if (isSplitMode) await refreshSplitView();
+  // Re-focus the page now occupying the deleted slot (or the new last page
+  // if the tail was deleted) so the selection stays put instead of jumping
+  // back to page 1 when the viewer reloads.
+  if (focusPos != null) {
+    const count = viewer.registry?.count?.() ?? 0;
+    if (count > 0) {
+      const focusPageNo = viewer.registry.pageNoAtPos(Math.min(focusPos, count - 1));
+      if (focusPageNo) {
+        state.pageNos.clear();
+        state.pageNos.add(focusPageNo);
+        state.anchor = focusPageNo;
+        refreshThumbSelectionVisuals();
+        // Only the sidebar context drives the main viewer; the split panel
+        // has no current-page highlight to chase, so leave it scrolled.
+        if (state === sidebarThumbSelection) viewer.scrollToPage(focusPageNo);
+      }
+    }
+  }
 }
 
 // Delete key from either thumb context — each operates on its own selection.
