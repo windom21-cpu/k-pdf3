@@ -18,7 +18,7 @@
 // isOpen, splitThumbSelection, sidebarThumbSelection, isSplitMode.
 // viewer / wsStatus / fetchVisiblePages are stable refs / fns passed once.
 
-import { composePagesForExport, composeSinglePageCanvas } from "./exporter.js";
+import { composePagesForExport, composeSinglePageCanvas, pagesInNaturalSourceOrder } from "./exporter.js";
 import { renderSyntheticPagePixels } from "./viewer.js";
 import { showBusy, updateBusy, hideBusy, setBusyCancel } from "./busy-modal.js";
 import { customConfirm } from "./dialogs.js";
@@ -475,9 +475,14 @@ async function actionPrintViaReader(pages, preselected, preselectedSource, opts 
   const hasUserRotation = filteredPages.some(
     (p) => ((((p.userRotation ?? 0) % 360) + 360) % 360) !== 0,
   );
+  // 並び替え (display_order) は元 PDF バイトに焼かれない workspace 専用変換
+  // なので、自然順 (1..N) でなければ byte-copy せず再合成経路へ (v2.0.11、
+  // actionExportToPath と同じ手当て。Adobe 印刷で並び替えが落ちる事故を防ぐ)。
+  const isNaturalOrder = pagesInNaturalSourceOrder(filteredPages);
   // FAX 経路では byte-copy は使わない (mono 化のため必ず再合成が必要)
   const isCopy =
-    !forceMono && overlayCount === 0 && allPagesSelected && !hasUserRotation;
+    !forceMono && overlayCount === 0 && allPagesSelected && !hasUserRotation
+    && isNaturalOrder;
 
   // β.118: 中止ボタンを表示する (旧コメント: 「Adobe ダイアログを × で
   // 閉じれば中止」だったが、Adobe が hand-off で固まる / 印刷ダイアログが

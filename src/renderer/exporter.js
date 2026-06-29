@@ -696,6 +696,33 @@ function parseHexColor(s) {
 export const EXPORT_ZOOM = 900 / 72;
 
 /**
+ * True only when `pages` (in display order) are exactly the source PDF's
+ * pages 1..N in their natural order, with no synthetic / inserted pages.
+ *
+ * This is the precondition for the verbatim byte-copy export/print fast
+ * path (copy the source PDF bytes as-is). Page REORDER is a workspace-only
+ * change — it rewrites `display_order` in the DB but is NOT baked into the
+ * source PDF bytes (exactly like userRotation). A byte-copy therefore drops
+ * a reorder silently: K-PDF3 still shows the new order (it reads the DB) but
+ * other apps that read the raw PDF (k-evi 等) see the original order.
+ *
+ * v2.0.11: the byte-copy guard checked overlays/deletions/insertions/
+ * rotation but NOT reorder, so a reorder-only save/print fell through to
+ * byte-copy and lost the new order. Mirrors the v2.0.7 userRotation fix.
+ * When this returns false the caller re-assembles via composePagesForExport
+ * → assembleHybridPdf, where unedited pages use strategy="source" (vector
+ * copyPages in display order) so vectors/text/quality are preserved.
+ *
+ * @param {Array<{ pageNo:number, isSynthetic?:boolean }>} pages
+ * @returns {boolean}
+ */
+export function pagesInNaturalSourceOrder(pages) {
+  return Array.isArray(pages)
+    && pages.length > 0
+    && pages.every((p, i) => !p?.isSynthetic && p?.pageNo === i + 1);
+}
+
+/**
  * @param {object} args
  * @param {Array<any>} args.pages              page rows from workspace.getPages()
  * @param {import("../domain/project-store.js").ProjectStore} args.projectStore

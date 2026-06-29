@@ -18,6 +18,7 @@ import {
   compositePage,
   composePageImage,
   composeRegionImage,
+  pagesInNaturalSourceOrder,
 } from "./exporter.js";
 import {
   TEXT_FONT_DEFAULT_ID,
@@ -4129,8 +4130,13 @@ async function actionExportToPath(
   const hasUserRotation = pages.some(
     (p) => ((((p.userRotation ?? 0) % 360) + 360) % 360) !== 0,
   );
+  // 並び替え (display_order) も userRotation と同じく元 PDF バイトに焼かれて
+  // いない workspace 専用変換。byte-copy すると他アプリ (k-evi 等) で並び順
+  // が落ちるので、元の自然順 (1..N) でない限り再合成経路へ回す (v2.0.11)。
+  const isNaturalOrder = pagesInNaturalSourceOrder(pages);
   const isCopy =
-    overlayCount === 0 && !hasDeletions && !hasInsertions && !hasUserRotation;
+    overlayCount === 0 && !hasDeletions && !hasInsertions && !hasUserRotation
+    && isNaturalOrder;
   const verb = verbOverride ?? (isCopy ? "コピー" : "書き出し");
   showBusy(`${verb}準備`, "ページを描画しています...", 0);
   try {
