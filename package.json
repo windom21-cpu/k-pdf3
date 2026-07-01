@@ -45,12 +45,12 @@
     "node": ">=22.22.2"
   },
   "devDependencies": {
-    "electron": "41.7.1",
+    "electron": "42.5.2",
     "electron-builder": "26.8.1",
     "electronmon": "^2.0.4"
   },
   "dependencies": {
-    "better-sqlite3": "12.10.0",
+    "better-sqlite3": "12.11.1",
     "electron-updater": "6.8.5",
     "koffi": "2.16.2",
     "mupdf": "^1.27.0",
