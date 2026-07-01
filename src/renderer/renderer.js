@@ -170,6 +170,7 @@ const $ = (id) => document.getElementById(id);
 const btnOpen = $("btn-open");
 const btnSave = $("btn-save");
 const btnExport = $("btn-export");
+const btnRestoreMaster = $("btn-restore-master");
 const btnPrint = $("btn-print");
 const btnMonoPrint = $("btn-mono-print");
 const btnFaxSend = $("btn-fax-send");
@@ -1028,6 +1029,7 @@ $("btn-detach-tab")?.addEventListener("click", () => {
     "btn-shape-palette", "btn-form-palette",
     "btn-mode-callout", "btn-mode-marker", "btn-mode-redaction",
     "btn-mode-stamp", "btn-mode-text",
+    "btn-restore-master",
     "btn-fax-send", "btn-mono-print", "btn-print", "btn-export", "btn-save",
   ];
   // 復元用に元の並び (toolbar 直下要素) を記録。
@@ -2404,6 +2406,9 @@ function setOpen(open) {
   // to close-then-open.
   btnOpen.disabled = false;
   btnExport.disabled = !open;
+  // ADR-0026: 「編集に戻す」は lineage 依存。ここでは一旦無効化し、直後の
+  // refreshViewer → refreshRestoreMasterUI が確定版のときだけ再点灯する。
+  if (btnRestoreMaster) btnRestoreMaster.disabled = true;
   btnPrint.disabled = !open;
   if (btnModeRegionImage) btnModeRegionImage.disabled = !open;
   if (btnMonoPrint) btnMonoPrint.disabled = !open;
@@ -2471,6 +2476,9 @@ function setOpen(open) {
   refreshZoomSelect();
   refreshSearchEnabled();
   updateTabBarOffset();
+  // ADR-0026: keep 「編集に戻す」in sync — critical for the close path, where
+  // refreshViewer early-returns before its own refreshRestoreMasterUI call.
+  void refreshRestoreMasterUI();
   // Mirror onto the active tab so the tab bar's dirty mark + close
   // confirmation reflect reality.
   const tab = getActiveTab();
@@ -2751,6 +2759,10 @@ async function refreshViewer() {
     console.warn("[annotations] fetch failed", err);
     viewer.setAnnotations(null);
   }
+  // ADR-0026: keep the「編集に戻す」affordance in sync with the active tab's
+  // lineage (covers open / tab switch). Fire-and-forget — must not block the
+  // viewer refresh.
+  void refreshRestoreMasterUI();
 }
 
 async function confirmDiscardIfDirty() {
@@ -2968,6 +2980,16 @@ async function openPdfPath(pdfPath) {
     }
     await refreshViewer();
     renderTabBar();
+    // ADR-0026: フラット版 (確定版) を開いたら「編集に戻す」で再編集できる
+    // ことを一度だけ案内する。lineage が切れている (別 PC 確定 / userData 掃除)
+    // 場合は黙らず明示する。
+    if (result.hasEditableMaster) {
+      wsStatus.textContent =
+        "このファイルは確定版です — ［編集に戻す］でテキスト等をまた動かせます";
+    } else if (result.masterMissing) {
+      wsStatus.textContent =
+        "このファイルは確定版ですが、編集可能な状態がこの PC に見つかりません";
+    }
   } catch (err) {
     console.error("[renderer] openPdfFile (recent) failed:", err);
     wsStatus.textContent = `エラー: ${err.message ?? err}`;
@@ -4055,14 +4077,20 @@ async function actionSave() {
       // distinction that legal practitioners already use day-to-day.
       // β.111: 「白黒で上書き」チェックを確定ダイアログに追加。
       // ツールバーの「白黒」トグル (印刷専用) とは別状態で永続化。
+      // ADR-0026: 確定は破壊的操作ではなくなった (編集可能マスターを温存)。
+      // 「画像化=もう戻せない」という不安を煽らず、①ファイルに反映されて
+      // Dropbox/Adobe で見える ②あとで『編集可能な状態に戻す』で戻せる、を
+      // 前向きに伝える文言に改訂。
       const result = await customConfirm({
         title: "保存方法を選んでください",
         message:
-          `「${activeSourceName || "(無名)"}」を保存します。\n`
-          + `「確定」を選ぶと、いま入れたテキスト・印影などは\n`
-          + `あとから動かせなくなります。`,
-        okLabel: "確定保存\n画像として上書き",
-        cancelLabel: "下書き保存\n編集可能として上書き",
+          `「${activeSourceName || "(無名)"}」を保存します。\n\n`
+          + `「確定保存」を選ぶと、文字や印影がファイルに焼き込まれ、\n`
+          + `Dropbox や Adobe でも見えるようになります。\n`
+          + `あとで『編集可能な状態に戻す』で、この時点の編集内容に\n`
+          + `戻して直せます。`,
+        okLabel: "確定保存\nファイルに反映",
+        cancelLabel: "下書き保存\n編集可能として保存",
         checkbox: {
           label: "白黒で上書き（カラースタンプ等を黒化して保存）",
           storageKey: "kpdf3.saveMono",
@@ -4172,13 +4200,23 @@ async function actionExportToPath(
     // 上書き保存 (同パス) は現タブを更新する従来経路を維持。
     const preTab = getActiveTab();
     const isSaveAs = !!preTab && preTab.activeSourcePdfPath !== savePath;
+    // ADR-0026: 確定 overwrite (再合成=フラット化) のとき、いま編集していた
+    // workspace を「編集可能マスター」として温存し、開き直す新フラット
+    // workspace に predecessor として紐づける。byte-copy (isCopy=編集なし)
+    // は fingerprint 不変で同一 workspace を再利用するので紐づけ不要。
+    let flattenedMasterAvailable = false;
     try {
       if (isSaveAs) {
         // 新タブで保存先 PDF を開く。元タブの projectStore / workspaceMutated /
         // pendingDeletedPages は触らない。
         await newTabAndOpen(savePath);
       } else {
-        const opened = await kpdf3.openPdfFile(savePath, getActiveTabId());
+        const opened = await kpdf3.openPdfFile(
+          savePath,
+          getActiveTabId(),
+          isCopy ? null : { linkPredecessorFromActive: true },
+        );
+        flattenedMasterAvailable = !!opened.hasEditableMaster;
         projectStore.reset(opened.overlays ?? []);
         pendingDeletedPages.clear();
         workspaceMutated = false;
@@ -4198,7 +4236,11 @@ async function actionExportToPath(
       console.error("[renderer] post-save workspace switch failed:", switchErr);
     }
     hideBusy();
-    wsStatus.textContent = `${verb}しました（rev ${result.revisionId.slice(0, 8)}）`;
+    wsStatus.textContent = flattenedMasterAvailable
+      ? `${verb}しました — あとで［編集に戻す］で編集内容に戻せます`
+      : `${verb}しました（rev ${result.revisionId.slice(0, 8)}）`;
+    // ADR-0026: 確定でフラット化したら「編集に戻す」ボタン/メニューを点灯。
+    void refreshRestoreMasterUI();
     if (secureExport && result?.qpdfMissing) {
       // User asked for sanitize but the qpdf binary wasn't found. Warn
       // post-hoc so they know the file went out un-scrubbed.
@@ -4217,6 +4259,75 @@ async function actionExportToPath(
     console.error(`[renderer] ${verb} failed:`, err);
     wsStatus.textContent = `${verb}失敗: ${err.message ?? err}`;
   }
+}
+
+/**
+ * ADR-0026「戻せる確定」— swap the active (flattened / 確定版) tab back onto
+ * its editable master so overlays become movable/editable again. The on-disk
+ * flat PDF is left untouched; the tab stays anchored to it so a re-確定
+ * overwrites the same file and re-links a fresh master.
+ */
+async function actionRestoreEditableMaster() {
+  if (!isOpen) return;
+  let res;
+  try {
+    res = await kpdf3.restoreEditableMaster(getActiveTabId());
+  } catch (err) {
+    console.error("[renderer] restore-editable-master failed:", err);
+    wsStatus.textContent = `編集可能な状態に戻せませんでした: ${err.message ?? err}`;
+    return;
+  }
+  if (!res || !res.ok) {
+    await customConfirm({
+      title: "編集可能な状態に戻せません",
+      message: res?.reason === "missing"
+        ? "この確定版の元になった編集可能な状態が、この PC に見つかりませんでした。\n"
+          + "（別の PC で確定した、またはアプリ内データが削除された可能性があります）\n\n"
+          + "ディスク上のファイルはそのまま開けます。"
+        : "このファイルには、戻せる編集可能な状態がありません。",
+      okLabel: "閉じる",
+      cancelLabel: null,
+    });
+    return;
+  }
+  // Rebind live state onto the restored master (mirrors openPdfPath).
+  projectStore.reset(res.overlays ?? []);
+  pendingDeletedPages.clear();
+  workspaceMutated = false;
+  thumbSelection.pageNos.clear();
+  thumbSelection.anchor = null;
+  history.clear();
+  const tab = getActiveTab();
+  if (tab && res.pdfPath) {
+    tab.activeSourcePdfPath = res.pdfPath;
+    tab.activeSourceName = res.pdfPath.split(/[\\/]/).pop() ?? "";
+  }
+  await refreshViewer();
+  renderTabBar();
+  refreshDirtyIndicator();
+  refreshMenuState();
+  void refreshRestoreMasterUI();
+  wsStatus.textContent =
+    "編集可能な状態に戻しました — テキスト・印影などをまた動かせます";
+}
+
+/**
+ * ADR-0026: enable / disable the「編集に戻す」toolbar button + File-menu item
+ * for the active tab. Called on every viewer refresh (covers open, tab switch,
+ * restore, 確定) so a tab switch to a 確定版 lights the affordance without an
+ * open-pdf-file round-trip. Async (queries main) but fire-and-forget safe.
+ */
+async function refreshRestoreMasterUI() {
+  let hasMaster = false;
+  try {
+    if (isOpen) {
+      const info = await kpdf3.getEditableMasterInfo();
+      hasMaster = !!info?.hasEditableMaster;
+    }
+  } catch { /* best-effort — leave disabled on error */ }
+  if (btnRestoreMaster) btnRestoreMaster.disabled = !hasMaster;
+  try { menuBar.setEnabled({ "restore-editable-master": hasMaster }); }
+  catch { /* menuBar not ready during early boot */ }
 }
 
 function actionUndo() {
@@ -6189,6 +6300,7 @@ const menuBar = new MenuBar({
     close: actionClose,
     save: actionSave,
     export: actionExport,
+    "restore-editable-master": actionRestoreEditableMaster,
     "export-range": actionExportRange,
     "export-image": actionExportAsImage,
     "export-region-image": () =>
@@ -6896,6 +7008,7 @@ renderTabBar();
 btnOpen.addEventListener("click", actionOpen);
 btnSave.addEventListener("click", actionSave);
 btnExport.addEventListener("click", actionExport);
+if (btnRestoreMaster) btnRestoreMaster.addEventListener("click", actionRestoreEditableMaster);
 btnPrint.addEventListener("click", actionPrint);
 // 白黒印刷 sticky toggle (Phase 1)。state と sync 関数は initPrintFlow より
 // 前に宣言済 (print-flow.js が getter で読みに来るため)、ここでは初期

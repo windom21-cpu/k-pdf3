@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld("kpdf3", {
   onTabWasDockedAway: (cb)      => ipcRenderer.on("kpdf3:tab-was-docked-away", (_, id) => cb(id)),
   openInNewWindow:    (pdfPath) => ipcRenderer.invoke("kpdf3:open-in-new-window", pdfPath),
   saveOverlays:       (ovs)     => ipcRenderer.invoke("kpdf3:save-overlays", ovs),
+  // ADR-0026「戻せる確定」— editable-master lineage.
+  restoreEditableMaster: (tabId) => ipcRenderer.invoke("kpdf3:restore-editable-master", tabId ?? null),
+  getEditableMasterInfo: ()      => ipcRenderer.invoke("kpdf3:get-editable-master-info"),
   pickExportPdf:      ()        => ipcRenderer.invoke("kpdf3:pick-export-pdf"),
   pickExportFolder:   ()        => ipcRenderer.invoke("kpdf3:pick-export-folder"),
   exportPdfRasterized: (payload) => ipcRenderer.invoke("kpdf3:export-pdf-rasterized", payload),

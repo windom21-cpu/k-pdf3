@@ -180,6 +180,32 @@ try {
   ok(!cols.some((c) => c.name === "blob"), "exports table has no `blob` column post-migration");
   ws3.close();
 
+  // ---------- Editable-master lineage (ADR-0026 「戻せる確定」) ----------
+  console.log("\n[9] Predecessor lineage set/get survives reopen");
+  const masterPath = join(tmpDir, "master.kpdf3");
+  const flatPath = join(tmpDir, "flat.kpdf3");
+
+  const wsMaster = Workspace.create(masterPath);
+  await wsMaster.importPdfFromFile(pdfPath);
+  eq(wsMaster.workspaceId, "master", "workspaceId derived from {id}.kpdf3");
+  eq(wsMaster.getPredecessor(), null, "fresh workspace has no predecessor");
+  const masterId = wsMaster.workspaceId;
+  wsMaster.close();
+
+  const wsFlat = Workspace.create(flatPath);
+  await wsFlat.importPdfFromFile(pdfPath);
+  wsFlat.setPredecessor(masterId);
+  eq(wsFlat.getPredecessor(), masterId, "predecessor set on flat workspace");
+  wsFlat.close();
+
+  // The lineage must travel with the .kpdf3 (stored in its own metadata),
+  // so it survives a full close → reopen — this is what lets 「編集に戻す」
+  // work across sessions / Dropbox moves.
+  const wsFlatReopened = Workspace.open(flatPath);
+  eq(wsFlatReopened.getPredecessor(), masterId, "predecessor survives close → reopen");
+  eq(wsFlatReopened.workspaceId, "flat", "flat workspaceId derived correctly");
+  wsFlatReopened.close();
+
   console.log(`\n=== Result: ${pass} pass, ${fail} fail ===`);
   if (fail > 0) {
     console.log("M3-1 overlay persistence: FAIL");

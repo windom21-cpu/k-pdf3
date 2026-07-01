@@ -381,6 +381,30 @@ export class Workspace {
     return getMetadata(this.db, key);
   }
 
+  // ---- Editable-master lineage (ADR-0026 「戻せる確定」) --------------
+
+  /** This workspace's id = the `{id}` portion of `{id}.kpdf3`. Used as the
+   *  path-independent lineage handle (Dropbox move / rename safe). */
+  get workspaceId() {
+    return basename(this.filePath, ".kpdf3");
+  }
+
+  /**
+   * Record the id of the editable master this (flattened) workspace was
+   * derived from. Stored in this workspace's own metadata so the lineage
+   * travels with the `.kpdf3` and never depends on the on-disk PDF path.
+   * @param {string} workspaceId
+   */
+  setPredecessor(workspaceId) {
+    setMetadata(this.db, "predecessor_workspace_id", workspaceId);
+  }
+
+  /** The editable-master workspace id this flat workspace came from, or
+   *  null when this workspace has no lineage (a normally-opened PDF). */
+  getPredecessor() {
+    return getMetadata(this.db, "predecessor_workspace_id");
+  }
+
   // ---- Overlay persistence (M3-1) ------------------------------------
 
   /**

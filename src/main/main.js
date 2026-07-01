@@ -1312,6 +1312,13 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null, opts 
   // existing one for the same id). Otherwise generate a fresh tabId.
   const targetTabId = tabId ?? `tab-${Date.now().toString(36)}`;
 
+  // ADR-0026: capture the workspace this tab was editing BEFORE we tear it
+  // down, so a 確定 (flatten) overwrite can record it as the new flat
+  // workspace's editable master (predecessor). Read only the id string here
+  // — the handle itself is disposed a few lines below.
+  const outgoingWorkspaceId =
+    tabHandles.get(targetTabId)?.workspace?.workspaceId ?? null;
+
   const pdfBytes = readFileSync(pdfPath);
   const fingerprint = await computePdfFingerprint(pdfBytes);
   const sourceName = basename(pdfPath);
@@ -1409,6 +1416,19 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null, opts 
       // case it's the qpdf-decrypted copy produced above.
       await workspace.importPdfBytes(importBytes, sourceName);
       isNew = true;
+      // ADR-0026 「戻せる確定」: when this fresh workspace is the flattened
+      // result of a 確定 overwrite (renderer passes linkPredecessorFromActive),
+      // remember the editable master (the workspace we were just editing) so
+      // the user can "編集可能な状態に戻す" later. Only on a brand-new flat
+      // workspace whose id differs from the outgoing one (byte-copy overwrites
+      // keep the same fingerprint → reuse branch → no lineage needed).
+      if (
+        opts && opts.linkPredecessorFromActive
+        && outgoingWorkspaceId
+        && outgoingWorkspaceId !== id
+      ) {
+        workspace.setPredecessor(outgoingWorkspaceId);
+      }
     }
     registerWorkspace({
       fingerprint,
@@ -1452,6 +1472,13 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null, opts 
     console.warn("[stamp-presets] global migration failed (non-fatal):", err);
   }
 
+  // ADR-0026: tell the renderer whether this workspace has a reachable
+  // editable master, so it can enable「編集可能な状態に戻す」and hint the
+  // user. masterMissing = a lineage pointer exists but its workspace file is
+  // gone (別 PC で確定 / userData 掃除) → surface explicitly, never silently.
+  const predecessorId = workspace.getPredecessor();
+  const masterReachable = !!(predecessorId && existsSync(workspacePathFor(predecessorId)));
+
   return {
     tabId: targetTabId,
     pdfPath,
@@ -1459,6 +1486,89 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null, opts 
     isNew,
     migrated,
     overlays: workspace.loadOverlays(),
+    hasEditableMaster: masterReachable,
+    masterMissing: !!(predecessorId && !masterReachable),
+  };
+});
+
+/**
+ * ADR-0026「戻せる確定」— quick query for the active tab's lineage so the
+ * renderer can enable / disable the 「編集可能な状態に戻す」affordance after a
+ * tab switch (where no open-pdf-file round-trip happens).
+ */
+ipcMain.handle("kpdf3:get-editable-master-info", async (event) => {
+  const ws = activeForEvent(event).workspace ?? activeWorkspace;
+  if (!ws) return { hasEditableMaster: false, masterMissing: false };
+  const predId = ws.getPredecessor();
+  if (!predId) return { hasEditableMaster: false, masterMissing: false };
+  const reachable = existsSync(workspacePathFor(predId));
+  return { hasEditableMaster: reachable, masterMissing: !reachable };
+});
+
+/**
+ * ADR-0026「戻せる確定」— swap the active tab from a flattened workspace onto
+ * its editable master, so the user can move / edit / delete the overlays
+ * again. The on-disk flat PDF is untouched (Dropbox/Adobe keep showing the
+ * baked-in version); the tab stays anchored to that path so a subsequent
+ * 確定 overwrites the same file and re-links the master.
+ */
+ipcMain.handle("kpdf3:restore-editable-master", async (event, tabId = null) => {
+  const cur = activeForEvent(event);
+  const flat = cur.workspace ?? activeWorkspace;
+  if (!flat) return { ok: false, reason: "none" };
+  const predId = flat.getPredecessor();
+  if (!predId) return { ok: false, reason: "none" };
+  const masterPath = workspacePathFor(predId);
+  if (!existsSync(masterPath)) return { ok: false, reason: "missing" };
+
+  const targetTabId = tabId ?? cur.tabId ?? activeTabId;
+  if (!targetTabId) return { ok: false, reason: "none" };
+
+  // The flat file currently on disk is where a re-確定 should write back to,
+  // so keep the tab anchored on it even though we open the master workspace.
+  const flatPath = cur.sourcePdfPath ?? activeSourcePdfPath;
+
+  // Open the editable master by workspace path (NOT by fingerprint — its
+  // source bytes differ from the on-disk flat).
+  const master = Workspace.open(masterPath);
+  const bytes = master.getSourceBytes();
+  const doc = bytes ? openPdfDocument(bytes) : null;
+  const pages = master.getPages({ includeDeleted: true });
+  const sourceName = flatPath ? basename(flatPath) : (master.getSourceMeta()?.fileName ?? "");
+
+  // Swap the tab handle over to the master (mirrors open-pdf-file teardown).
+  if (tabHandles.has(targetTabId)) disposeTab(targetTabId);
+  if (activeTabId === targetTabId) {
+    disposeActiveDoc();
+    activeWorkspace = null;
+    activeSourcePdfPath = null;
+  }
+  tabHandles.set(targetTabId, {
+    workspace: master,
+    doc,
+    pages,
+    sourcePdfPath: flatPath,
+    sourceName,
+  });
+  activateTab(targetTabId);
+  const winSt = windowStateForEvent(event);
+  if (winSt) {
+    winSt.ownedTabIds.add(targetTabId);
+    winSt.activeTabId = targetTabId;
+  }
+
+  // Does the master itself have a further editable master (a lineage chain)?
+  const predOfMaster = master.getPredecessor();
+  const hasEditableMaster = !!(predOfMaster && existsSync(workspacePathFor(predOfMaster)));
+
+  return {
+    ok: true,
+    tabId: targetTabId,
+    pdfPath: flatPath,
+    pageCount: master.getSourceMeta()?.pageCount ?? 0,
+    overlays: master.loadOverlays(),
+    sourceName,
+    hasEditableMaster,
   };
 });
 

@@ -47,6 +47,12 @@ export function findOrphanSourceSidecars(fileNames) {
  * NOTE: accumulated EMPTY `.kpdf3` workspaces are intentionally NOT swept —
  * those hold user overlay work and removing them needs a retention policy.
  *
+ * ADR-0026 caveat: this sweep only removes ORPHAN `.source.pdf` sidecars
+ * (owner `.kpdf3` absent), so an editable master (`{id}.kpdf3` kept alive as
+ * a 確定 predecessor) and its sidecar are already safe here. But any FUTURE
+ * "orphan / empty workspace sweep" MUST skip workspaces referenced as a
+ * `predecessor_workspace_id`, or「編集可能な状態に戻す」silently breaks.
+ *
  * @param {string} dir  absolute path to the workspaces directory
  * @returns {{ removed: number, freedBytes: number }}
  */
