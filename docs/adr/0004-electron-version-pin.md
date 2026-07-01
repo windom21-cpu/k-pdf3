@@ -146,3 +146,21 @@ Web 公開機能なし、UI も `98.css` + DOM の伝統的構成のため、新
 
 ### 検証方針
 - 38→41 はメジャー3つ飛び（Chromium ~134→146 / 主プロセス Node 22→24）。**CI の test.yml（3 OS で実 Electron 起動 = test:m1）で検証**。CSP は headless で全描画を検証しきれないため、**実機 Windows でのスモーク確認**を別途要する（blob 画像・印刷・ポップアップ表示）。
+
+## 更新 (2026-07-01): Electron 42 へ更新
+
+### 背景
+- **Electron 41 は 2026-08-25 で EOL**。現役サポートへ移行するため 42 を目指していた。
+- 上流の解除条件が充足された:
+  - `WiseLibs/better-sqlite3` **v12.11.1** が **electron-v146（Electron 42）prebuild** を win32-x64 / darwin-x64 / darwin-arm64 / linux-x64 の全4プラットフォームで提供。
+  - V8 external API 修正 issue **#1474**（Build failure starting with electron 42.0.1）が **closed**。
+  - issue **#1475**（Fix V8 external API usage for Electron 42）が **closed**。
+
+### 決定
+- `devDependencies.electron` を `41.7.1` → **`42.5.2` (exact)** に更新。
+- `dependencies.better-sqlite3` を `12.10.0` → **`12.11.1` (exact)** に更新。
+- これにより **EOL を脱却し、Electron 42（サポート期限 〜2026-10-20）に移行**。
+
+### 検証方針
+- CI の test.yml（3 OS で実 Electron 起動 = test:m1）が緑になったことを確認してからマージ。
+- CSP は headless で全描画を検証しきれないため、**実機 Windows でのスモーク確認**を別途要する（blob 画像・印刷・ポップアップ表示）。
