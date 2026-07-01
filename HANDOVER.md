@@ -24,7 +24,7 @@ stable 後の patch (要約。full 詳細は git log / `CHANGELOG-history.md`):
 
 ## 現状サマリ (1 分で把握)
 
-**フェーズ**: **stable 運用中 — 現在 v2.0.11 (2026-06-30)**。β.1〜β.150 → 2026-06-05 に v2.0.0 stable、以降 patch を v2.0.11 まで。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。**stable 残務は全クローズ済** — クラッシュ診断ロガーは β.149 で撤去済 (`logCrash`/`crashLogPath`/`print-tick` 等は src から消滅、残るは comment 1 件のみ。**§8.2 #3 と末尾の撤去 TODO リストは履歴**=既に適用済)。**現在のオープン項目は §8 の実機確認待ちが中心** (直近 patch の実機検証: v2.0.8 回転のみ上書き保存 / v2.0.9 印刷ダイアログ調整中の Adobe 早期 close / v2.0.10 サムネ削除後の選択位置 / v2.0.11 サムネ並び替えの保存・他アプリ反映)。**調査中の重大候補: A3 横向き PDF の通常印刷が天地さかさま (180°)** — 事務所複合機でテスト依頼中、方針未確定 (§8.2 先頭参照)。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
+**フェーズ**: **stable 運用中 — 現在 v2.0.11 (2026-06-30)**。β.1〜β.150 → 2026-06-05 に v2.0.0 stable、以降 patch を v2.0.11 まで。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。**stable 残務は全クローズ済** — クラッシュ診断ロガーは β.149 で撤去済 (`logCrash`/`crashLogPath`/`print-tick` 等は src から消滅、残るは comment 1 件のみ。**§8.2 #3 と末尾の撤去 TODO リストは履歴**=既に適用済)。**現在のオープン項目は §8 の実機確認待ちが中心** (直近 patch の実機検証: v2.0.8 回転のみ上書き保存 / v2.0.9 印刷ダイアログ調整中の Adobe 早期 close / v2.0.10 サムネ削除後の選択位置 / v2.0.11 サムネ並び替えの保存・他アプリ反映)。**調査中の重大候補: A3 横向き PDF の通常印刷が天地さかさま (180°)** — 事務所複合機でテスト依頼中、方針未確定 (§8.2 先頭参照)。**設計確定・実装待ちの新機能: 戻せる確定保存 (ADR-0026)** — 下書き/確定の二律背反 (下書き=他アプリで見えない / 確定=後から編集不可) を確定の可逆化で解決、2026-07-01 に ADR 確定・ユーザー承認済 (§15.4 / `docs/adr/0026`)。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
 
 > **β71〜β147 の詳細変更ログ + β 卒業ロードマップ (2026-05-25 確定) は `CHANGELOG-history.md` へ退避 (2026-06-22 整理)。** 製品は stable v2.0.10 で β は履歴。設計の現役根拠は §2 (設計思想・禁止事項) / §15 (既知懸念) / `docs/adr/` / memory を参照。印刷・Adobe・FAX・render・D&D の試行錯誤経緯を追うときは `CHANGELOG-history.md` を grep (memory [[feedback_handover_first_before_judgment]])。
 
@@ -1034,12 +1034,14 @@ ADR ファイル名：`docs/adr/00NN-{slug}.md`、連番。
 | 0023 | image export (PDF→PNG/JPEG + 範囲画像、`composePageImage` / `composeRegionImage`、main 側 `save-image-file(s)` IPC) | ⏳ 起草待ち (実装は β.97 で完了) |
 | 0024 | autoshape overlay type "shape" (9 kind + 8 方向 + length/crossSize モデル、中心基準描画 + ctx.rotate、bbox AABB 派生、↻↺ ボタン UI) | ⏳ 起草待ち (実装は β.100-104 で完了) |
 | 0025 | パスワード保護 PDF 復号 (import 境界で qpdf `--decrypt`、空パスワード先行→必要時のみ 98 風プロンプト、復号版をワークスペースに保存、`pdfIsEncrypted` 検出 + 既存ワークスペース self-heal) | ⏳ 起草待ち (実装は v2.0.1/2.0.2 で完了) |
+| 0026 | 戻せる確定保存 (確定を可逆化。フラット版をディスク書出 + 編集可能マスターを温存 →「編集可能な状態に戻す」で復元。単一マスター型 Model Y、workspace lineage 紐づけ、source dedup 共有) | 🚧 設計確定・実装待ち (2026-07-01 起草・ユーザー承認済) |
 
 ### 15.4 architecture decision 待ち（未確定）
 
 - 共通 asset library の DB 配置: アプリ全体で 1 つの SQLite ファイル (`~/.config/K-PDF3/assets.db`) に保存する方針はユーザー承認済。実装は M6
 - ~~パスワード保護 PDF 対応: 将来検討~~ ✅ **v2.0.1/2.0.2 で実装** (ADR-0025 候補)。開く経路 (`kpdf3:open-pdf-file`) で `pdfIsEncrypted(pdfBytes)` 判定 → qpdf `--decrypt` を **パスワード stdin 経由** で実行。空パスワードを先に試し、権限制限のみ/空ユーザーパスワードの PDF はプロンプトなしで復号、実ユーザーパスワードが要るときだけ 98 風入力モーダル (`customPasswordPrompt`, `dialogs.js`)。復号版をワークスペースに保存するので下流 (閲覧/編集/書き出し/印刷) は不変。ワークスペースは**元 (暗号化) ファイルの fingerprint** で索引するので再オープン時は再入力不要。**残課題/スコープ外**: (a) 書き出し/保存はパスワードを外した PDF になる (再暗号化は未実装)、(b) 外部 PDF の D&D ページ挿入経路は未対応 (`kpdf3:import-pdf` / insert 系は復号ゲート未通過)、(c) `pdfIsEncrypted` は毎オープンで mupdf openDocument を 1 回追加で走らせる (lazy parse なので軽微)
 - ブランディング: アプリ表示名は K-PDF2 のまま維持 (リポジトリ名のみ k-pdf3)
+- **戻せる確定保存 (ADR-0026、設計確定・実装待ち)**: 下書き/確定の二律背反 (下書き=Dropbox/他アプリで編集が見えない / 確定=画像化で後から編集不可) を、確定の可逆化で解決。確定はフラット版をディスクへ書き出しつつ、その時点の編集可能状態を『編集可能マスター』として温存し「編集可能な状態に戻す」で復元する。**単一マスター型 (Model Y)** = ドキュメント 1 つにつきマスター 1 つ、過去世代ロールバックは Dropbox 上のフラット PDF (版名) に委ねる (ADR-0008 思想)。同一性は **workspace lineage** (焼き込み workspace に predecessor、パス非依存で Dropbox 移動に強い、外部改変で切れたら「編集可能版が見つかりません」と明示)。容量は元 PDF バイト共有 (dedup) で overlay 差分のみ=据え置き (保持ポリシー N 不要)。保存モードは下書き/確定の 2 つのまま・新ボタンなし、「戻す」は別の復元アクション、確定ダイアログ文言を「動かせなくなります」→「あとで戻せます」に改訂。qpdf メタ除去はディスクのフラット版のみ、内部マスターは編集可能を維持。既存の印刷/回転/下敷き/byte-copy ゲートには非干渉 (新経路の追加)。**次は実装細部** (predecessor スキーマ配置 / 巨大 PDF external sidecar の source 共有 refcount / 戻す導線 / マスター一意性 / 下書き併用の状態遷移)。前提: 描画は `workspace.getSourceBytes()` 内部コピー (`main.js:1424`)・fingerprint 索引 (ADR-0007)・確定は現状も旧 workspace を孤児化して残すだけ。memory `[[project_reversible_flatten_save_adr0026]]`
 
 ### 15.5 リファクタ候補
 
