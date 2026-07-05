@@ -405,6 +405,23 @@ export class Workspace {
     return getMetadata(this.db, "predecessor_workspace_id");
   }
 
+  // ---- Encrypted-source flag (ADR-0025 候補 / REVIEW-2026-07 #3) ------
+
+  /**
+   * Record that the source PDF was encrypted and qpdf-decrypted at the
+   * import boundary. The password itself is NEVER stored — the flag only
+   * lets a future "re-encrypt on export" option know which workspaces
+   * would need to ask for one.
+   */
+  markSourceWasEncrypted() {
+    setMetadata(this.db, "source_was_encrypted", "1");
+  }
+
+  /** Whether the source PDF was encrypted when it was imported. */
+  sourceWasEncrypted() {
+    return getMetadata(this.db, "source_was_encrypted") === "1";
+  }
+
   // ---- Overlay persistence (M3-1) ------------------------------------
 
   /**

@@ -24,6 +24,7 @@ const ELECTRON_TESTS = [
   "./m1-exit-criteria.mjs",
   "./m3-overlay-persistence.mjs",
   "./workspace-cleanup.test.mjs",
+  "./source-encrypted-flag.test.mjs",
 ];
 
 app.whenReady()

@@ -1527,6 +1527,13 @@ ipcMain.handle("kpdf3:open-pdf-file", async (event, pdfPath, tabId = null, opts 
     });
   }
 
+  // REVIEW-2026-07 #3: remember that this workspace's source was an
+  // encrypted PDF decrypted at the import boundary (flag only — the
+  // password is never stored). A future re-encrypt-on-export option keys
+  // off this. Runs on the reuse branch too, so workspaces created before
+  // the flag existed pick it up on their next open.
+  if (didDecrypt) workspace.markSourceWasEncrypted();
+
   // Open the mupdf Document for this tab. Each tab carries its own
   // handle so a tab switch is just pointer-swapping the active-* refs.
   const bytes = workspace.getSourceBytes();

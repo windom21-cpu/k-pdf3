@@ -2916,6 +2916,9 @@ async function openPdfPath(pdfPath) {
     // パスワード保護 PDF: main 側が { needsPassword } sentinel を返す。
     // 入力を促して qpdf で復号 → 復号版を取り込む。誤入力は再試行、
     // キャンセルなら静かに中断 (エラー扱いにしない)。
+    // REVIEW-2026-07 #3: 実ユーザーパスワードで開いたかを覚えておき、
+    // 開き終わった後に「保存すると保護が外れる」警告を出す。
+    let enteredPassword = false;
     if (result && result.needsPassword) {
       const fileName = pdfPath.split(/[\\/]/).pop() ?? "";
       // 入力ダイアログを出す間は読み込み中 modal を隠す。
@@ -2936,7 +2939,10 @@ async function openPdfPath(pdfPath) {
         try { showBusy("PDF を復号中", "パスワードを確認しています...", 0); } catch { /* ignore */ }
         result = await kpdf3.openPdfFile(pdfPath, getActiveTabId(), { password: pw });
         try { hideBusy(); } catch { /* ignore */ }
-        if (!result || !result.needsPassword) break;
+        if (!result || !result.needsPassword) {
+          enteredPassword = !!result;
+          break;
+        }
         wrong = !!result.wrongPassword;
       }
     }
@@ -2990,6 +2996,19 @@ async function openPdfPath(pdfPath) {
     } else if (result.masterMissing) {
       wsStatus.textContent =
         "このファイルは確定版ですが、編集可能な状態がこの PC に見つかりません";
+    }
+    // REVIEW-2026-07 #3: 実ユーザーパスワードを入力して復号した時だけ、
+    // 保存/書き出しで保護が外れることを開いた直後に警告する。案件ごとに
+    // 意識すべき情報なので「次から表示しない」は付けない (開くたびに出る)。
+    // 権限制限のみ / 空パスワードの PDF はプロンプト自体が出ないので対象外。
+    if (enteredPassword) {
+      const fname = pdfPath.split(/[\\/]/).pop() ?? "";
+      await customConfirm({
+        title: "パスワード保護について",
+        message: `「${fname}」はパスワードを外した状態で編集用に取り込みました。`,
+        warning: "このファイルを保存・書き出しすると、パスワード保護の無い PDF が作成されます (Dropbox 等の同期先にもそのまま置かれます)。",
+        cancelLabel: null,
+      });
     }
   } catch (err) {
     console.error("[renderer] openPdfFile (recent) failed:", err);
