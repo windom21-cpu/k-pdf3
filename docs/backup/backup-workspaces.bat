@@ -17,11 +17,13 @@ rem mode and copying live -wal/-shm files can produce a corrupt copy.
 tasklist /FI "IMAGENAME eq K-PDF3.exe" | find /I "K-PDF3.exe" >nul
 if not errorlevel 1 (
   echo [SKIP] K-PDF3 is running. Close it and run this again.
+  call :hold
   exit /b 1
 )
 
 if not exist "%SRC%\workspaces" (
   echo [ERROR] source not found: %SRC%\workspaces
+  call :hold
   exit /b 1
 )
 if not exist "%DEST%" mkdir "%DEST%"
@@ -37,8 +39,17 @@ copy /Y "%SRC%\stamps.db" "%DEST%\" >nul
 if errorlevel 1 goto :fail
 
 echo [OK] backup finished: %DEST%
+call :hold
 exit /b 0
 
 :fail
 echo [ERROR] backup failed - see %DEST%\backup.log
+call :hold
 exit /b 1
+
+rem Keep the result visible for 60s when run by double-click (any key
+rem closes sooner). Under the task scheduler this waits at most 60s
+rem (or is skipped when input is redirected) and never blocks the task.
+:hold
+timeout /t 60
+exit /b 0

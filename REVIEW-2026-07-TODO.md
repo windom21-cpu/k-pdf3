@@ -97,7 +97,9 @@
 
 **完了条件**: Step 1 のバッチ + 手順書が存在し、実機で 1 回バックアップ→別フォルダ復元→PDF が開けることを確認。
 
-🚧 **バッチ + 手順書作成済み (2026-07-05)**: `docs/backup/backup-workspaces.bat` + `docs/backup/BACKUP.md`。対象 = workspaces/ + index.db + stamps.db、robocopy /MIR、K-PDF3 起動中は tasklist 検出で中止 (WAL 保護)、第1引数で DEST 上書き可。fake userData での動作テスト済み (初回コピー・ミラー削除追従・[OK]/exit 0)。**残り (ユーザー作業)**: ① バッチを PC に置き DEST を実際の NAS/外付けパスに書き換え ② 実バックアップ 1 回 ③ リハーサル復元で PDF が開くこと確認 ④ タスクスケジューラ登録 (手順書に全部記載)。
+🚧 **バッチ + 手順書作成済み (2026-07-05)**: `docs/backup/backup-workspaces.bat` + `docs/backup/BACKUP.md`。対象 = workspaces/ + index.db + stamps.db、robocopy /MIR、K-PDF3 起動中は tasklist 検出で中止 (WAL 保護)、第1引数で DEST 上書き可。fake userData での動作テスト済み (初回コピー・ミラー削除追従・[OK]/exit 0)。
+
+**実バックアップ 1 回完了 (2026-07-05 22:31)**: 既定 DEST `X:\K-system\K-PDF3-backup` へ 4,097 ファイル / 4.84GB、robocopy 失敗 0・不一致 0、ローカルと件数・バイト数完全一致を確認。初回実行で「ウインドウが即閉じて結果が見えない」問題があったため、バッチに `timeout /t 60` の結果表示ホールドを追加 (キーで即閉じ・スケジューラ実行では入力リダイレクトで即スキップされ無害)。**残り (ユーザー作業)**: ③ リハーサル復元 (workspaces 別名退避→書き戻し→編集済み案件が開ける) ④ タスクスケジューラ登録。
 
 ---
 
