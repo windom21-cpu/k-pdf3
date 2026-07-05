@@ -11,7 +11,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, shell, globalShortcut, screen } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -28,8 +28,10 @@ import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-saniti
 import { renderPageCanonical } from "./render-service.js";
 import {
   closeRegistry,
+  deleteWorkspaceEntries,
   findWorkspaceByFingerprint,
   generateWorkspaceId,
+  listAllWorkspaces,
   listRecentPdfs,
   registerWorkspace,
   touchWorkspace,
@@ -37,6 +39,11 @@ import {
   workspacesDir,
 } from "./workspace-registry.js";
 import { sweepOrphanSourceSidecars } from "./sidecar-sweep.js";
+import {
+  DEFAULT_RETENTION_MONTHS,
+  RETENTION_MONTH_CHOICES,
+  scanWorkspaces,
+} from "./workspace-cleanup.js";
 import {
   listStampPresetsGlobal,
   setStampPresetsOrderGlobal,
@@ -1288,6 +1295,87 @@ ipcMain.handle("kpdf3:close-workspace", async () => {
   activeSourcePdfPath = null;
   activeTabId = null;
   return true;
+});
+
+// ---- ADR-0027: workspace retention cleanup（ワークスペースの整理） ----
+
+/** Workspace ids currently open in any tab / window (legacy path included). */
+function openWorkspaceIdsNow() {
+  const ids = new Set();
+  for (const h of tabHandles.values()) {
+    const p = h.workspace?.filePath;
+    if (p && p.endsWith(".kpdf3")) ids.add(basename(p, ".kpdf3"));
+  }
+  const ap = activeWorkspace?.filePath;
+  if (ap && ap.endsWith(".kpdf3")) ids.add(basename(ap, ".kpdf3"));
+  return [...ids];
+}
+
+ipcMain.handle("kpdf3:workspace-cleanup-scan", async (_e, retentionMonths) => {
+  const months = RETENTION_MONTH_CHOICES.includes(retentionMonths)
+    ? retentionMonths
+    : DEFAULT_RETENTION_MONTHS;
+  let registryRows = [];
+  try {
+    registryRows = listAllWorkspaces();
+  } catch {
+    /* index.db unreadable → fall back to file mtimes only */
+  }
+  return scanWorkspaces({
+    dir: workspacesDir(),
+    retentionMonths: months,
+    nowMs: Date.now(),
+    openWorkspaceIds: openWorkspaceIdsNow(),
+    registryRows,
+  });
+});
+
+ipcMain.handle("kpdf3:workspace-cleanup-execute", async (_e, ids) => {
+  // ids come from the renderer's scan preview — re-validate everything:
+  // shape (no path traversal), still-not-open, still-on-disk.
+  const SAFE_ID = /^[A-Za-z0-9._-]+$/;
+  const openNow = new Set(openWorkspaceIdsNow());
+  const trashedIds = [];
+  let freedBytes = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const id of Array.isArray(ids) ? ids : []) {
+    if (typeof id !== "string" || !SAFE_ID.test(id) || openNow.has(id)) {
+      skipped++;
+      continue;
+    }
+    const path = workspacePathFor(id);
+    if (!existsSync(path)) {
+      skipped++;
+      continue;
+    }
+    try {
+      const size = statSync(path).size;
+      await shell.trashItem(path); // ごみ箱 — 誤削除の保険 (ADR-0027)
+      freedBytes += size;
+      trashedIds.push(id);
+      // β.134 外部 source サイドカーも道連れに (workspace が消えれば孤児)
+      const sidecar = `${path}.source.pdf`;
+      if (existsSync(sidecar)) {
+        try {
+          const s = statSync(sidecar).size;
+          await shell.trashItem(sidecar);
+          freedBytes += s;
+        } catch {
+          /* sidecar-sweep が次回起動時に回収する */
+        }
+      }
+    } catch {
+      failed++;
+    }
+  }
+  let registryDeleted = 0;
+  try {
+    registryDeleted = deleteWorkspaceEntries(trashedIds);
+  } catch {
+    /* index.db update best-effort — stale rows are harmless (fingerprint miss) */
+  }
+  return { removed: trashedIds.length, freedBytes, skipped, failed, registryDeleted };
 });
 
 ipcMain.handle("kpdf3:import-pdf", async (_, pdfPath) => {

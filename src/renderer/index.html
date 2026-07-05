@@ -110,6 +110,8 @@
     <div class="menu-separator"></div>
     <div class="menu-item disabled" data-action="stamp-manager">スタンプ管理...</div>
     <div class="menu-item" data-action="font-settings">フォント設定...</div>
+    <div class="menu-separator"></div>
+    <div class="menu-item" data-action="workspace-cleanup">ワークスペースの整理...</div>
   </div>
 
   <div class="menu-dropdown" id="menu-help" hidden>
@@ -712,6 +714,39 @@
           <button id="stamp-reg-image-trial" disabled>PDF に試し置き</button>
           <button id="stamp-reg-image-ok" class="default" disabled>登録</button>
           <button id="stamp-reg-image-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADR-0027: ワークスペースの整理 (手動お掃除)。confirm-dialog より前に
+       置く (確認モーダルがこのダイアログの上に重なるように)。 -->
+  <div class="busy-modal" id="ws-cleanup-dialog" hidden>
+    <div class="window ws-cleanup-window">
+      <div class="title-bar">
+        <div class="title-bar-text">ワークスペースの整理</div>
+      </div>
+      <div class="window-body">
+        <p class="ws-cleanup-message">
+          アプリ内部に溜まった編集データ (ワークスペース) を整理してディスクを空けます。<br>
+          確定版の「編集可能マスター」と開いているタブは自動的に保護されます。<br>
+          移動したワークスペースの編集可能な状態は失われますが、元の PDF ファイルはそのまま残ります。
+        </p>
+        <div class="ws-cleanup-row">
+          <label for="ws-cleanup-months">編集ありの保持期間:</label>
+          <select id="ws-cleanup-months">
+            <option value="3" selected>3 ヶ月</option>
+            <option value="6">6 ヶ月</option>
+            <option value="12">12 ヶ月</option>
+          </select>
+          <span>より古いものと、編集のないものを候補にする</span>
+          <button id="ws-cleanup-scan">スキャン</button>
+        </div>
+        <div id="ws-cleanup-summary" class="ws-cleanup-summary" hidden></div>
+        <div id="ws-cleanup-list" class="ws-cleanup-list sunken-panel" hidden></div>
+        <div class="ws-cleanup-buttons">
+          <button id="ws-cleanup-run" disabled>ごみ箱へ移動...</button>
+          <button id="ws-cleanup-close">閉じる</button>
         </div>
       </div>
     </div>

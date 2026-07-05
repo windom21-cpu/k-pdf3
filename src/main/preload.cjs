@@ -32,6 +32,9 @@ contextBridge.exposeInMainWorld("kpdf3", {
   // ADR-0026「戻せる確定」— editable-master lineage.
   restoreEditableMaster: (tabId) => ipcRenderer.invoke("kpdf3:restore-editable-master", tabId ?? null),
   getEditableMasterInfo: ()      => ipcRenderer.invoke("kpdf3:get-editable-master-info"),
+  // ADR-0027 ワークスペースの整理 (手動お掃除)
+  workspaceCleanupScan:    (months) => ipcRenderer.invoke("kpdf3:workspace-cleanup-scan", months),
+  workspaceCleanupExecute: (ids)    => ipcRenderer.invoke("kpdf3:workspace-cleanup-execute", ids),
   pickExportPdf:      ()        => ipcRenderer.invoke("kpdf3:pick-export-pdf"),
   pickExportFolder:   ()        => ipcRenderer.invoke("kpdf3:pick-export-folder"),
   exportPdfRasterized: (payload) => ipcRenderer.invoke("kpdf3:export-pdf-rasterized", payload),

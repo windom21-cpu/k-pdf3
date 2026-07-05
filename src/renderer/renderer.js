@@ -109,6 +109,7 @@ import {
   reattachStampTrial,
   isStampTrialPlacing,
 } from "./stamp-dialogs.js";
+import { openWorkspaceCleanupDialog } from "./workspace-cleanup-dialog.js";
 import {
   initBookmarkPane,
   refreshBookmarks,
@@ -6346,6 +6347,7 @@ const menuBar = new MenuBar({
     "page-numbers": () => $("btn-page-numbers")?.click(),
     "stamp-manager": () => openStampManagerDialog(),
     "font-settings": () => openStampFontDialog(),
+    "workspace-cleanup": () => openWorkspaceCleanupDialog(),
     "quality-standard": () => setRenderQuality("standard"),
     "quality-high": () => setRenderQuality("high"),
     "quality-max": () => setRenderQuality("max"),

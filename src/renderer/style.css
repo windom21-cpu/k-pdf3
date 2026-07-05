@@ -2265,6 +2265,69 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   min-width: 75px;
 }
 
+/* ADR-0027 ワークスペースの整理 dialog */
+.ws-cleanup-window {
+  width: 560px;
+}
+.ws-cleanup-window .window-body {
+  padding: 14px 16px;
+}
+.ws-cleanup-message {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+}
+.ws-cleanup-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.ws-cleanup-row button {
+  margin-left: auto;
+  min-width: 75px;
+}
+.ws-cleanup-summary {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.ws-cleanup-list {
+  max-height: 220px;
+  overflow-y: auto;
+  background: #fff;
+  margin-bottom: 10px;
+}
+.ws-cleanup-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.ws-cleanup-table th {
+  position: sticky;
+  top: 0;
+  background: silver;
+  text-align: left;
+  padding: 2px 6px;
+}
+.ws-cleanup-table td {
+  padding: 1px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+.ws-cleanup-cell-num {
+  text-align: right;
+}
+.ws-cleanup-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.ws-cleanup-buttons button {
+  min-width: 100px;
+}
+
 /* Confirm dialog — multi-line messages preserve "\n". */
 .confirm-message {
   white-space: pre-line;

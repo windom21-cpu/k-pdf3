@@ -172,6 +172,48 @@ export function listRecentPdfs(limit = 10) {
     .all(limit);
 }
 
+/**
+ * All registry rows — feeds the ADR-0027 cleanup scan with last-access
+ * times (`updated_at`) and display names.
+ *
+ * @returns {Array<{
+ *   workspaceId: string,
+ *   workspacePath: string,
+ *   sourcePdfName: string | null,
+ *   updatedAt: string,
+ * }>}
+ */
+export function listAllWorkspaces() {
+  return getDb()
+    .prepare(`
+      SELECT
+        workspace_id    AS workspaceId,
+        workspace_path  AS workspacePath,
+        source_pdf_name AS sourcePdfName,
+        updated_at      AS updatedAt
+      FROM pdf_workspaces
+    `)
+    .all();
+}
+
+/**
+ * Remove registry rows for workspaces deleted by the ADR-0027 cleanup so
+ * the fingerprint index never points at trashed files.
+ *
+ * @param {string[]} workspaceIds
+ * @returns {number} rows deleted
+ */
+export function deleteWorkspaceEntries(workspaceIds) {
+  if (!workspaceIds?.length) return 0;
+  const stmt = getDb().prepare("DELETE FROM pdf_workspaces WHERE workspace_id = ?");
+  let deleted = 0;
+  const run = getDb().transaction((ids) => {
+    for (const id of ids) deleted += stmt.run(id).changes;
+  });
+  run(workspaceIds);
+  return deleted;
+}
+
 /** Close the registry handle (called on app quit). */
 export function closeRegistry() {
   if (_db) {

@@ -23,6 +23,7 @@ const { pathToFileURL } = require("node:url");
 const ELECTRON_TESTS = [
   "./m1-exit-criteria.mjs",
   "./m3-overlay-persistence.mjs",
+  "./workspace-cleanup.test.mjs",
 ];
 
 app.whenReady()
