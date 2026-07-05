@@ -723,6 +723,62 @@ export function pagesInNaturalSourceOrder(pages) {
 }
 
 /**
+ * The byte-copy gate — single source of truth for "may this export/print
+ * reuse the source PDF bytes verbatim?" (REVIEW-2026-07 #4).
+ *
+ * v2.0.7 (userRotation) / v2.0.8 (dirty flag) / v2.0.11 (reorder) were all
+ * the same bug shape: a workspace-only edit (not baked into the source
+ * bytes) slipped through one of the three inline gate copies. Centralising
+ * the decision here kills the shape: every caller (actionExportToPath,
+ * actionPrintViaReader, legacy print dialog) sees every check, and the
+ * table-driven test (test/byte-copy-gate.test.mjs) enumerates 編集種別 ×
+ * 可否. 新しい workspace 専用変換を足す時は、ここに条件を 1 つ足し、
+ * テストのテーブルに 1 行足すこと。
+ *
+ * `sourcePageCount` (meta.pageCount) closes the trailing-deletion hole:
+ * deleting the LAST page leaves the visible pages 1..K in natural order,
+ * so only a count comparison against the source bytes can catch it.
+ *
+ * @param {object} args
+ * @param {Array<{ pageNo:number, isSynthetic?:boolean, userRotation?:number }>} args.pages
+ *          visible pages in display order (pending deletions already filtered out)
+ * @param {number}  [args.overlayCount=0]       projectStore.count()
+ * @param {number|null} [args.sourcePageCount]  total pages in the source PDF bytes
+ *          (meta.pageCount); null/undefined skips the trailing-deletion check
+ * @param {number}  [args.pendingDeleteCount=0] unsaved deletions (export path —
+ *          keeps a pending-deleted *inserted* page from resurrecting on the
+ *          same-fingerprint workspace reuse after 上書き保存)
+ * @param {boolean} [args.allPagesSelected=true] print: user picked every page
+ * @param {boolean} [args.forceMono=false]      print/FAX: mono projection needs re-compose
+ * @returns {boolean}
+ */
+export function byteCopyEligible({
+  pages,
+  overlayCount = 0,
+  sourcePageCount = null,
+  pendingDeleteCount = 0,
+  allPagesSelected = true,
+  forceMono = false,
+} = {}) {
+  if (forceMono) return false;
+  if (overlayCount > 0) return false;
+  if (!allPagesSelected) return false;
+  if (pendingDeleteCount > 0) return false;
+  // Reorder / insertion (synthetic) / mid-document deletion (gap) all break
+  // the natural 1..K sequence.
+  if (!pagesInNaturalSourceOrder(pages)) return false;
+  // userRotation is viewer-only — never in the source bytes (v2.0.7).
+  if (pages.some((p) => ((((p.userRotation ?? 0) % 360) + 360) % 360) !== 0)) {
+    return false;
+  }
+  // Trailing deletion: 1..K is natural but the source bytes hold more pages.
+  if (Number.isInteger(sourcePageCount) && pages.length < sourcePageCount) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * @param {object} args
  * @param {Array<any>} args.pages              page rows from workspace.getPages()
  * @param {import("../domain/project-store.js").ProjectStore} args.projectStore

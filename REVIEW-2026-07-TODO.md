@@ -125,6 +125,8 @@
 - テスト: `test/source-encrypted-flag.test.mjs` (5 件、electron-runner に追加)。`npm test` 全 suite pass
 - 残: 実機確認 — パスワード付き PDF を開く→警告表示→保存→出力が従来通り平文 (回帰なし)
 
+✅ **完了 (2026-07-06)**: **v2.0.12-beta.3 として配信済み** (tag push → CI success、installer + latest.yml 公開)。実機確認はユーザー判断により**実運用上で確認する**扱いとし、本項はクローズ。問題があれば都度対応。
+
 ---
 
 ### #4 byte-copy ゲートの総当たりテスト
@@ -139,6 +141,15 @@
 - **運用ルールも明記**: 今後新しい「workspace 専用変換」(元バイトに焼かれない編集) を追加する時は、このテーブルに 1 行足すことをセットにする (HANDOVER §8.5 に一文追記候補 → #7 のタイミングで)
 
 **完了条件**: `npm test` に組み込まれ全 pass。既知 3 バグを故意に再導入すると fail することを確認 (ミューテーションで有効性検証)。
+
+✅ **完了 (2026-07-06)**:
+- **ゲートを純関数 `byteCopyEligible` (exporter.js) に一本化**し、3 呼出箇所 (actionExportToPath / actionPrintViaReader / legacy 印刷ダイアログ) 全てを差し替え。判定条件: forceMono / overlay / 部分選択 / pending 削除 / 自然順 (並び替え・挿入・中間削除) / userRotation / **ソースページ数比較 (末尾削除)**
+- **テーブル作成の過程で同型バグ 2 件を発見 → 同時修正**:
+  - (a) **print 2 経路とも「末尾ページ削除」を見落とし** — 末尾削除は歯抜けを作らないので自然順チェックを素通り、可視ページ基準の allPagesSelected でも捕まらない (export 経路だけが meta.pageCount 比較で捕捉していた)。削除したはずの最終ページが印刷される実バグ
+  - (b) **legacy 印刷経路 (Reader 不在 fallback) には v2.0.11 の並び替え手当て自体が未適用** — 実運用は Adobe があるので ViaReader 分岐だが、fallback も共通ゲート化で揃えた
+- テスト: `test/byte-copy-gate.test.mjs` (20 件) — Part 1 はテーブル駆動 (編集種別 単独/組合せ/print 固有条件/退化 × 可否、true は完全未編集のみ)、Part 2 は末尾削除の end-to-end (mupdf 読み戻しでページ数+内容検証。並び替え e2e は page-reorder-export.test.mjs 既存)。npm test に `test:byte-copy-gate` として組込み、全 suite pass
+- ミューテーション検証: userRotation / 自然順 / ページ数比較 / overlay の各チェックを故意に外すといずれもテーブルが fail することを確認 (4/4)
+- 運用ルール (「workspace 専用変換を足すときはゲート 1 条件 + テーブル 1 行をセットで」) は byteCopyEligible の docstring とテストヘッダに明記。HANDOVER §8.5 への一文追記は予定どおり #7 のタイミング
 
 ---
 
@@ -253,8 +264,8 @@
 | 11 | PAT 期限リマインド | ✅ 完了 (失効 2027-05-11、routine 設定済) | 2026-07-05 (コード変更なし) |
 | 1 | workspace 保持ポリシー + お掃除 | ✅ 完了 (β.2 で実機確認済) | 2026-07-05 / ADR 3f83f6f・実装 bd73372・配信 796f585 |
 | 2 | workspaces バックアップ | ✅ 完了 (Step 1: バッチ+夜間/起動時実行+復元リハ済) | 2026-07-05 |
-| 3 | パスワード平文化警告 | 🚧 MVP 実装済・実機確認待ち | 2026-07-05 |
-| 4 | byte-copy 総当たりテスト | ⬜ 未着手 | |
+| 3 | パスワード平文化警告 | ✅ 完了 (β.3 配信済、実運用で確認) | 2026-07-06 / f6fb811 |
+| 4 | byte-copy 総当たりテスト | ✅ 完了 (ゲート一本化 + print 末尾削除バグ 2 件同時修正) | 2026-07-06 |
 | 9 | 確定版ステータス可視化 | ⬜ β トライアル所感待ち | |
 | 7 | HANDOVER 乖離修正 + ADR 起草 | ⬜ stable 昇格時 | |
 | 8 | renderer.js S6 リファクタ | ⬜ 次の大物前 | |

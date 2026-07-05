@@ -18,7 +18,7 @@
 // isOpen, splitThumbSelection, sidebarThumbSelection, isSplitMode.
 // viewer / wsStatus / fetchVisiblePages are stable refs / fns passed once.
 
-import { composePagesForExport, composeSinglePageCanvas, pagesInNaturalSourceOrder } from "./exporter.js";
+import { composePagesForExport, composeSinglePageCanvas, byteCopyEligible } from "./exporter.js";
 import { renderSyntheticPagePixels } from "./viewer.js";
 import { showBusy, updateBusy, hideBusy, setBusyCancel } from "./busy-modal.js";
 import { customConfirm } from "./dialogs.js";
@@ -469,20 +469,20 @@ async function actionPrintViaReader(pages, preselected, preselectedSource, opts 
   const projectStore = _projectStore();
   const overlayCount = projectStore.count();
   const allPagesSelected = filteredPages.length === pages.length;
-  // 回転 (userRotation) は元 PDF に焼かれていない viewer 専用変換なので、
-  // byte-copy すると他ビューア / 紙で回転が落ちる。回転ありページがあれば
-  // 再合成経路へ (assembleHybridPdf がベクター維持で回転をベイク)。
-  const hasUserRotation = filteredPages.some(
-    (p) => ((((p.userRotation ?? 0) % 360) + 360) % 360) !== 0,
-  );
-  // 並び替え (display_order) は元 PDF バイトに焼かれない workspace 専用変換
-  // なので、自然順 (1..N) でなければ byte-copy せず再合成経路へ (v2.0.11、
-  // actionExportToPath と同じ手当て。Adobe 印刷で並び替えが落ちる事故を防ぐ)。
-  const isNaturalOrder = pagesInNaturalSourceOrder(filteredPages);
-  // FAX 経路では byte-copy は使わない (mono 化のため必ず再合成が必要)
-  const isCopy =
-    !forceMono && overlayCount === 0 && allPagesSelected && !hasUserRotation
-    && isNaturalOrder;
+  // byte-copy 可否は共通ゲート byteCopyEligible (exporter.js) に集約
+  // (REVIEW-2026-07 #4)。overlay / 削除 / 挿入 / userRotation / 並び替え
+  // のどれかがあれば再合成経路へ。sourcePageCount 比較により、従来この
+  // 経路が見落としていた「末尾ページ削除」(歯抜けを作らないので自然順
+  // チェックを素通りしていた) も byte-copy から外れる。FAX (forceMono)
+  // は mono 化のため常に再合成。
+  const meta = await kpdf3.getSourceMeta();
+  const isCopy = byteCopyEligible({
+    pages: filteredPages,
+    overlayCount,
+    sourcePageCount: meta?.pageCount ?? null,
+    allPagesSelected,
+    forceMono,
+  });
 
   // β.118: 中止ボタンを表示する (旧コメント: 「Adobe ダイアログを × で
   // 閉じれば中止」だったが、Adobe が hand-off で固まる / 印刷ダイアログが
@@ -612,12 +612,18 @@ export async function actionPrint() {
   const allPagesSelected =
     choice.pageNos.length === pages.length &&
     choice.pageNos.every((n, i) => n === i + 1);
-  // 回転 (userRotation) は元 PDF に焼かれていないため byte-copy では落ちる。
-  // 回転ありページがあれば再合成経路へ (assembleHybridPdf がベイク)。
-  const hasUserRotation = pages.some(
-    (p) => ((((p.userRotation ?? 0) % 360) + 360) % 360) !== 0,
-  );
-  const isCopy = overlayCount === 0 && allPagesSelected && !hasUserRotation;
+  // byte-copy 可否は共通ゲート byteCopyEligible (exporter.js) に集約
+  // (REVIEW-2026-07 #4)。この legacy 経路 (Reader 不在 fallback) は従来
+  // 並び替え (v2.0.11 の手当てが未適用) と末尾ページ削除を見落として
+  // いた — 共通ゲート化で display order の自然順チェックとソースページ数
+  // 比較が揃い、他 2 経路と同じ判定になる。
+  const legacyMeta = await kpdf3.getSourceMeta();
+  const isCopy = byteCopyEligible({
+    pages,
+    overlayCount,
+    sourcePageCount: legacyMeta?.pageCount ?? null,
+    allPagesSelected,
+  });
 
   // 中止ボタンを有効化。spawn 中の SumatraPDF や silent print の途中で
   // 「もう待たない」をユーザに渡せる。fire-and-forget: handler 内で

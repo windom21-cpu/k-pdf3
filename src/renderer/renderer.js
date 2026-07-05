@@ -18,7 +18,7 @@ import {
   compositePage,
   composePageImage,
   composeRegionImage,
-  pagesInNaturalSourceOrder,
+  byteCopyEligible,
 } from "./exporter.js";
 import {
   TEXT_FONT_DEFAULT_ID,
@@ -4165,26 +4165,15 @@ async function actionExportToPath(
   if (pages.length === 0) return;
   const overlayCount = projectStore.count();
   const meta = await kpdf3.getSourceMeta();
-  const hasInsertions = pages.some((p) => p.isSynthetic || p.pageNo < 0);
-  const sourcePagesCount = pages.filter((p) => !p.isSynthetic && p.pageNo > 0).length;
-  const hasDeletions =
-    pendingDeletedPages.size > 0
-    || (meta && sourcePagesCount < (meta.pageCount ?? sourcePagesCount));
-  // 回転 (userRotation) は元 PDF バイトに焼かれていない viewer 専用変換。
-  // byte-copy で元バイトを流用すると他ビューア / 印刷で回転が落ちるので、
-  // 回転ありのページがあれば再合成経路へ回し、assembleHybridPdf に
-  // userRotation をベクター維持のままベイクさせる (回転ページのみ
-  // _placeRotatedSourcePage、非回転ページは従来どおり copyPages verbatim)。
-  const hasUserRotation = pages.some(
-    (p) => ((((p.userRotation ?? 0) % 360) + 360) % 360) !== 0,
-  );
-  // 並び替え (display_order) も userRotation と同じく元 PDF バイトに焼かれて
-  // いない workspace 専用変換。byte-copy すると他アプリ (k-evi 等) で並び順
-  // が落ちるので、元の自然順 (1..N) でない限り再合成経路へ回す (v2.0.11)。
-  const isNaturalOrder = pagesInNaturalSourceOrder(pages);
-  const isCopy =
-    overlayCount === 0 && !hasDeletions && !hasInsertions && !hasUserRotation
-    && isNaturalOrder;
+  // byte-copy 可否は共通ゲート byteCopyEligible (exporter.js) に集約
+  // (REVIEW-2026-07 #4)。overlay / 削除 (中間=歯抜け・末尾=ページ数比較) /
+  // 挿入 / userRotation / 並び替え — いずれか 1 つでもあれば再合成経路へ。
+  const isCopy = byteCopyEligible({
+    pages,
+    overlayCount,
+    sourcePageCount: meta?.pageCount ?? null,
+    pendingDeleteCount: pendingDeletedPages.size,
+  });
   const verb = verbOverride ?? (isCopy ? "コピー" : "書き出し");
   showBusy(`${verb}準備`, "ページを描画しています...", 0);
   try {
