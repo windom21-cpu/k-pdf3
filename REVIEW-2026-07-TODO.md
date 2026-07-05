@@ -214,6 +214,11 @@
 2. 失効 1 ヶ月前のリマインドを設定 (claude.ai の schedule routine か、ユーザーのカレンダー)
 3. 正確な失効日を HANDOVER §12.1 に追記 (#7 と同時でよい)。更新手順 (新 token 発行 → 開発リポ Secrets の `RELEASES_REPO_TOKEN` 差し替え、権限は k-pdf3-releases のみ Contents=Write / Metadata=Read) も 1 行残す
 
+✅ **完了 (2026-07-05)**:
+- 失効日確認: **2027-05-11** (ユーザーが Web 画面で確認、"Last used within the last week" = 現役)
+- リマインド: claude.ai routine `trig_012m8K2K27rp2hzN6iwruAyo` を **2027-04-11 09:00 JST** に一回限りで設定。発火時に開発リポへ GitHub Issue「【期限 2027-05-11】RELEASES_REPO_TOKEN (PAT) の更新が必要」を自動起票 → GitHub 通知メールが届く仕組み
+- HANDOVER §12.1 への失効日追記は #7 (stable 昇格時) に持ち越し
+
 ---
 
 ## 完了記録
@@ -223,7 +228,7 @@
 | 10 | userData ゴミファイル削除 | ✅ 完了 (完全削除) | 2026-07-05 (コード変更なし) |
 | 6 | 依存 exact 固定 | ✅ 完了 | 2026-07-05 / 44578e2 |
 | 5 | Electron 41 EOL 方針 | ✅ 完了 ((a) 容認で決定) | 2026-07-05 / ADR-0004 追記 |
-| 11 | PAT 期限リマインド | ⬜ 未着手 | |
+| 11 | PAT 期限リマインド | ✅ 完了 (失効 2027-05-11、routine 設定済) | 2026-07-05 (コード変更なし) |
 | 1 | workspace 保持ポリシー + お掃除 | ⬜ 未着手 (ADR-0027 起草から) | |
 | 2 | workspaces バックアップ | ⬜ 未着手 | |
 | 3 | パスワード平文化警告 | ⬜ 未着手 | |
