@@ -79,7 +79,8 @@
 - ADR-0027 起草 → ユーザー承認済 (編集ありも期間候補 / N デフォルト 3 ヶ月 / ごみ箱移動)
 - 実装: `src/main/workspace-cleanup.js` (判定コア、read-only スキャン) + IPC 2 本 (`workspace-cleanup-scan/execute`) + ツールメニュー「ワークスペースの整理…」+ 98 風ダイアログ。テスト 31 件 (編集種別×判定のテーブル駆動 + predecessor 保護 fixpoint + 実ファイル end-to-end) を electron-runner に追加、全 pass
 - **実データ dry-run (read-only) の発見**: 1,811 個中 **1,338 件 (2.90 GB) が「開いただけ」**で N に関係なく候補。レビュー時の「開いただけ 62 個」は 200KB という代理指標の誤り (workspace は元 PDF を丸ごと含むため開いただけでも大きい)。編集あり 473 件は全て 3 ヶ月以内アクセスで保持。スキャン所要 ~45 秒 (WSL /mnt/c 経由、実機はより速い想定)
-- 残: 実機での (a)(b)(c) 確認 + ごみ箱移動の動作確認 (shell.trashItem は Windows 実機でのみ本番挙動)。β 配信するかは要判断
+- 残: 実機での (a)(b)(c) 確認 + ごみ箱移動の動作確認 (shell.trashItem は Windows 実機でのみ本番挙動)
+- **v2.0.12-beta.2 として配信済 (2026-07-05、tag 796f585、CI success、k-pdf3-releases に installer + latest.yml 公開)**。実機確認項目: ① ツール → ワークスペースの整理… でスキャン (候補 ~1,300 件 / ~2.9GB 想定) ② 移動後に既存案件が開く ③ 確定版の「編集に戻す」生存 ④ ごみ箱に .kpdf3 が入っている ⑤ もう一度スキャンして候補 0 付近
 
 ---
 
