@@ -1,6 +1,6 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-07-02
+最終更新: 2026-07-05
 現在のバージョン: **v2.0.12-beta.1 (2026-07-01 リリース、β トライアル配信中)**。直前の stable は **v2.0.11 (2026-06-30)**。β.1〜β.150 の業務並走を経て 2026-06-05 に v2.0.0 stable へ卒業 (Win+Mac+Linux 3 OS 配布)。**ADR-0026「戻せる確定保存」を実装したため、現在は `releaseType=prerelease` に戻して β トライアル中** (自分の業務で実機の往復動作を運用確認 → 不具合なければ stable v2.0.12 へ昇格)。**⚠️ stable へ昇格する時は `package.json` `build.publish.releaseType` を `prerelease`→`release`、`version` を `2.0.12-beta.1`→`2.0.12` に戻す** (β タグ `v*-beta.*` は CI で Windows のみビルド、stable タグは 3 OS)。**基本は stable 運用** (重大バグは patch 2.0.x、新機能/大物は ADR 起草後 → β トライアル → 昇格)。**Mac/Linux を Windows 同等 (印刷/FAX/Office/署名) にするには追加開発が要る (§15.6)**。
 stable 後の patch / β (要約。full 詳細は git log / `CHANGELOG-history.md`):
 - **v2.0.12-beta.1** = **ADR-0026「戻せる確定保存 (編集可能マスター / Model Y)」を実装** (commit `7b9b822`、β トライアル配信中)。下書き/確定の二律背反 (下書き=Dropbox 等で見えない / 確定=後から編集不可) を、**確定を破壊的でなくす**ことで解決: 確定＝①ディスクにフラット版を書き出す (Dropbox/Adobe で見える) ②その時点の編集可能状態を「編集可能マスター」として温存 (workspace lineage で紐づけ)、→ ツールバー **「編集に戻す」**/ファイルメニュー「編集可能な状態に戻す」で復元。**発見=確定は元々「編集可能 workspace (pristine source + overlays)」を作っては孤児化して捨てていた** (`sidecar-sweep` は `.kpdf3` 本体を消さない) ので、**捨てずに `predecessor` で紐づけるだけ＝容量増ほぼゼロ・保存コア (fingerprint 同定) 無改変**。ADR が想定した source dedup はマスター (元 PDF) と確定版 (焼き込み画像) が別物なので不要だった。実装: `workspace.js` に `workspaceId`/`setPredecessor`/`getPredecessor` (metadata 保持=`.kpdf3` と一緒に移動、パス非依存で Dropbox 移動に強い)、`main.js` の open-pdf-file に `linkPredecessorFromActive` opt (確定 reopen 時に直前 workspace を predecessor 記録。byte-copy=編集なしは fingerprint 不変で同一再利用=不要) + `restore-editable-master`/`get-editable-master-info` IPC + open 戻り値 `hasEditableMaster`/`masterMissing`、`renderer.js` に「編集に戻す」ボタン (`btn-restore-master`)・確定ダイアログ文言改訂 (「画像化=不可逆」→「ファイルに反映＋あとで戻せる」)・確定版を開いた時ヒント/lineage 切れ明示、`sidecar-sweep.js` に将来の孤児掃除で predecessor を消さない注記。**外部改変で fingerprint 変=lineage 切れは「編集可能版が見つかりません」と明示** (黙って編集不能版にしない)。**MVP スコープ=上書き確定のみ** (名前を付けて確定は元タブが編集可能なまま残るので lineage 見送り)。**過去世代ロールバック・孤児 workspace 掃除は ADR 通り将来 opt-in**。`test/m3-overlay-persistence.mjs` に predecessor が close→reopen で保たれる検証 5 件追加、`npm test` 全 **420 pass**。**実機確認待ち** (§8.2 先頭): テキスト確定→Dropbox 反映→「編集に戻す」で再編集、戻す→再編集→再確定の往復でマスター一意、挿入/回転/削除/並び替え込みで崩れない、「編集に戻す」が Undo と紛らわしくないか。UI 決定 (ユーザー承認 2026-07-01): 戻す導線=ツールバーボタンも追加 / 文言=「反映＋後で戻せる」。memory [[project_reversible_flatten_save_adr0026]]
@@ -25,7 +25,7 @@ stable 後の patch / β (要約。full 詳細は git log / `CHANGELOG-history.m
 
 ## 現状サマリ (1 分で把握)
 
-**フェーズ**: **stable 運用中 — 現在 v2.0.11 (2026-06-30)**。β.1〜β.150 → 2026-06-05 に v2.0.0 stable、以降 patch を v2.0.11 まで。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。**stable 残務は全クローズ済** — クラッシュ診断ロガーは β.149 で撤去済 (`logCrash`/`crashLogPath`/`print-tick` 等は src から消滅、残るは comment 1 件のみ。**§8.2 #3 と末尾の撤去 TODO リストは履歴**=既に適用済)。**現在のオープン項目は §8 の実機確認待ちが中心** (直近 patch の実機検証: v2.0.8 回転のみ上書き保存 / v2.0.9 印刷ダイアログ調整中の Adobe 早期 close / v2.0.10 サムネ削除後の選択位置 / v2.0.11 サムネ並び替えの保存・他アプリ反映)。**調査中の重大候補: A3 横向き PDF の通常印刷が天地さかさま (180°)** — 事務所複合機でテスト依頼中、方針未確定 (§8.2 先頭参照)。**実装済・β トライアル中の新機能: 戻せる確定保存 (ADR-0026, v2.0.12-beta.1)** — 下書き/確定の二律背反 (下書き=他アプリで見えない / 確定=後から編集不可) を確定の可逆化で解決。2026-07-01 に ADR 確定・実装 (commit `7b9b822`) → β 配信し、自分の業務で実機の往復動作を運用確認中 (不具合なければ stable v2.0.12 へ昇格)。詳細は冒頭の patch 一覧 v2.0.12-beta.1 / §8.2 先頭 / `docs/adr/0026`。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
+**フェーズ**: **stable 運用中 — 現在 v2.0.11 (2026-06-30)**。β.1〜β.150 → 2026-06-05 に v2.0.0 stable、以降 patch を v2.0.11 まで。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。**stable 残務は全クローズ済** — クラッシュ診断ロガーは β.149 で撤去済 (`logCrash`/`crashLogPath`/`print-tick` 等は src から消滅、残るは comment 1 件のみ。**§8.2 #3 と末尾の撤去 TODO リストは履歴**=既に適用済)。**現在のオープン項目は §8 の実機確認待ちが中心** (直近 patch の実機検証: v2.0.8 回転のみ上書き保存 / v2.0.9 印刷ダイアログ調整中の Adobe 早期 close / v2.0.10 サムネ削除後の選択位置 / v2.0.11 サムネ並び替えの保存・他アプリ反映)。**調査中の重大候補: A3 横向き PDF の通常印刷が天地さかさま (180°)** — 事務所複合機でテスト依頼中、方針未確定 (§8.2 先頭参照)。**実装済・β トライアル中の新機能: 戻せる確定保存 (ADR-0026, v2.0.12-beta.1)** — 下書き/確定の二律背反 (下書き=他アプリで見えない / 確定=後から編集不可) を確定の可逆化で解決。2026-07-01 に ADR 確定・実装 (commit `7b9b822`) → β 配信し、自分の業務で実機の往復動作を運用確認中 (不具合なければ stable v2.0.12 へ昇格)。詳細は冒頭の patch 一覧 v2.0.12-beta.1 / §8.2 先頭 / `docs/adr/0026`。**2026-07-05 に全体レビューを実施し、対応タスク 11 件 (workspace 膨張 / バックアップ / Electron 41 EOL ほか) を `REVIEW-2026-07-TODO.md` に起票** (§8.2 参照)。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
 
 > **β71〜β147 の詳細変更ログ + β 卒業ロードマップ (2026-05-25 確定) は `CHANGELOG-history.md` へ退避 (2026-06-22 整理)。** 製品は stable v2.0.10 で β は履歴。設計の現役根拠は §2 (設計思想・禁止事項) / §15 (既知懸念) / `docs/adr/` / memory を参照。印刷・Adobe・FAX・render・D&D の試行錯誤経緯を追うときは `CHANGELOG-history.md` を grep (memory [[feedback_handover_first_before_judgment]])。
 
@@ -66,6 +66,7 @@ stable 後の patch / β (要約。full 詳細は git log / `CHANGELOG-history.m
 - `docs/adr/0001..0016.md` — 重要な設計判断の根拠
 - `schema/schema.sql` — SQLite テーブル定義
 - `ROADMAP.md` — マイルストーン一覧
+- `REVIEW-2026-07-TODO.md` — **2026-07-05 全体レビューの対応タスク集** (目的・根拠・手順は全てそちらに集約、本書は §8.2 のポインタのみ)
 - `CHANGELOG-history.md` — **2026-06-22 に本書から分離した履歴の保管庫**。完了 β (β.1〜β.150) の詳細変更ログ・§6.4 β 全表・各 patch の full 詳細・§8 完了済リストを保持。**HANDOVER.md = 現役の正 / これ = 経緯 (いつ何をなぜ)**。印刷・Adobe・FAX・render・D&D 等の試行錯誤の経緯を追うときは両方 grep する
 
 ---
@@ -533,6 +534,10 @@ npm run dev                        # electronmon (推奨、自動 reload。Wayla
 #### 🆕 β トライアル中: ADR-0026 戻せる確定保存 (v2.0.12-beta.1) の実機確認 — 2026-07-01
 
 **実装済で β 配信中** (commit `7b9b822`、詳細は冒頭 patch 一覧 v2.0.12-beta.1 / `docs/adr/0026`)。ユーザーが自分の業務でしばらく運用して不具合を洗い出す方針。**次セッションでは実機フィードバックの反映が最有力タスク** (出れば β.2 で対応 → 同手順 = `releaseType=prerelease` のまま version を `2.0.12-beta.2` に上げてタグ `v2.0.12-beta.2` を push、CI が Windows のみビルドし autoUpdater で降る)。実機で見る項目: (1) テキスト追加→**確定保存**→Dropbox/Adobe で反映→ツールバー**「編集に戻す」**でまた動かせる (2) 戻す→再編集→再確定→また戻せる (マスターは常に最新で一意) (3) 挿入/回転/削除/並び替えを含む状態でも往復して構造が崩れない (4) 「編集に戻す」が Undo (元に戻す) と紛らわしくないか・文言/配置の使い勝手 (5) 確定ダイアログの新文言。**不具合なく安定したら stable v2.0.12 へ昇格** (`releaseType` を `release`、`version` を `2.0.12`、ADR-0026 ステータスを「実装済」へ、stable タグは 3 OS ビルド)。**MVP スコープ外 (将来 opt-in)**: 名前を付けて確定の lineage / 過去世代ロールバック (Model X) / 孤児 workspace 掃除。
+
+#### 🆕 全体レビュー対応シリーズ (2026-07-05 起票) — 詳細・手順は `REVIEW-2026-07-TODO.md` に集約
+
+開発一段落を機に全体レビューを実施し、対応タスク 11 件を専用文書 **`REVIEW-2026-07-TODO.md`** に起票 (本書には二重記載しない)。要点のみ: 🔴 workspace フォルダ膨張 (実測 7.4GB/1808 個、保持ポリシー ADR-0027 起草から) / 編集可能マスターのバックアップ手段 / パスワード PDF 平文化警告 / byte-copy ゲート総当たりテスト / **Electron 41 EOL (2026-08-25) 方針決定 (期限あり)** / 依存 exact 固定 / HANDOVER 乖離修正 + ADR 0017〜0025 起草 / renderer.js S6 リファクタ / 確定版ステータス常時可視化 (β 所感待ち) / userData ゴミ削除 / PAT 期限リマインド。**着手順・各項目の目的/根拠/手順/完了条件は同文書の「推奨着手順」表に従う**。完了したら同文書の完了記録表を更新 (同文書は随時更新可、本書は従来通り明示依頼時のみ)。
 
 #### 🔴 最優先・調査中: A3 横向き PDF の通常印刷が天地さかさま (180°) — 2026-06-30
 
