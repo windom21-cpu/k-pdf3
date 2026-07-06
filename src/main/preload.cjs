@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   pickExportPdf:      ()        => ipcRenderer.invoke("kpdf3:pick-export-pdf"),
   pickExportFolder:   ()        => ipcRenderer.invoke("kpdf3:pick-export-folder"),
   exportPdfRasterized: (payload) => ipcRenderer.invoke("kpdf3:export-pdf-rasterized", payload),
+  vectorTextProbe:    (strings) => ipcRenderer.invoke("kpdf3:vector-text-probe", strings),
   // β.97 機能 1+2: image export (PDF → PNG/JPEG)
   saveImageFile:      (payload) => ipcRenderer.invoke("kpdf3:save-image-file", payload),
   saveImageFiles:     (payload) => ipcRenderer.invoke("kpdf3:save-image-files", payload),

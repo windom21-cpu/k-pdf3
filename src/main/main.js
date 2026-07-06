@@ -24,6 +24,7 @@ import { rotatedSourcePlacement } from "./rotate-place.js";
 import { computePdfFingerprint, extractPdfProperties, pdfIsEncrypted } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
+import { applyVectorTextLayer, probeVectorText } from "../backend/vector-text-layer.js";
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
@@ -2310,6 +2311,16 @@ async function assembleHybridPdf(pages, sourceBytes) {
     }
   }
   const bytes = await newPdf.save();
+  // v2.0.13: MS 明朝 text/form_field overlay のベクターテキスト層。
+  // renderer が probe 済みの vectorTexts を送ってきたページにだけ、
+  // MS 明朝サブセット埋め込みの実テキストを焼く (ラスタ AA テキストが
+  // 印刷でハーフトーン網点化して Word より薄く出る問題の構造解決)。
+  // ここで失敗した場合は書き出し/印刷ごと失敗させる — vectorTexts の
+  // 文字は PNG 側に描かれていないので、握りつぶすと文字が消えた PDF が
+  // 静かに出てしまう (法律文書で最悪の事故)。
+  if (pages.some((p) => Array.isArray(p.vectorTexts) && p.vectorTexts.length > 0)) {
+    return applyVectorTextLayer(Buffer.from(bytes), pages);
+  }
   return Buffer.from(bytes);
 }
 
@@ -3265,6 +3276,15 @@ ipcMain.handle("kpdf3:cancel-print", async () => {
  * so the renderer can warn the user; sanitize-time errors surface as
  * thrown rejections so the user knows the file is NOT secure.
  */
+/**
+ * v2.0.13: renderer が書き出し/印刷の compose 前に 1 回だけ呼ぶ、
+ * ベクターテキスト適格性プローブ。MS 明朝フォントの有無 (Mac/Linux は
+ * available=false → 従来ラスタ) と、グリフの無い文字の一覧を返す。
+ */
+ipcMain.handle("kpdf3:vector-text-probe", async (_, strings) => {
+  return probeVectorText(Array.isArray(strings) ? strings : []);
+});
+
 ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   const { savePath, pages, secureExport = false } = payload;

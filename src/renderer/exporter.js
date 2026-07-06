@@ -180,6 +180,257 @@ function _needsHairlineStroke(fontId) {
   return fontId === "mincho" || fontId === "serif";
 }
 
+// ---- v2.0.13 ベクターテキスト層 -----------------------------------------
+//
+// text / form_field(text) overlay のうち MS 明朝 (fontId/fontFace ===
+// "mincho") のものを、900dpi ラスタ PNG ではなく「行 = 1 op」の配置命令
+// (vectorTexts) として main へ送り、assembleHybridPdf が MS 明朝サブセット
+// 埋め込みの実テキストとして焼く。ラスタ AA テキストは printer の
+// ハーフトーン網点化 + 900→600dpi リサンプリングで Word より薄く出る
+// ことが実機検証 (spike/print-density-sheet.mjs, 2026-07-06) で確定した
+// ため。行分割・整列はこれまで通り canvas 採寸 (wrapCanvasText) で行い、
+// 画面 (viewer) と紙の行分割が一致することを最優先する。
+//
+// フォールバック規則 (= 従来ラスタのまま):
+//   - fontId が preset "mincho" 以外 (gothic / システムフォント名 等 —
+//     Gothic はラスタでも濃く出るので実害なし)
+//   - digitsHanko ON (CrashNumberingDigits との 2 フォント混植)
+//   - MS 明朝にグリフの無い文字を含む (probe の missing 判定)
+//   - フォントファイル自体が無い環境 (Mac/Linux → probe available=false)
+//   - strategy "full" のページ (墨消し / synthetic / FAX は全面ラスタが仕様)
+
+/** 採寸専用 offscreen ctx (module singleton)。 */
+let _vtMeasureCtx = null;
+function _vectorMeasureCtx() {
+  if (_vtMeasureCtx) return _vtMeasureCtx;
+  const c = document.createElement("canvas");
+  c.width = 8;
+  c.height = 8;
+  _vtMeasureCtx = c.getContext("2d");
+  return _vtMeasureCtx;
+}
+
+/**
+ * canvas textBaseline="top" 描画とベースラインの距離 (px)。
+ * フォント理論値ではなく「同じ ctx.font で top / alphabetic 双方の
+ * actualBoundingBoxAscent を実測した差」で求める — Chromium が "top" を
+ * どのメトリクスで実装していても、canvas 描画と PDF ベースラインが
+ * ピクセル一致することを保証する。ctx.font 設定済みで呼ぶこと。
+ * 値は ctx.font 文字列だけで決まるのでメモ化する (同一サイズの
+ * フィールドが数百ある申請書一式で measureText を毎回走らせない)。
+ */
+const _baselineOffsetMemo = new Map();
+function _baselineOffsetPx(ctx) {
+  const key = ctx.font;
+  const memo = _baselineOffsetMemo.get(key);
+  if (memo !== undefined) return memo;
+  const PROBE = "国Ag";
+  const prev = ctx.textBaseline;
+  ctx.textBaseline = "alphabetic";
+  const aAlpha = ctx.measureText(PROBE).actualBoundingBoxAscent;
+  ctx.textBaseline = "top";
+  const aTop = ctx.measureText(PROBE).actualBoundingBoxAscent;
+  ctx.textBaseline = prev;
+  const off = aAlpha - aTop;
+  _baselineOffsetMemo.set(key, off);
+  return off;
+}
+
+/**
+ * overlay がベクターテキスト候補なら描画テキストを、そうでなければ null。
+ * probe の文字列収集と splitVectorTextOverlays の判定を一元化する。
+ */
+export function vectorTextCandidate(ov) {
+  const props = ov?.properties ?? {};
+  if (ov?.type === "text") {
+    if (props.fontId !== "mincho") return null;
+    if (props.digitsHanko) return null;
+    const text = String(props.text ?? "");
+    if (text.trim() === "") return null;
+    return text;
+  }
+  if (ov?.type === "form_field" && (props.fieldKind ?? "text") === "text") {
+    // fontFace 欠落は mincho 扱いにしない — drawOverlay/viewer は
+    // getTextFontStack(undefined) = default (gothic) で描くので、ここで
+    // mincho と見なすと画面 (gothic) と紙 (明朝埋め込み) の字形・行分割
+    // が食い違う。overlay-placement は作成時に必ず fontFace を入れるが、
+    // 旧データの取りこぼしに備えて strict に判定する。
+    if (props.fontFace !== "mincho") return null;
+    const value = String(props.value ?? "");
+    if (value.trim() === "") return null;
+    return value;
+  }
+  return null;
+}
+
+/** drawOverlay の text 分岐 (rot 0/90/180/270) と同一レイアウトの op 列。 */
+function _textOverlayVectorOps(ctx, ov, zoom, monoOverlays) {
+  const props = ov.properties ?? {};
+  const x = ov.x * zoom;
+  const y = ov.y * zoom;
+  const w = ov.w * zoom;
+  const h = ov.h * zoom;
+  const fontSizePx = (props.fontSize ?? 12) * zoom;
+  const color = monoOverlays ? "#000000" : (props.color ?? "#000000");
+  ctx.font = `${fontSizePx}px ${getTextFontStack(props.fontId, { digitsHanko: false })}`;
+  const baseOff = _baselineOffsetPx(ctx);
+  const lineHeightPx = fontSizePx * (props.lineHeight ?? 1);
+  const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+  // viewer は .overlay-text { overflow: hidden } で枠外を隠し、ラスタ経路
+  // も bbox キャンバス (枠+8pt) で切れる。ベクターも同じ矩形でクリップ
+  // しないと「画面に見えない溢れ行が紙にだけ出る」WYSIWYG 破りになる。
+  const clip = {
+    x: ov.x - 8, y: ov.y - 8, w: ov.w + 16, h: ov.h + 16,
+  };
+  const ops = [];
+  const push = (text, px, py) => {
+    if (text.trim() === "") return; // 空行は ink 無し
+    ops.push({
+      text,
+      x: px / zoom,
+      y: py / zoom,
+      size: props.fontSize ?? 12,
+      color,
+      bold: !!props.bold,
+      rot,
+      clip,
+    });
+  };
+  if (rot === 0) {
+    const lines = wrapCanvasText(ctx, props.text ?? "", w);
+    for (let i = 0; i < lines.length; i++) {
+      push(lines[i], x, y + i * lineHeightPx + baseOff);
+    }
+  } else {
+    // drawOverlay と同じ「pre-rotation 幅で wrap → 中心 anchor で回転」。
+    // canvas の translate(cx,cy)+rotate(θ) で (lx,ly) に描く操作を、
+    // 回転行列で canonical 座標へ展開する (θ は y 下向き系の視覚時計回り)。
+    const isVert = rot === 90 || rot === 270;
+    const naturalW = isVert ? h : w;
+    const naturalH = isVert ? w : h;
+    const lines = wrapCanvasText(ctx, props.text ?? "", naturalW);
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const th = (rot * Math.PI) / 180;
+    const cos = Math.cos(th);
+    const sin = Math.sin(th);
+    for (let i = 0; i < lines.length; i++) {
+      const lx = -naturalW / 2;
+      const ly = -naturalH / 2 + i * lineHeightPx + baseOff;
+      push(lines[i], cx + lx * cos - ly * sin, cy + lx * sin + ly * cos);
+    }
+  }
+  return ops;
+}
+
+/** drawOverlay の form_field(text) 分岐と同一レイアウトの op 列。 */
+function _formFieldTextVectorOps(ctx, ov, zoom, monoOverlays) {
+  const props = ov.properties ?? {};
+  const x = ov.x * zoom;
+  const y = ov.y * zoom;
+  const w = ov.w * zoom;
+  const h = ov.h * zoom;
+  const fontSizePx = (props.fontSize ?? 12) * zoom;
+  const color = monoOverlays ? "#000000" : (props.color ?? "#000000");
+  ctx.font = `${fontSizePx}px ${getTextFontStack(props.fontFace)}`;
+  const baseOff = _baselineOffsetPx(ctx);
+  const padX = Math.max(1, zoom); // drawOverlay と同じ 1pt 内枠 padding
+  const innerW = Math.max(0, w - 2 * padX);
+  const value = String(props.value ?? "");
+  const lines = value === "" ? [] : wrapCanvasText(ctx, value, innerW);
+  if (lines.length === 0) return [];
+  const lineHeightPx = fontSizePx * 1.2;
+  const totalH = lines.length * lineHeightPx;
+  const alignH = props.alignH ?? "left";
+  const alignV = props.alignV ?? "middle";
+  let baseY;
+  if (alignV === "top") baseY = y;
+  else if (alignV === "bottom") baseY = y + h - totalH;
+  else baseY = y + (h - totalH) / 2;
+  // text overlay と同じ理由でフィールド枠+8pt にクリップ (画面 overflow
+  // hidden / ラスタ bbox 切りとの WYSIWYG 一致)。
+  const clip = {
+    x: ov.x - 8, y: ov.y - 8, w: ov.w + 16, h: ov.h + 16,
+  };
+  const ops = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() === "") continue;
+    const lineW = ctx.measureText(lines[i]).width;
+    let lineX;
+    if (alignH === "right") lineX = x + w - padX - lineW;
+    else if (alignH === "center") lineX = x + (w - lineW) / 2;
+    else lineX = x + padX;
+    ops.push({
+      text: lines[i],
+      x: lineX / zoom,
+      y: (baseY + i * lineHeightPx + baseOff) / zoom,
+      size: props.fontSize ?? 12,
+      color,
+      bold: false,
+      rot: 0,
+      clip,
+    });
+  }
+  return ops;
+}
+
+/** 2 つの overlay 矩形 (canonical pt) が重なるか。 */
+function _overlayRectsIntersect(a, b) {
+  return (
+    a.x < b.x + b.w && b.x < a.x + a.w
+    && a.y < b.y + b.h && b.y < a.y + a.h
+  );
+}
+
+/**
+ * overlays を「ベクターテキスト op 列」と「従来ラスタで描く残り」に分割。
+ *
+ * z-order 保全: ラスタ経路は overlays を配列順 (= 重なり順) に 1 枚の
+ * PNG へ描くが、ベクターテキストは常に最上層に乗る。そこで「候補より
+ * 後に描かれる不透明系 overlay と矩形が重なる」テキストはベクター化
+ * せずラスタに残す — 白塗り矩形・画像スタンプ等でテキストを隠す運用
+ * (画面ではテキストが見えない) を、紙の上でも必ず維持するため。
+ * マーカー (type "line"、半透明ハイライト) は隠す用途ではないので
+ * 重なってもベクター化を許す (黒字がマーカーの上に乗る = 可読性は
+ * むしろ上がる方向の僅差)。
+ *
+ * 墨消し保全: 墨消し overlay を 1 つでも持つページはベクター化を全面
+ * 禁止する。通常経路は β.85 の strategy="full" 格上げで既にラスタ化
+ * されるが、下敷き印刷 (overlay-only) は full 格上げの対象外なので、
+ * ここで止めないと「墨消しの上に選択可能なテキスト」が出てしまう。
+ *
+ * @param {Array<any>} overlays  描画順 (= z 順) の overlay 配列
+ * @param {Set<string>} missingSet  MS 明朝にグリフの無い文字 (probe 結果)
+ * @param {number} zoom
+ * @param {boolean} monoOverlays
+ * @returns {{ raster: Array<any>, ops: Array<object> }}
+ */
+export function splitVectorTextOverlays(overlays, missingSet, zoom, monoOverlays) {
+  if (overlays.some((ov) => ov?.type === "redaction")) {
+    return { raster: overlays, ops: [] };
+  }
+  const raster = [];
+  const ops = [];
+  for (let i = 0; i < overlays.length; i++) {
+    const ov = overlays[i];
+    const cand = vectorTextCandidate(ov);
+    const coveredLater = cand != null && overlays.slice(i + 1).some(
+      (later) => later?.type !== "line" && _overlayRectsIntersect(ov, later),
+    );
+    if (cand != null && !coveredLater && ![...cand].some((ch) => missingSet.has(ch))) {
+      // ctx はここで初めて要る (node テストは raster 側判定だけなら DOM 不要)
+      const ctx = _vectorMeasureCtx();
+      const generated = ov.type === "text"
+        ? _textOverlayVectorOps(ctx, ov, zoom, monoOverlays)
+        : _formFieldTextVectorOps(ctx, ov, zoom, monoOverlays);
+      ops.push(...generated);
+      continue; // ink の無い候補 (空白のみ) もラスタに戻す必要はない
+    }
+    raster.push(ov);
+  }
+  return { raster, ops };
+}
+
 // ---- β.100 / β.104 オートシェイプ helpers ------------------------------
 //
 // β.104: properties に length / crossSize を保持し、描画は中心 (0,0) を
@@ -824,6 +1075,11 @@ export async function composePagesForExport({
   // 経路と同等の品質を担保できる)。書き出し / 通常印刷では false。
   // FAX 送信ボタン (streamlined auto 経路) でのみ true。
   rasterAllPagesForFax = false,
+  // v2.0.13 ベクターテキスト層: main の kpdf3:vector-text-probe を渡すと、
+  // MS 明朝の text / form_field(text) overlay をラスタ PNG から除外して
+  // vectorTexts (行単位の配置命令) として送る。省略 (null) なら従来通り
+  // 全 overlay をラスタ描画 (Mac/Linux やテストの既定挙動)。
+  vectorTextProbe = null,
 }) {
   // Ensure custom @font-face faces (CrashNumberingSerif etc.) are loaded
   // before Canvas tries to use them — Canvas falls back to the next
@@ -831,6 +1087,35 @@ export async function composePagesForExport({
   // silently swap the date stamp's 半角 face on the very first export
   // after launch.
   await ensureCustomFontsReady();
+
+  // v2.0.13: ベクターテキスト適格性を 1 回の IPC で事前判定する。
+  // フォント無し環境 (probe.available=false) / probe 失敗 / 候補ゼロは
+  // vectorMissingSet = null のままとなり、以降は完全に従来経路。
+  // FAX (rasterAllPagesForFax) は全面ラスタが仕様なので probe 自体を省く。
+  let vectorMissingSet = null;
+  if (typeof vectorTextProbe === "function" && !rasterAllPagesForFax) {
+    // ユニーク文字だけを 1 本の文字列にして送る — 100 ページ級の申請書
+    // 一式でも IPC ペイロードは数百字で済む (probe はグリフ有無しか
+    // 見ないので全文は不要)。
+    const uniqueChars = new Set();
+    for (const row of pages) {
+      for (const ov of projectStore.getPageOverlays(row.pageNo)) {
+        const cand = vectorTextCandidate(ov);
+        if (cand != null) for (const ch of cand) uniqueChars.add(ch);
+      }
+    }
+    if (uniqueChars.size > 0) {
+      try {
+        const probe = await vectorTextProbe([[...uniqueChars].join("")]);
+        if (probe?.available) {
+          vectorMissingSet = new Set(probe.missing ?? []);
+        }
+      } catch (err) {
+        console.warn("[export] vector-text probe failed — raster fallback:", err);
+      }
+    }
+  }
+
   const total = pages.length;
   // β.124: ページごとの処理 (overlay 合成 + PNG/JPEG エンコード + 場合に
   // よっては renderPage IPC) を 3 並列ワーカープールで処理。out は事前
@@ -854,7 +1139,11 @@ export async function composePagesForExport({
       userRotation: row.userRotation ?? 0,
     });
 
-    const overlayCount = projectStore.getPageOverlays(row.pageNo).length;
+    // ページの overlay 配列 (描画順)。processOne 内は一貫してこの 1 回
+    // 取得を使い回す (以前は overlayCount / redaction 判定 / compose で
+    // 都度 projectStore を叩き直していた)。
+    const pageOvs = projectStore.getPageOverlays(row.pageNo);
+    const overlayCount = pageOvs.length;
     const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
     const sourceRot = (((row.rotation ?? 0) % 360) + 360) % 360;
     const effectiveRotation = ((sourceRot + userRot) % 360 + 360) % 360;
@@ -884,8 +1173,7 @@ export async function composePagesForExport({
     // projectStore から取得 (overlayCount と同じソース)。
     const hasRedactionOverlay =
       rasterRedactionPages
-      && projectStore.getPageOverlays(row.pageNo)
-        .some((ov) => ov.type === "redaction");
+      && pageOvs.some((ov) => ov.type === "redaction");
 
     let strategy;
     if (overlayOnly) {
@@ -924,15 +1212,35 @@ export async function composePagesForExport({
      *  「full-page で描画」を意味する (overlay 戦略以外 or 設計上の fallback)。 */
     /** @type {{x:number,y:number,w:number,h:number}|null} */
     let overlayBBox = null;
+    // v2.0.13: overlay/external/overlay-only 戦略 (= ラスタ PNG がベクター
+    // ページの上に乗る経路) では、MS 明朝 text/form_field を PNG から
+    // 除外して vectorTexts へ。full 戦略 (墨消し/synthetic/FAX) は従来通り
+    // 全 overlay をページラスタに焼く。
+    /** @type {Array<object> | undefined} */
+    let vectorTexts;
+    let overlaysForRaster = pageOvs;
+    if (vectorMissingSet && strategy !== "full" && overlayCount > 0) {
+      const split = splitVectorTextOverlays(
+        pageOvs, vectorMissingSet, EXPORT_ZOOM, monoOverlays,
+      );
+      if (split.ops.length > 0) {
+        vectorTexts = split.ops;
+        overlaysForRaster = split.raster;
+      }
+    }
     if (strategy === "overlay-only") {
       // β.80: overlay があれば bbox-cropped PNG を生成し、無ければ
       // 完全に空白ページとして main に渡す (imageBytes = undefined)。
+      // v2.0.13: 全 overlay がベクター化されたページも PNG 無しで送る
+      // (bboxPt=null → 空白ページ + テキスト層のみ)。
       if (overlayCount > 0) {
         const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
-          row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM, monoOverlays,
+          row, overlaysForRaster, EXPORT_ZOOM, monoOverlays,
         );
-        imageBytes = await canvasToPng(canvas);
-        overlayBBox = bb;
+        if (bb) {
+          imageBytes = await canvasToPng(canvas);
+          overlayBBox = bb;
+        }
       }
     } else if (strategy === "full") {
       let result;
@@ -963,22 +1271,30 @@ export async function composePagesForExport({
     } else if (strategy === "overlay") {
       // β62: bbox-cropped overlay。canvas は overlays の実領域だけ、
       // bboxPt は配置位置を main に渡すための metadata。
+      // v2.0.13: ベクター化で残り overlay がゼロになったら PNG 自体を
+      // 送らない (bbox=null の 1×1 透過 PNG を full-page stretch すると
+      // 複合機ドライバの「画像あり → 全面 raster fallback」を無駄に
+      // 誘発しかねないため)。
       const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
-        row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM, monoOverlays,
+        row, overlaysForRaster, EXPORT_ZOOM, monoOverlays,
       );
       // Overlay layer must be PNG to keep transparency — drawing on top of
       // the copied vector source page would otherwise paint white over it.
-      imageBytes = await canvasToPng(canvas);
-      overlayBBox = bb;
+      if (bb) {
+        imageBytes = await canvasToPng(canvas);
+        overlayBBox = bb;
+      }
     } else if (strategy === "external" && overlayCount > 0) {
       // External-source pages can also carry overlays drawn by the user
       // (e.g. a stamp pinned onto an inserted page). Author the overlay
       // layer the same way as the "overlay" strategy so main can compose.
       const { canvas, bboxPt: bb } = await composeOverlayOnlyPage(
-        row, projectStore.getPageOverlays(row.pageNo), EXPORT_ZOOM, monoOverlays,
+        row, overlaysForRaster, EXPORT_ZOOM, monoOverlays,
       );
-      imageBytes = await canvasToPng(canvas);
-      overlayBBox = bb;
+      if (bb) {
+        imageBytes = await canvasToPng(canvas);
+        overlayBBox = bb;
+      }
     }
     // strategy === "source": no image bytes; main copies source page as-is.
     // strategy === "external" with no overlays: no image bytes either.
@@ -1006,6 +1322,9 @@ export async function composePagesForExport({
       // にフォールバック。userRot=0 でかつ overlay/external 戦略時のみ
       // セットされる。
       overlayBBox,
+      // v2.0.13: MS 明朝 text/form_field の行単位配置命令。main の
+      // applyVectorTextLayer が実テキスト (フォント埋め込み) として焼く。
+      vectorTexts,
     };
   };
 
@@ -1390,6 +1709,10 @@ async function drawOverlay(ctx, ov, zoom, monoOverlays = false) {
   const monoize = (c) => (monoOverlays ? "#000000" : c);
 
   if (ov.type === "text") {
+    // ⚠ v2.0.13: このレイアウト (wrap 幅 / lineHeight / 回転 anchor) は
+    // _textOverlayVectorOps と 1:1 で対応している。ここを変えるときは
+    // 必ず両方を同時に直すこと — ズレると「画面/ラスタ」と「ベクター
+    // 印字 (明朝)」で行分割・位置が食い違う。
     const fontSize = (props.fontSize ?? 12) * zoom;
     const color = monoize(props.color ?? "#000000");
     ctx.font = `${fontSize}px ${getTextFontStack(props.fontId, {
@@ -1716,6 +2039,8 @@ async function drawOverlay(ctx, ov, zoom, monoOverlays = false) {
     const filled = value !== "" && value !== "off";
 
     if (fieldKind === "text") {
+      // ⚠ v2.0.13: このレイアウト (padX / lineHeight 1.2 / alignH/V) は
+      // _formFieldTextVectorOps と 1:1 で対応。変更時は両方同時に。
       const fontSize = (props.fontSize ?? 12) * zoom;
       const fontStack = getTextFontStack(props.fontFace);
       ctx.font = `${fontSize}px ${fontStack}`;

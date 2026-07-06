@@ -510,6 +510,12 @@ async function actionPrintViaReader(pages, preselected, preselectedSource, opts 
         // 頼らずカラー印影が薄くなる事故を回避できる。
         // Phase 2: forceMono=true (FAX 経路) ではトグル状態に関わらず ON。
         monoOverlays: forceMono || _isMonoPrintMode(),
+        // v2.0.13: MS 明朝 text/form_field をベクターテキストとして印刷
+        // (ラスタ AA の網点化で Word より薄く出る問題の構造解決)。
+        // FAX 逃がし経路 (forceMono=true) は Phase 3 の「FAX はテキストを
+        // ラスタに焼く」方針に合わせて渡さない — FAX ドライバ側の
+        // embedded CID TrueType 挙動は未検証のため。
+        vectorTextProbe: forceMono ? null : kpdf3.vectorTextProbe,
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
@@ -651,6 +657,13 @@ export async function actionPrint() {
         rasterRedactionPages: true,
         // Phase 1: legacy 印刷経路 (Sumatra silent) でも白黒モード適用
         monoOverlays: _isMonoPrintMode(),
+        // v2.0.13: legacy 経路 (Adobe 不在 = Sumatra/Chromium silent) には
+        // ベクターテキストを **渡さない**。β63 ζ で「C2360 ドライバは
+        // embedded CID TrueType を見ると全面 raster fallback する」ことを
+        // 実機確認して撤回した経緯があり (main.js assembleHybridPdf の
+        // β64 コメント)、その制約は Adobe に描画を委譲しない経路では
+        // 今も生きている可能性がある。Adobe `/p` 経路 (実機で検証済) のみ
+        // ベクター化し、こちらは従来ラスタ (β.141 濃度補強) のまま。
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
@@ -803,6 +816,8 @@ export async function actionPrintOverlayOnly() {
       // は overlay だけを物理紙に乗せる経路なので、カラー印影が薄くなる
       // 問題と完全に同じシナリオが該当する。
       monoOverlays: _isMonoPrintMode(),
+      // v2.0.13: 申請書の記入文字こそ「薄い」被害の本丸なのでベクター適用
+      vectorTextProbe: kpdf3.vectorTextProbe,
       onProgress: ({ done, total }) => {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
@@ -1156,6 +1171,9 @@ export async function actionFaxSend(opts = {}) {
       renderSyntheticPage: renderSyntheticPagePixels,
       rasterRedactionPages: true,
       monoOverlays: true,
+      // v2.0.13: vectorTextProbe は意図的に渡さない — FAX に embedded
+      // CID TrueType を流すのは未検証のため、テキスト overlay は従来通り
+      // ラスタ PNG に焼いて送る (Adobe 印刷経路のみベクター化)。
       onProgress: ({ done, total }) => {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },

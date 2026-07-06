@@ -1660,6 +1660,7 @@ async function actionSavePagesAsPdf(pageNos) {
       renderSyntheticPage: renderSyntheticPagePixels,
       rasterRedactionPages: true,
       monoOverlays: !!monoExport,
+      vectorTextProbe: kpdf3.vectorTextProbe, // v2.0.13 ベクターテキスト層
       onProgress: ({ done, total }) => {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
@@ -3575,6 +3576,7 @@ splitConfirmBtn.addEventListener("click", async () => {
         renderSyntheticPage: renderSyntheticPagePixels,
         rasterRedactionPages: true,
         monoOverlays: monoExport,
+        vectorTextProbe: kpdf3.vectorTextProbe, // v2.0.13 ベクターテキスト層
         onProgress: ({ done, total }) => {
           const partProgress = done / total;
           updateBusy(
@@ -3634,6 +3636,7 @@ async function actionExportRange() {
       renderSyntheticPage: renderSyntheticPagePixels,
       rasterRedactionPages: true,
       monoOverlays: !!monoExport,
+      vectorTextProbe: kpdf3.vectorTextProbe, // v2.0.13 ベクターテキスト層
       onProgress: ({ done, total: t }) => {
         updateBusy(`${done} / ${t} ページを描画中...`, (done / t) * 80);
       },
@@ -4191,6 +4194,7 @@ async function actionExportToPath(
         renderSyntheticPage: renderSyntheticPagePixels,
         rasterRedactionPages: true,
         monoOverlays: !!monoExport,
+        vectorTextProbe: kpdf3.vectorTextProbe, // v2.0.13 ベクターテキスト層
         onProgress: ({ done, total }) => {
           updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
         },
