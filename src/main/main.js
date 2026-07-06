@@ -11,7 +11,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, shell, globalShortcut, screen } from "electron";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join } from "node:path";
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -25,6 +25,7 @@ import { computePdfFingerprint, extractPdfProperties, pdfIsEncrypted } from "../
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
 import { applyVectorTextLayer, probeVectorText } from "../backend/vector-text-layer.js";
+import { repairPdfBytes } from "../backend/pdf-repair.js";
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
@@ -39,7 +40,7 @@ import {
   workspacePathFor,
   workspacesDir,
 } from "./workspace-registry.js";
-import { sweepOrphanSourceSidecars } from "./sidecar-sweep.js";
+import { sweepOrphanSourceSidecars, sweepOrphanWalShm } from "./sidecar-sweep.js";
 import {
   DEFAULT_RETENTION_MONTHS,
   RETENTION_MONTH_CHOICES,
@@ -896,6 +897,17 @@ app.whenReady().then(() => {
         );
       }
     } catch { /* ignore */ }
+    // 孤児 SQLite 随伴ファイル (-wal/-shm、兄弟 .kpdf3 が無いもの) も回収。
+    // v2.0.12-beta.2 の整理が道連れにしていなかった消し残し (実測 1,338 組
+    // /169MB) を、修正版の初回起動で一掃するのが主目的。
+    try {
+      const wal = sweepOrphanWalShm(workspacesDir());
+      if (wal.removed > 0) {
+        console.log(
+          `[main] swept ${wal.removed} orphan wal/shm file(s), freed ${wal.freedBytes} bytes`,
+        );
+      }
+    } catch { /* ignore */ }
   });
   // Wire auto-update (§17.15). No-op in dev mode (!app.isPackaged) and
   // when launched with --no-update. The initial check fires ~3s after
@@ -1364,6 +1376,20 @@ ipcMain.handle("kpdf3:workspace-cleanup-execute", async (_e, ids) => {
           freedBytes += s;
         } catch {
           /* sidecar-sweep が次回起動時に回収する */
+        }
+      }
+      // SQLite 随伴ファイル (-wal/-shm) も道連れに。本体なしでは読めない
+      // 派生物なのでごみ箱でなく直接削除 (2026-07-05 の整理で 1,338 組の
+      // 孤児が残った消し残しバグの修正)。失敗時は起動時 sweep が回収。
+      for (const suffix of ["-wal", "-shm"]) {
+        try {
+          const companion = `${path}${suffix}`;
+          if (existsSync(companion)) {
+            freedBytes += statSync(companion).size;
+            rmSync(companion, { force: true });
+          }
+        } catch {
+          /* sweepOrphanWalShm が次回起動時に回収する */
         }
       }
     } catch {
@@ -2144,6 +2170,54 @@ ipcMain.handle("kpdf3:pick-export-pdf", async () => {
 // で呼び出す経路を第一選択にし、Sumatra は fallback として温存する
 // 三段構造に切替 (C アプローチ採用)。
 async function assembleHybridPdf(pages, sourceBytes) {
+  let bytes;
+  try {
+    bytes = await _assembleHybridPdfOnce(pages, sourceBytes, false);
+  } catch (err) {
+    // §8.2🔴(1): mupdf では正常に開ける元 PDF でも、pdf-lib は壊れかけ
+    // flate / 非標準ストリームに厳格で load/copyPages/embedPdf が throw
+    // することがある (実事例: 大部 PDF の別名保存が `Unknown compression
+    // method in flate stream: 175, 253` で失敗)。失敗したときだけ、
+    // mupdf 修復再保存 (pdf-repair.js) したバイト列で一度だけ retry する。
+    // 正常系 (成功する PDF) はこの分岐に入らないので挙動不変。
+    // 自前の入力検証エラー ("assembleHybridPdf:" 接頭辞) は修復しても
+    // 直らないので即 rethrow (大部 PDF の無駄な再保存を避ける)。
+    if (String(err?.message ?? "").startsWith("assembleHybridPdf:")) throw err;
+    const hasExternal = pages.some((p) => p.strategy === "external");
+    if (!sourceBytes && !hasExternal) throw err; // 修復対象が無い
+    let repairedSource = sourceBytes;
+    if (sourceBytes) {
+      try {
+        repairedSource = repairPdfBytes(sourceBytes);
+      } catch {
+        throw err; // mupdf でも開けない → 元エラーをそのまま報告
+      }
+    }
+    console.warn(
+      `[assembleHybridPdf] pdf-lib assembly failed (${err?.message ?? err}); ` +
+        "retrying with mupdf-repaired bytes",
+    );
+    bytes = await _assembleHybridPdfOnce(pages, repairedSource, true);
+  }
+  // v2.0.13: MS 明朝 text/form_field overlay のベクターテキスト層。
+  // renderer が probe 済みの vectorTexts を送ってきたページにだけ、
+  // MS 明朝サブセット埋め込みの実テキストを焼く (ラスタ AA テキストが
+  // 印刷でハーフトーン網点化して Word より薄く出る問題の構造解決)。
+  // ここで失敗した場合は書き出し/印刷ごと失敗させる — vectorTexts の
+  // 文字は PNG 側に描かれていないので、握りつぶすと文字が消えた PDF が
+  // 静かに出てしまう (法律文書で最悪の事故)。修復 retry の対象外
+  // (入力が同じなら結果も同じで、retry しても直らない)。
+  if (pages.some((p) => Array.isArray(p.vectorTexts) && p.vectorTexts.length > 0)) {
+    return applyVectorTextLayer(bytes, pages);
+  }
+  return bytes;
+}
+
+/** 1 回分の pdf-lib 組み立て。repairExternal=true (修復 retry) のときは
+ *  挿入元 PDF (inserted_source_pdfs) も mupdf 修復してから load する —
+ *  Word→PDF 変換物など挿入物側の壊れストリームが原因のこともあるため
+ *  (§8.2 追報の「先頭に Word 差し込み」ケース)。 */
+async function _assembleHybridPdfOnce(pages, sourceBytes, repairExternal) {
   const newPdf = await PDFDocument.create();
   const sourcePdf = sourceBytes
     ? await PDFDocument.load(sourceBytes, { ignoreEncryption: true })
@@ -2161,7 +2235,13 @@ async function assembleHybridPdf(pages, sourceBytes) {
     if (!row || !row.pdfBlob) {
       throw new Error(`assembleHybridPdf: inserted_source_pdfs id=${id} not found`);
     }
-    const doc = await PDFDocument.load(row.pdfBlob, { ignoreEncryption: true });
+    let blob = row.pdfBlob;
+    if (repairExternal) {
+      try {
+        blob = repairPdfBytes(blob);
+      } catch { /* 修復不能なら元 blob のまま load に賭ける */ }
+    }
+    const doc = await PDFDocument.load(blob, { ignoreEncryption: true });
     externalPdfCache.set(id, doc);
     return doc;
   }
@@ -2311,16 +2391,6 @@ async function assembleHybridPdf(pages, sourceBytes) {
     }
   }
   const bytes = await newPdf.save();
-  // v2.0.13: MS 明朝 text/form_field overlay のベクターテキスト層。
-  // renderer が probe 済みの vectorTexts を送ってきたページにだけ、
-  // MS 明朝サブセット埋め込みの実テキストを焼く (ラスタ AA テキストが
-  // 印刷でハーフトーン網点化して Word より薄く出る問題の構造解決)。
-  // ここで失敗した場合は書き出し/印刷ごと失敗させる — vectorTexts の
-  // 文字は PNG 側に描かれていないので、握りつぶすと文字が消えた PDF が
-  // 静かに出てしまう (法律文書で最悪の事故)。
-  if (pages.some((p) => Array.isArray(p.vectorTexts) && p.vectorTexts.length > 0)) {
-    return applyVectorTextLayer(Buffer.from(bytes), pages);
-  }
   return Buffer.from(bytes);
 }
 

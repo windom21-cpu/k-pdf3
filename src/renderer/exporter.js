@@ -26,6 +26,7 @@ import {
   getStampFontDefaults,
   getStampFontStack,
   splitStampRuns,
+  isMsMinchoFontName,
 } from "./fonts.js";
 
 /**
@@ -177,7 +178,9 @@ function paintGlyphRun(ctx, text, x, y, color, fontSize, opts = {}) {
  *  に限り、極細 overstroke (0.02×fontSize) で補強する。
  *  Gothic / sans は元々ストロークが太いので何もしない (β73 状態を維持)。 */
 function _needsHairlineStroke(fontId) {
-  return fontId === "mincho" || fontId === "serif";
+  // システムフォント名で MS明朝を選んだ場合も preset mincho と同じ字形
+  // なので同じ補強を掛ける (ベクター化されない legacy 印刷 / FAX 経路用)。
+  return fontId === "mincho" || fontId === "serif" || isMsMinchoFontName(fontId);
 }
 
 // ---- v2.0.13 ベクターテキスト層 -----------------------------------------
@@ -192,8 +195,12 @@ function _needsHairlineStroke(fontId) {
 // 画面 (viewer) と紙の行分割が一致することを最優先する。
 //
 // フォールバック規則 (= 従来ラスタのまま):
-//   - fontId が preset "mincho" 以外 (gothic / システムフォント名 等 —
-//     Gothic はラスタでも濃く出るので実害なし)
+//   - fontId が preset "mincho" でも MS明朝系フォント名でもない (gothic /
+//     他のシステムフォント名 等 — Gothic はラスタでも濃く出るので実害
+//     なし)。§8.2🟡: フォント一覧から選んだ "MS 明朝"/"MS Mincho" 等は
+//     isMsMinchoFontName で preset mincho と同格 (実体が同じ msmincho.ttc
+//     subfont0 なので画面と紙の字形・行分割が一致する)。MS P明朝 (字幅
+//     違い) や游明朝等 (字形違い) は対象外のままラスタ
 //   - digitsHanko ON (CrashNumberingDigits との 2 フォント混植)
 //   - MS 明朝にグリフの無い文字を含む (probe の missing 判定)
 //   - フォントファイル自体が無い環境 (Mac/Linux → probe available=false)
@@ -243,7 +250,7 @@ function _baselineOffsetPx(ctx) {
 export function vectorTextCandidate(ov) {
   const props = ov?.properties ?? {};
   if (ov?.type === "text") {
-    if (props.fontId !== "mincho") return null;
+    if (props.fontId !== "mincho" && !isMsMinchoFontName(props.fontId)) return null;
     if (props.digitsHanko) return null;
     const text = String(props.text ?? "");
     if (text.trim() === "") return null;
@@ -255,7 +262,8 @@ export function vectorTextCandidate(ov) {
     // mincho と見なすと画面 (gothic) と紙 (明朝埋め込み) の字形・行分割
     // が食い違う。overlay-placement は作成時に必ず fontFace を入れるが、
     // 旧データの取りこぼしに備えて strict に判定する。
-    if (props.fontFace !== "mincho") return null;
+    // (システムフォント名の MS明朝系は text 側と同じく mincho 同格)
+    if (props.fontFace !== "mincho" && !isMsMinchoFontName(props.fontFace)) return null;
     const value = String(props.value ?? "");
     if (value.trim() === "") return null;
     return value;

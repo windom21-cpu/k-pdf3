@@ -47,6 +47,31 @@ export const TEXT_FONT_DEFAULT_SIZE = 12;
 export const TEXT_FONT_SIZE_PRESETS = [8, 10, 12, 14, 18, 24, 36];
 
 /**
+ * v2.0.13 §8.2🟡: フォント一覧 (システムフォント、β.80) から「MS明朝」を
+ * 選んだ場合、fontId は preset トークン "mincho" でなくフォント名文字列
+ * ("MS 明朝" / "MS Mincho" / "ＭＳ 明朝" 等) になる。ベクターテキスト
+ * 埋め込み (印刷濃度の構造解決) は埋め込む実体が msmincho.ttc subfont0
+ * (= MS 明朝そのもの) なので、**本当に MS 明朝を指す名前に限って** preset
+ * "mincho" と同格に扱ってよい。判定は全角英数→半角・空白除去・小文字化
+ * で正規化して厳密一致。
+ *
+ * 対象外 (false のまま = ラスタ維持) にすべきもの:
+ *   - "MS P明朝" / "MS PMincho" — プロポーショナル (subfont1)。字幅が
+ *     違うので MS 明朝を埋め込むと画面と紙で行分割がズレる
+ *   - 游明朝 / Yu Mincho / ヒラギノ明朝 等の他明朝系 — 字形が別物
+ */
+export function isMsMinchoFontName(name) {
+  if (typeof name !== "string") return false;
+  const norm = name
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) =>
+      String.fromCharCode(ch.charCodeAt(0) - 0xfee0),
+    )
+    .replace(/\s+/g, "") // \s は全角スペース U+3000 も含む
+    .toLowerCase();
+  return norm === "ms明朝" || norm === "msmincho";
+}
+
+/**
  * Resolve a fontId (possibly missing or unknown) to a CSS font-family
  * stack. Falls back to the legacy `default` stack so older overlays
  * keep rendering even if a fontId gets removed in the future.

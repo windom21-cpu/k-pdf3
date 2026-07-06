@@ -25,6 +25,7 @@ import {
   applyVectorTextLayer,
 } from "../src/backend/vector-text-layer.js";
 import { vectorTextCandidate, splitVectorTextOverlays } from "../src/renderer/exporter.js";
+import { isMsMinchoFontName } from "../src/renderer/fonts.js";
 import { readFileSync } from "node:fs";
 
 const FONT_PATH = resolveMinchoFontPath();
@@ -303,15 +304,37 @@ test("vectorTextCandidate: 適格/非適格の判定表", () => {
   // getTextFontStack(undefined) = gothic で描くので、ベクター化すると
   // 画面 (gothic) と紙 (明朝) の字形が食い違う (レビュー指摘 A#1)
   assert.equal(t("form_field", { fieldKind: "text", value: "記入" }), null);
+  // §8.2🟡: フォント一覧から選んだ MS明朝系フォント名は mincho 同格
+  assert.equal(t("text", { fontId: "MS 明朝", text: "本文" }), "本文");
+  assert.equal(t("text", { fontId: "MS Mincho", text: "本文" }), "本文");
+  assert.equal(t("text", { fontId: "ＭＳ 明朝", text: "本文" }), "本文"); // 全角MS
+  assert.equal(
+    t("form_field", { fieldKind: "text", fontFace: "MS 明朝", value: "記入値" }),
+    "記入値",
+  );
   // 非適格: フォント違い / digitsHanko / 空 / 別 type / 別 fieldKind
   assert.equal(t("text", { fontId: "gothic", text: "本文" }), null);
   assert.equal(t("text", { fontId: "游明朝", text: "本文" }), null); // システムフォント名
+  // MS P明朝 はプロポーショナル (字幅違い) — MS明朝を埋め込むと行分割がズレるので除外
+  assert.equal(t("text", { fontId: "MS P明朝", text: "本文" }), null);
+  assert.equal(t("text", { fontId: "MS PMincho", text: "本文" }), null);
   assert.equal(t("text", { fontId: "mincho", digitsHanko: true, text: "12" }), null);
   assert.equal(t("text", { fontId: "mincho", text: "   " }), null);
   assert.equal(t("form_field", { fieldKind: "check", value: "on" }), null);
   assert.equal(t("form_field", { fieldKind: "text", fontFace: "gothic", value: "x" }), null);
   assert.equal(t("form_field", { fieldKind: "text", fontFace: "mincho", value: "" }), null);
   assert.equal(t("stamp", { fontId: "mincho", text: "印" }), null);
+});
+
+test("isMsMinchoFontName: MS明朝の別名だけを厳密に拾う", () => {
+  // 真: 半角/全角・空白揺れ・大文字小文字
+  for (const name of ["MS 明朝", "MS明朝", "ＭＳ 明朝", "ＭＳ明朝", "MS Mincho", "ms mincho", "MSMincho"]) {
+    assert.equal(isMsMinchoFontName(name), true, `expected true: ${name}`);
+  }
+  // 偽: プロポーショナル / 他明朝系 / preset トークン / 非文字列
+  for (const name of ["MS P明朝", "MS PMincho", "游明朝", "Yu Mincho", "ヒラギノ明朝 ProN", "明朝", "mincho", "", undefined, null]) {
+    assert.equal(isMsMinchoFontName(name), false, `expected false: ${name}`);
+  }
 });
 
 test("splitVectorTextOverlays: z-order/墨消しガード (ラスタへのフォールバック)", () => {

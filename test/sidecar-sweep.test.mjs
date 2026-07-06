@@ -8,6 +8,8 @@
 import {
   findOrphanSourceSidecars,
   sweepOrphanSourceSidecars,
+  findOrphanWalShm,
+  sweepOrphanWalShm,
 } from "../src/main/sidecar-sweep.js";
 import { mkdtempSync, writeFileSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,6 +90,46 @@ sameSet(
 // 6. Empty input → empty output.
 sameSet(findOrphanSourceSidecars([]), [], "empty dir yields no orphans");
 
+// ---- Pure predicate: findOrphanWalShm ----
+
+// 7. wal/shm whose owning .kpdf3 is MISSING → orphans (整理の消し残し).
+sameSet(
+  findOrphanWalShm([`${ID_A}.kpdf3-wal`, `${ID_A}.kpdf3-shm`]),
+  [`${ID_A}.kpdf3-wal`, `${ID_A}.kpdf3-shm`],
+  "ownerless -wal/-shm are orphans",
+);
+
+// 8. wal/shm with a live .kpdf3 → kept (live wal may hold committed data).
+sameSet(
+  findOrphanWalShm([`${ID_A}.kpdf3`, `${ID_A}.kpdf3-wal`, `${ID_A}.kpdf3-shm`]),
+  [],
+  "-wal/-shm with live sibling .kpdf3 are kept",
+);
+
+// 9. Non-companion files are never matched.
+sameSet(
+  findOrphanWalShm([
+    `${ID_A}.kpdf3`,
+    `${ID_A}.kpdf3.source.pdf`,
+    "index.db",
+    "index.db-wal", // index.db 随伴 — .kpdf3-wal ではないので対象外
+  ]),
+  [],
+  ".kpdf3 / .source.pdf / index.db(-wal) are not matched",
+);
+
+// 10. Mixed dir: A orphaned, B live.
+sameSet(
+  findOrphanWalShm([
+    `${ID_A}.kpdf3-wal`,
+    `${ID_A}.kpdf3-shm`,
+    `${ID_B}.kpdf3`,
+    `${ID_B}.kpdf3-wal`,
+  ]),
+  [`${ID_A}.kpdf3-wal`, `${ID_A}.kpdf3-shm`],
+  "only ownerless companions selected from a mixed dir",
+);
+
 // ---- IO half: sweepOrphanSourceSidecars against a real temp dir ----
 
 const dir = mkdtempSync(join(tmpdir(), "kpdf3-sweep-"));
@@ -128,6 +170,29 @@ try {
     readdirSync(dir),
     [`${ID_B}.kpdf3`, `${ID_B}.kpdf3.source.pdf`, "index.db"],
     "post-sweep dir holds only the survivors",
+  );
+
+  // ---- IO half: sweepOrphanWalShm ----
+
+  // Orphan A: wal+shm with no .kpdf3 → deleted. Live B: kept.
+  writeFileSync(join(dir, `${ID_A}.kpdf3-wal`), Buffer.alloc(1024));
+  writeFileSync(join(dir, `${ID_A}.kpdf3-shm`), Buffer.alloc(512));
+  writeFileSync(join(dir, `${ID_B}.kpdf3-wal`), Buffer.alloc(256));
+  writeFileSync(join(dir, "index.db-wal"), Buffer.from("x"));
+
+  const ws = sweepOrphanWalShm(dir);
+  ok(ws.removed === 2, `removed exactly A's wal+shm (got ${ws.removed})`);
+  ok(ws.freedBytes === 1536, `freed the orphans' bytes (got ${ws.freedBytes})`);
+  ok(!existsSync(join(dir, `${ID_A}.kpdf3-wal`)), "orphan wal A deleted");
+  ok(!existsSync(join(dir, `${ID_A}.kpdf3-shm`)), "orphan shm A deleted");
+  ok(existsSync(join(dir, `${ID_B}.kpdf3-wal`)), "live wal B kept (sibling present)");
+  ok(existsSync(join(dir, "index.db-wal")), "index.db-wal untouched");
+
+  // Idempotent + missing dir graceful.
+  ok(sweepOrphanWalShm(dir).removed === 0, "second wal/shm sweep is a no-op");
+  ok(
+    sweepOrphanWalShm(join(dir, "does-not-exist")).removed === 0,
+    "missing dir wal/shm sweep is a no-op",
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });
