@@ -1990,7 +1990,6 @@ async function drawOverlay(ctx, ov, zoom, monoOverlays = false) {
     const padX = 5 * zoom;
     const padY = 1 * zoom;
     const lineHeight = fontSize * (props.lineHeight ?? 1);
-    const lines = wrapCanvasText(ctx, text, w - padX * 2);
     // β73: 吹き出し内テキストもテキスト overlay と同じく bold OFF 時の
     // stroke を opt-out (詳細は drawOverlay text 経路の β73 コメント参照)。
     // β76: 明朝/serif のときだけ極細 stroke (テキスト overlay と同じ規則)。
@@ -2000,8 +1999,37 @@ async function drawOverlay(ctx, ov, zoom, monoOverlays = false) {
       stroke: !!props.bold || _hairline,
       hairline: _hairline,
     };
-    for (let i = 0; i < lines.length; i++) {
-      paintGlyphRun(ctx, lines[i], x + padX, y + padY + i * lineHeight, color, fontSize, boldOpt);
+    // ページ回転で carry された content rotation (props.rotation) を本文にも
+    // 適用する。viewer の rotated callout (naturalW/H で流し込み → 中心
+    // anchor で回転) と text overlay の rot 分岐に合わせる — これが無いと
+    // 回転ページの吹き出しだけ「枠は回るのに本文が直立のまま新しい枠幅で
+    // 折り返し」て、印刷 / 書き出し / サムネで枠からはみ出す。
+    const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+    if (rot === 0) {
+      const lines = wrapCanvasText(ctx, text, w - padX * 2);
+      for (let i = 0; i < lines.length; i++) {
+        paintGlyphRun(ctx, lines[i], x + padX, y + padY + i * lineHeight, color, fontSize, boldOpt);
+      }
+    } else {
+      const isVert = rot === 90 || rot === 270;
+      const naturalW = isVert ? h : w;
+      const naturalH = isVert ? w : h;
+      ctx.save();
+      ctx.translate(x + w / 2, y + h / 2);
+      ctx.rotate((rot * Math.PI) / 180);
+      const lines = wrapCanvasText(ctx, text, naturalW - padX * 2);
+      for (let i = 0; i < lines.length; i++) {
+        paintGlyphRun(
+          ctx,
+          lines[i],
+          -naturalW / 2 + padX,
+          -naturalH / 2 + padY + i * lineHeight,
+          color,
+          fontSize,
+          boldOpt,
+        );
+      }
+      ctx.restore();
     }
     return;
   }
