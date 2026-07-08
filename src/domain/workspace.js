@@ -205,6 +205,15 @@ export class Workspace {
     const meta = getSourcePdfMeta(this.db);
     if (meta?.externalPath) {
       if (!existsSync(meta.externalPath)) {
+        // external_path は import 時の絶対パスなので、userData を移動した
+        // 環境 (Mac 移行 / PC 買い替え / userData 引越し) では stale になる。
+        // サイドカーの命名規約は「.kpdf3 の隣の <workspace>.source.pdf」
+        // (importPdfBytes / sidecar-sweep / workspace-cleanup 共通) なので、
+        // 現在の workspace パスから導出した隣接ファイルを試す。
+        const sibling = `${this.filePath}.source.pdf`;
+        if (sibling !== meta.externalPath && existsSync(sibling)) {
+          return readFileSync(sibling);
+        }
         // サイドカー消失 (ユーザが手で削除等)。null を返して上層で
         // 「ソース欠落」のフォールバック (typical: 早期エラー表示)。
         return null;

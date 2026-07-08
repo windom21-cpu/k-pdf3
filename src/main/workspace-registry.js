@@ -96,7 +96,22 @@ export function findWorkspaceByFingerprint(fingerprint) {
       WHERE fingerprint = ?
     `)
     .get(fingerprint);
-  return row ?? null;
+  if (!row) return null;
+  // workspace_path は登録時の絶対パスなので、userData を移動した環境
+  // (Mac 移行 / PC 買い替え / userData 引越し) では stale になり、呼び出し側の
+  // existsSync 不成立 → 新規 workspace 作成 = 既存 overlay が「消えた」ように
+  // 見える。workspace ファイルの置き場所は「現在の workspacesDir/{id}.kpdf3」
+  // が規約なので、stale のときだけ id 導出パスを試し、見つかれば行を自己修復。
+  if (!existsSync(row.workspacePath)) {
+    const derived = workspacePathFor(row.workspaceId);
+    if (derived !== row.workspacePath && existsSync(derived)) {
+      getDb()
+        .prepare("UPDATE pdf_workspaces SET workspace_path = ? WHERE fingerprint = ?")
+        .run(derived, fingerprint);
+      row.workspacePath = derived;
+    }
+  }
+  return row;
 }
 
 /**
