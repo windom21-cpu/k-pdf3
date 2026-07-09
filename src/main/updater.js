@@ -27,7 +27,7 @@
 //                                     caches get removed)
 //   - kpdf3:updater-install        quit & install the downloaded update
 
-import { app, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import electronUpdater from "electron-updater";
 
 const { autoUpdater, CancellationToken } = electronUpdater;
@@ -156,6 +156,18 @@ function wireIpc() {
 
   ipcMain.handle("kpdf3:updater-install", () => {
     if (shouldSkip()) return { skipped: true };
+    // Linux (deb): electron-updater applies the update with a synchronous
+    // pkexec/dpkg spawn inside quitAndInstall, freezing the main process
+    // for 10+ seconds. If windows are still alive during that freeze,
+    // GNOME flags them 「応答していません」 and offers 強制終了 (2026-07-10
+    // 実機で確認)。窓を先に destroy してから適用すれば固まる対象が無く
+    // ダイアログは出ない。Install 自体は別プロセスで走るので影響なし。
+    // Windows の実績経路 (β.132〜139 実機検証済) は不変。
+    if (process.platform === "linux") {
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { w.destroy(); } catch { /* already gone */ }
+      }
+    }
     // isSilent=false: show the installer UI on Windows so the user can
     // confirm the install path. isForceRunAfter=true: relaunch K-PDF3
     // once the new version is in place.
