@@ -202,6 +202,11 @@
 
 **タイミング**: HANDOVER 大幅更新は明示依頼時のみのルールがあるため、**stable v2.0.12 昇格時の HANDOVER 更新依頼と同時**が効率的 (昇格時はどのみち version/releaseType/ADR-0026 状態の書き換えが要る)。
 
+✅ **完了 (2026-07-10、v2.0.13 stable 昇格と同時)**:
+- **乖離修正** (HANDOVER): renderer.js 行数 8,019 (実測) / §7.4 テスト表を 18 スイート 528 pass に全面更新 / §10 ファイル構成を現状ツリーに刷新 (form-fill / file-to-pdf / sidecar-sweep / session-store / pdf-repair / vector-text-layer / workspace-cleanup 系ほか反映) / §15.3 ADR 表更新 / §15.4 asset library 陳腐化記述を訂正 / §8.5 に byte-copy 運用ルール追記 (#4 の宿題)。PAT 期限は #11 で §12.1 反映済み
+- **遡及 ADR 全 9 本起草**: 0017 (画像スタンプ/asset) / 0018 (BLOB 共有不採用の記録) / 0019 (スタンプ preset 管理、0016 を吸収) / 0020 (申請書テンプレ + 下敷き印刷) / 0021 (annotation read-only proxy) / 0022 (secure export ※実装は**既定 ON** — 旧記述の「opt-in」は誤りと判明) / 0023 (画像書き出し) / 0024 (autoshape) / 0025 (パスワード復号 + 平文化警告 + 再暗号化方針)
+- **起草時に見つかった軽微な齟齬 (未対応・低優先)**: (a) renderer.js:6245 のヘルプ文言が「上書き保存のチェックで」と言うが確定上書きダイアログに secure チェックは無い (文言直しのみ) (b) annotation proxy の PROXIED_TYPES は実際は 16 種 (文書は「15 種別」)
+
 ---
 
 ### #8 renderer.js の S6 リファクタ (再肥大の解消)
