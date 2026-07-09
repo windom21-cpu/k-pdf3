@@ -212,6 +212,7 @@ const shapePalettePopup = $("shape-palette-popup");
 const shapePaletteTitlebar = $("shape-palette-titlebar");
 const btnShapePaletteClose = $("shape-palette-close");
 const wsStatus = $("ws-status");
+const docStateField = $("doc-state");
 const viewerContainer = $("viewer-container");
 const sidebar = $("sidebar");
 const bookmarkTree = $("bookmark-tree");
@@ -4332,15 +4333,46 @@ async function actionRestoreEditableMaster() {
  */
 async function refreshRestoreMasterUI() {
   let hasMaster = false;
+  let masterMissing = false;
   try {
     if (isOpen) {
       const info = await kpdf3.getEditableMasterInfo();
       hasMaster = !!info?.hasEditableMaster;
+      masterMissing = !!info?.masterMissing;
     }
   } catch { /* best-effort — leave disabled on error */ }
   if (btnRestoreMaster) btnRestoreMaster.disabled = !hasMaster;
   try { menuBar.setEnabled({ "restore-editable-master": hasMaster }); }
   catch { /* menuBar not ready during early boot */ }
+  refreshDocStateField(hasMaster, masterMissing);
+}
+
+/**
+ * REVIEW-2026-07 #9: 確定版 / 下書きのステータスバー常時表示。開いた
+ * 瞬間の案内 (wsStatus) は次の操作メッセージで流れてしまうため、タブを
+ * 多数開く業務でも「今どちらを触っているか」を固定フィールドで示す。
+ * 表示のみの追加で保存コアには触らない。
+ */
+function refreshDocStateField(hasMaster, masterMissing) {
+  if (!docStateField) return;
+  if (!isOpen) {
+    docStateField.hidden = true;
+    return;
+  }
+  docStateField.hidden = false;
+  if (hasMaster) {
+    docStateField.textContent = "確定版〔戻せます〕";
+    docStateField.title =
+      "このファイルは確定保存された確定版です。［編集に戻す］でテキスト等をまた動かせます";
+  } else if (masterMissing) {
+    docStateField.textContent = "確定版〔編集用データなし〕";
+    docStateField.title =
+      "確定版ですが、編集可能な状態がこの PC に見つかりません（別の PC で確定した可能性があります）";
+  } else {
+    docStateField.textContent = "下書き";
+    docStateField.title =
+      "編集中の状態です。他のアプリにも内容を反映するには上書き保存（確定）します";
+  }
 }
 
 function actionUndo() {
@@ -4402,10 +4434,25 @@ function transformArrowForRotation(arrowDx, arrowDy, delta, w_old, h_old) {
   return { arrowDx, arrowDy };
 }
 
+// 戻り値: 回転を実行した (またはエラー表示済み) なら true、対象ページが
+// 見つからず黙って skip したときだけ false。2026-07-06 の「先頭に Word を
+// 差し込んだ同一セッションで一括回転が無反応」報告 (再現不能) は、この
+// 無言 skip が最有力仮説 — 次に遭遇した瞬間にどの pageNo が外れたかを
+// 確定できるよう、skip を可視化する。既存の回転経路自体は不変。
 async function rotatePageBy(pageNo, delta) {
-  if (!isOpen || !pageNo) return;
+  if (!isOpen || !pageNo) {
+    console.warn("[rotate] skipped — not open or bad pageNo", { isOpen, pageNo });
+    return false;
+  }
   const row = viewer._pages?.find((p) => p.pageNo === pageNo);
-  if (!row) return;
+  if (!row) {
+    console.warn(`[rotate] p.${pageNo} not in viewer._pages — skipped`, {
+      viewerPages: viewer._pages?.map((p) => p.pageNo),
+    });
+    wsStatus.textContent =
+      `p.${pageNo} が見つからず回転をスキップしました — ファイルを閉じて開き直すと回転できる可能性があります`;
+    return false;
+  }
   // Drop the split-view's thumb cache for this page so the next split
   // refresh renders the new orientation. The sidebar's thumbCache is
   // wiped wholesale by clearThumbs() inside refreshViewer → rebuildThumbs
@@ -4487,6 +4534,9 @@ async function rotatePageBy(pageNo, delta) {
     console.error("[rotate] failed", err);
     wsStatus.textContent = `回転失敗: ${err.message ?? err}`;
   }
+  // catch 側も true: エラーは上で表示済みなので「見つからず skip」とは
+  // 区別する (rotateCurrentPage の集計メッセージで上書きさせない)。
+  return true;
 }
 /**
  * Resolve the rotation target(s) for toolbar / menu rotate buttons.
@@ -4527,8 +4577,17 @@ function resolveRotationTargets() {
 
 async function rotateCurrentPage(delta) {
   const targets = resolveRotationTargets();
+  const skipped = [];
   for (const pageNo of targets) {
-    await rotatePageBy(pageNo, delta);
+    const ok = await rotatePageBy(pageNo, delta);
+    if (ok === false) skipped.push(pageNo);
+  }
+  // 一括回転で 1 ページでも無言 skip があれば集計して見せる (単発の
+  // skip メッセージは成功ページの「p.X を N° 回転」で流れるため)。
+  if (skipped.length > 0) {
+    wsStatus.textContent =
+      `${skipped.map((n) => `p.${n}`).join(", ")} が見つからず回転をスキップしました`
+      + ` (${skipped.length}/${targets.length} 件) — ファイルを閉じて開き直すと回転できる可能性があります`;
   }
 }
 function actionRotateLeft() { return rotateCurrentPage(-90); }

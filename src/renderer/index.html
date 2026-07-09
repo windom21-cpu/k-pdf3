@@ -1406,6 +1406,10 @@
 
   <div class="status-bar">
     <p class="status-bar-field" id="ws-status">PDF を「開く」で読み込みます</p>
+    <!-- REVIEW-2026-07 #9: 確定版 / 下書きの常時表示。開いた瞬間の一言
+         (ws-status) は次の操作で流れるため、タブを多数開く業務で「今
+         どちらを触っているか」をいつでも確認できる固定フィールド。 -->
+    <p class="status-bar-field" id="doc-state" hidden></p>
     <div class="status-bar-field status-bar-page" id="page-indicator">
       <button id="page-prev-btn" type="button" title="前のページへ (PageUp)" disabled>◀</button>
       <input type="number" id="page-num-input" min="1" title="ページ番号 (Enter で移動)" disabled />

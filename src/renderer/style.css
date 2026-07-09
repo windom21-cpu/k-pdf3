@@ -1827,6 +1827,12 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
 .status-bar {
   flex: 0 0 auto;
 }
+/* REVIEW-2026-07 #9: 確定版 / 下書きの常時表示は内容幅で固定し、
+ * 可変幅は左の ws-status に譲る (98.css の field は等分に伸びるため)。 */
+#doc-state {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .status-bar-page {
   flex: 0 0 auto !important;
   min-width: 90px;
