@@ -27,6 +27,7 @@ import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
 import { applyVectorTextLayer, probeVectorText } from "../backend/vector-text-layer.js";
 import { repairPdfBytes } from "../backend/pdf-repair.js";
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
+import { cupsAvailable, cupsPrintPdf, cupsCancelInFlight } from "./print-cups.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
   closeRegistry,
@@ -3528,6 +3529,16 @@ ipcMain.handle("kpdf3:list-print-engines", async () => {
   if (sumatraPath()) {
     out.push({ id: "sumatra", displayName: "SumatraPDF (内蔵)" });
   }
+  // CUPS 直送 (Mac/Linux、§15.6 Step 1)。非 Win では Reader/Sumatra が
+  // 無いのでこれが先頭 = recommended になる
+  if (cupsAvailable()) {
+    out.push({
+      id: "cups",
+      displayName: process.platform === "darwin"
+        ? "macOS システム印刷 (CUPS 直送)"
+        : "システム印刷 (CUPS 直送)",
+    });
+  }
   // Chromium silent (Electron 標準、常に利用可能)
   out.push({ id: "chromium", displayName: "Chromium silent print" });
 
@@ -3565,6 +3576,9 @@ function cancelInFlightPrint() {
     try { _activePdfReaderProcess.kill(); } catch { /* ignore */ }
     _activePdfReaderProcess = null;
   }
+  // CUPS 直送 (Mac/Linux): 投入前は lp を kill、投入済みは cancel <id> で
+  // キューから取り消し (スプール後でも間に合えば止まる)。
+  try { cupsCancelInFlight(); } catch { /* ignore */ }
   // Chromium path (FAX / byte-copy): destroying printWindow tears down
   // the offscreen renderer that owns webContents.print's OS dialog.
   // For a FAX that's still in the driver-side fax-number dialog this
@@ -3677,6 +3691,9 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     // β70: ユーザが印刷ダイアログで選択した印刷エンジンの id 上書き。
     // null/undefined なら main の自動検出 (PDF Reader > Sumatra > Chromium)。
     engineOverride = null,
+    // 2026-07-10: ダイアログの「実寸 / 用紙に合わせる」radio。CUPS 経路
+    // のみ解釈 (fit → -o fit-to-page)。Sumatra/Chromium は従来通り無視。
+    sizing = null,
   } = payload ?? {};
   if (!deviceName) throw new Error("print-pdf-silent: deviceName missing");
 
@@ -3707,12 +3724,18 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   const sumatraExe = sumatraPath();
   let forceSumatra = false;
   let forceChromium = false;
+  let forceCups = false;
   if (engineOverride === "sumatra") forceSumatra = true;
   else if (engineOverride === "chromium") forceChromium = true;
+  else if (engineOverride === "cups") forceCups = true;
   const canSumatra =
     process.platform === "win32"
     && !isFax
     && sumatraExe !== null;
+  // 2026-07-10 (§15.6 Step 1): 非 Win の第一選択 = CUPS 直送。PDF を
+  // ネイティブ処理するので実寸 100% + ベクター品質。FAX は宛先入力
+  // ダイアログが必要なので対象外 (従来の Chromium silent:false へ)。
+  const canCups = !isFax && cupsAvailable();
   // β48 J4b: push the user-modified DEVMODE as per-user default for the
   // Sumatra / Chromium fallback paths.
   // β61: FAX のときは applyCleanFaxDevmode を呼んで dmDriverExtra (driver-
@@ -3731,12 +3754,28 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   let usedEngine = null;
   try {
     // 第一選択 = Sumatra (Win + 非 FAX + Sumatra 同梱あり、forceChromium
-    // 時はスキップ)
-    if (canSumatra && !forceChromium) {
+    // / forceCups 時はスキップ)
+    if (canSumatra && !forceChromium && !forceCups) {
       await sumatraPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color });
       usedEngine = "sumatra";
     }
-    // 最終 = Chromium silent / silent:false (FAX、非 Win、Sumatra 不在、
+    // 非 Win の第一選択 = CUPS 直送 (forceChromium 時はスキップ)。
+    // landscape は渡さない — PDF ページ自体が向きを持ち、orientation を
+    // 重ねると回転二重がけになる (print-cups.js 冒頭の設計判断参照)。
+    if (!usedEngine && canCups && !forceChromium) {
+      const first = Array.isArray(pages) && pages.length > 0 ? pages[0] : null;
+      await cupsPrintPdf(tempPath, {
+        deviceName,
+        copies,
+        duplex,
+        color,
+        sizing,
+        widthPt: first?.widthPt,
+        heightPt: first?.heightPt,
+      });
+      usedEngine = "cups";
+    }
+    // 最終 = Chromium silent / silent:false (FAX、非 Win で CUPS 不在、
     //                                       force chromium のいずれか)
     if (!usedEngine) {
       // β.91: Chromium silent の auto-fit を抑止するため pageSize を

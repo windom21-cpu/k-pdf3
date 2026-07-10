@@ -695,6 +695,9 @@ export async function actionPrint() {
       // β70: ユーザ選択 or 永続化された印刷エンジン (空文字なら main の
       // 自動検出に任せる)
       engineOverride: printEngineSelect?.value || null,
+      // 2026-07-10: 「実寸 / 用紙に合わせる」radio。CUPS 直送 (Mac/Linux)
+      // のみ解釈、Sumatra/Chromium は従来通り無視する。
+      sizing: choice.sizing,
     });
     if (printCancelled) return;
     hideBusy();
