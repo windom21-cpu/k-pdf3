@@ -28,7 +28,7 @@ import { applyVectorTextLayer, probeVectorText } from "../backend/vector-text-la
 import { repairPdfBytes } from "../backend/pdf-repair.js";
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
 import { cupsAvailable, cupsPrintPdf, cupsCancelInFlight } from "./print-cups.js";
-import { listMacPrintPresets, resolveMacPresetOptions } from "./print-presets-mac.js";
+import { listMacPrintPresets, resolveMacPresetOptions, monoPpdOptionsFor, mergeMonoIntoPpdOptions } from "./print-presets-mac.js";
 import { redactSourceBytes } from "./redact-source.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
@@ -3837,6 +3837,14 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
         if (!ppdOptions) {
           throw new Error(`印刷プリセット「${presetName}」が見つかりません。ダイアログを開き直して選び直してください`);
         }
+      }
+      // ダイアログの「白黒」: IPP print-color-mode (buildLpArgs が渡す) に
+      // 加えて、PPD が広告する白黒オプション (Apeos なら ColorModel=Gray)
+      // を併送する — ベンダードライバは PPD 側しか見ないことがあるため。
+      // プリセットがカラー系キーを持っていても明示の白黒が勝つ。
+      if (color === "mono") {
+        const mono = await monoPpdOptionsFor(deviceName);
+        if (mono) ppdOptions = mergeMonoIntoPpdOptions(ppdOptions, mono);
       }
       await cupsPrintPdf(tempPath, {
         deviceName,

@@ -969,6 +969,13 @@
               <label for="print-preset">プリセット:</label>
               <select id="print-preset"></select>
             </div>
+            <div class="print-row" id="print-color-row" hidden>
+              <label>カラー:</label>
+              <input type="radio" id="print-color-color" name="print-color" value="color" checked />
+              <label for="print-color-color">カラー</label>
+              <input type="radio" id="print-color-mono" name="print-color" value="mono" />
+              <label for="print-color-mono">白黒</label>
+            </div>
             <div class="print-row">
               <label for="print-copies">部数:</label>
               <input type="number" id="print-copies" value="1" min="1" max="99" />

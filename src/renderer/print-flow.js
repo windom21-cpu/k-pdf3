@@ -112,6 +112,15 @@ printEngineSelect?.addEventListener("change", () => {
 // 誤送信を招いた教訓と同じ理由で、印刷のたびに明示させる)。
 const printPresetRow = $("print-preset-row");
 const printPresetSelect = $("print-preset");
+// カラー/白黒 (2026-07-10 プリセット対応の追補): Mac/Linux の CUPS 直送
+// では Windows の「プロパティ...」(DocumentPropertiesW) に相当する
+// カラー選択が無かった。プリセットはカラー/白黒を含まないことが多い
+// (システムダイアログでは「プリセット + 白黒チェック」の二段構え) ので、
+// 同じ形をこのダイアログに置く。CUPS エンジン選択中のみ表示、毎回
+// 「カラー」(プリンタ既定) にリセット — Windows 経路には一切干渉しない。
+const printColorRow = $("print-color-row");
+const printColorColor = $("print-color-color");
+const printColorMono = $("print-color-mono");
 let _presetFetchToken = 0;
 async function refreshPrintPresets() {
   if (!printPresetRow || !printPresetSelect) return;
@@ -119,6 +128,8 @@ async function refreshPrintPresets() {
   printPresetRow.hidden = true;
   printPresetSelect.innerHTML = "";
   const deviceName = printPrinterSelect.value;
+  // カラー行の表示可否はプリセットの有無と無関係 (CUPS エンジンなら常時)
+  if (printColorRow) printColorRow.hidden = printEngineSelect?.value !== "cups";
   if (printEngineSelect?.value !== "cups" || !deviceName) return;
   if (typeof kpdf3.listPrintPresets !== "function") return;
   let presets = [];
@@ -258,6 +269,8 @@ function showPrintDialog(printers, pages, currentPageNo, preselected = null) {
   printCopiesInput.value = "1";
   printSizeActual.checked = true;
   printOrientPortrait.checked = true;
+  // カラー/白黒は毎回「カラー」(プリンタ既定) に戻す (毎回明示選択の方針)
+  if (printColorColor) printColorColor.checked = true;
 
   // When the caller hands in a pre-selected page set (e.g. split-view
   // multi-selection at 印刷 time), seed the custom-range input with
@@ -421,6 +434,11 @@ printConfirmBtn.addEventListener("click", () => {
     // のときは必ず null
     preset: (printPresetRow && !printPresetRow.hidden && printPresetSelect.value)
       ? printPresetSelect.value
+      : null,
+    // 2026-07-10: カラー/白黒 (CUPS 経路のみ)。"mono" 明示のときだけ渡し、
+    // 「カラー」はプリンタ既定に任せる (null)
+    colorMode: (printColorRow && !printColorRow.hidden && printColorMono?.checked)
+      ? "mono"
       : null,
   });
 });
@@ -740,9 +758,12 @@ export async function actionPrint() {
       // β46 J3: driver-side picks (duplex / tray / color) captured from
       // DocumentPropertiesW. Main forwards to Sumatra's -print-settings
       // so the user's プロパティ choices actually take effect.
+      // 2026-07-10: color はダイアログの「白黒」radio (CUPS 経路、Mac/
+      // Linux) が明示されていればそちらが優先。Windows では radio 行が
+      // 非表示 = colorMode は常に null なので従来の driverColor のまま。
       duplex: printState.driverDuplex,
       bin: printState.driverBin,
-      color: printState.driverColor,
+      color: choice.colorMode ?? printState.driverColor,
       // β70: ユーザ選択 or 永続化された印刷エンジン (空文字なら main の
       // 自動検出に任せる)
       engineOverride: printEngineSelect?.value || null,
@@ -755,7 +776,7 @@ export async function actionPrint() {
     });
     if (printCancelled) return;
     hideBusy();
-    _wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部 / ${choice.pageNos.length} ページ${choice.preset ? ` / プリセット「${choice.preset}」` : ""}）`;
+    _wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部 / ${choice.pageNos.length} ページ${choice.preset ? ` / プリセット「${choice.preset}」` : ""}${choice.colorMode === "mono" ? " / 白黒" : ""}）`;
   } catch (err) {
     hideBusy();
     if (printCancelled) return;

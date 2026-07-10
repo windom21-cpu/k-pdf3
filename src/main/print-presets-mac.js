@@ -168,3 +168,66 @@ export async function resolveMacPresetOptions(deviceName, presetName) {
   const presets = await listMacPrintPresets(deviceName);
   return presets.find((p) => p.name === presetName)?.options ?? null;
 }
+
+// ---- 白黒印刷 (2026-07-10、プリセット対応の追補) ----------------------
+//
+// macOS のプリセットはカラー/白黒を含まないことが多く (システムダイアログ
+// では「プリセット + 白黒チェック」の二段構えで指定していた)、ダイアログ側
+// にも同じ「白黒」選択が要る。IPP 標準の print-color-mode=monochrome は
+// buildLpArgs (print-cups.js) が渡すが、ベンダー PPD のドライバはそれを
+// 見ず PPD オプション (Apeos C2360 なら ColorModel=Gray) だけを解釈する
+// ことがあるため、PPD が広告する白黒系オプションを検出して併送する。
+// 両者は同じ意味なので矛盾しない。なおこの検出は plist と無関係で
+// CUPS 一般 (Mac/Linux) に効く。
+
+// PPD の白黒指定の既知パターン (キーワード → 白黒を意味する選択肢の候補、
+// 優先順)。table に無い形のドライバでは print-color-mode 単独に任せる。
+const MONO_OPTION_TABLE = [
+  { key: "ColorModel", choices: ["Gray", "Grayscale", "Mono", "Monochrome", "Black"] },
+  { key: "ColorMode", choices: ["Gray", "Grayscale", "Mono", "Monochrome", "BlackWhite"] },
+];
+
+/** choicesMap (parseLpoptionsChoices の出力) から白黒指定に使える
+ *  { Key: "Value" } を返す (pure、テスト対象)。無ければ null。 */
+export function pickMonoOption(choicesMap) {
+  if (!(choicesMap instanceof Map)) return null;
+  for (const { key, choices } of MONO_OPTION_TABLE) {
+    const advertised = choicesMap.get(key);
+    if (!advertised) continue;
+    const hit = choices.find((c) => advertised.has(c));
+    if (hit) return { [key]: hit };
+  }
+  return null;
+}
+
+/**
+ * ppdOptions (プリセット由来、null 可) に白黒指定を合成する (pure、
+ * テスト対象)。プリセットがカラー系キー (ColorModel=RGB 等) を持って
+ * いても、ユーザーがダイアログで明示した「白黒」が勝つ — 既存キーを
+ * 剥がしてから白黒を載せる。
+ */
+export function mergeMonoIntoPpdOptions(ppdOptions, monoOptions) {
+  const out = {};
+  for (const [k, v] of Object.entries(ppdOptions ?? {})) {
+    if (MONO_OPTION_TABLE.some((t) => t.key === k)) continue;
+    out[k] = v;
+  }
+  Object.assign(out, monoOptions ?? {});
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * プリンタの PPD から白黒指定オプションを検出する。見つからない /
+ * lpoptions 不在 / Windows では null (print-color-mode 単独に任せる。
+ * ここでも絶対に throw しない)。
+ */
+export async function monoPpdOptionsFor(deviceName) {
+  if (process.platform === "win32") return null;
+  const name = String(deviceName ?? "");
+  if (!name || /[/\\]|\.\./.test(name)) return null;
+  const lpoptions = LPOPTIONS_PATHS.find((p) => existsSync(p));
+  if (!lpoptions) return null;
+  const out = await _execText(lpoptions, ["-p", name, "-l"]);
+  if (!out) return null;
+  return pickMonoOption(parseLpoptionsChoices(out));
+}

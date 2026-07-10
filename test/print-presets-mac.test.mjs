@@ -13,6 +13,8 @@ import {
   extractPresets,
   parseLpoptionsChoices,
   validatePresetOptions,
+  pickMonoOption,
+  mergeMonoIntoPpdOptions,
 } from "../src/main/print-presets-mac.js";
 
 // Apeos C2360 実機 plist の JSON 変換 (実データの縮約)。Cocoa 内部キー
@@ -140,4 +142,35 @@ test("validatePresetOptions: 1 つも残らなければ null (UI に出さない
   assert.equal(validatePresetOptions({}, map), null);
   assert.equal(validatePresetOptions(null, map), null);
   assert.equal(validatePresetOptions({ Duplex: "DuplexNoTumble" }, null), null);
+});
+
+test("pickMonoOption: PPD が広告する白黒指定を検出 (Apeos = ColorModel Gray)", () => {
+  assert.deepEqual(pickMonoOption(parseLpoptionsChoices(LPOPTIONS)), { ColorModel: "Gray" });
+  // ColorMode 形のドライバ
+  assert.deepEqual(
+    pickMonoOption(parseLpoptionsChoices("ColorMode/色: Color *Monochrome")),
+    { ColorMode: "Monochrome" },
+  );
+  // 白黒系の選択肢が無い / 未知の形 → null (print-color-mode 単独に任せる)
+  assert.equal(pickMonoOption(parseLpoptionsChoices("ColorModel/Color Mode: *RGB CMYK")), null);
+  assert.equal(pickMonoOption(parseLpoptionsChoices(LPOPTIONS.split("\n").slice(0, 3).join("\n"))), null);
+  assert.equal(pickMonoOption(null), null);
+});
+
+test("mergeMonoIntoPpdOptions: プリセットのカラー系キーは明示の白黒が勝つ", () => {
+  // プリセット (トレイ・両面) + 白黒 → 単純合成
+  assert.deepEqual(
+    mergeMonoIntoPpdOptions({ InputSlot: "tray-1", Duplex: "DuplexNoTumble" }, { ColorModel: "Gray" }),
+    { InputSlot: "tray-1", Duplex: "DuplexNoTumble", ColorModel: "Gray" },
+  );
+  // プリセットが ColorModel=RGB を持っていても白黒で上書き
+  assert.deepEqual(
+    mergeMonoIntoPpdOptions({ ColorModel: "RGB", InputSlot: "tray-2" }, { ColorModel: "Gray" }),
+    { ColorModel: "Gray", InputSlot: "tray-2" },
+  );
+  // プリセット無し (null) + 白黒 → 白黒だけ
+  assert.deepEqual(mergeMonoIntoPpdOptions(null, { ColorModel: "Gray" }), { ColorModel: "Gray" });
+  // 両方無し → null
+  assert.equal(mergeMonoIntoPpdOptions(null, null), null);
+  assert.equal(mergeMonoIntoPpdOptions({ ColorMode: "Color" }, null), null);
 });
