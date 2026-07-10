@@ -171,6 +171,28 @@ export function canonicalRectToPdf(r, page) {
 }
 
 /**
+ * Convert a canonical rect (userRotation 込みの見た目座標) to mupdf の
+ * fitz 空間 (= userRotation を除き source /Rotate のみ適用した y-down
+ * 描画空間)。mupdf の PDFAnnotation.setRect / structured text bbox と
+ * 同じ空間であることは 2026-07-10 に /Rotate 0/90/180/270 の全回転で
+ * 実測検証済 (真の墨消し v2 の redaction rect 変換に使用)。
+ *
+ * 実装は既存 2 変換の合成 (canonical → PDF native → userRotation=0 の
+ * canonical)。cropX/cropY は往復で相殺されるので 0 のままでよい。
+ *
+ * @param {Rect} r    canonical { x, y, w, h }
+ * @param {PageBox} page
+ * @returns {Rect}    fitz 空間 { x, y, w, h } (top-left origin)
+ */
+export function canonicalRectToFitz(r, page) {
+  const p = canonicalRectToPdf(r, page);
+  return pdfRectToCanonical(
+    [p.x, p.y, p.x + p.w, p.y + p.h],
+    { ...page, userRotation: 0 },
+  );
+}
+
+/**
  * Convert a PDF native rect ([x0, y0, x1, y1], bottom-left origin) to
  * canonical (top-left origin, post-rotation user view).
  *

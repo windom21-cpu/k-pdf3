@@ -28,6 +28,7 @@ import { applyVectorTextLayer, probeVectorText } from "../backend/vector-text-la
 import { repairPdfBytes } from "../backend/pdf-repair.js";
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
 import { cupsAvailable, cupsPrintPdf, cupsCancelInFlight } from "./print-cups.js";
+import { redactSourceBytes } from "./redact-source.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
   closeRegistry,
@@ -2137,6 +2138,32 @@ ipcMain.handle("kpdf3:pick-export-pdf", async () => {
  * @param {Array<{ pageNo:number, png:Uint8Array, widthPt:number, heightPt:number }>} pages
  * @returns {Buffer}
  */
+// 2026-07-10 真の墨消し v2: renderer の composePagesForExport が書き出し/
+// 印刷の直前に呼ぶ。source PDF へ mupdf applyRedactions (redact-source.js)
+// を適用した結果をメモリに保持し token を返す。直後の assembleHybridPdf が
+// token 照合のうえ source をこのバイト列に差し替える。失敗は { ok:false }
+// で返し、renderer は従来の 900dpi ラスタ方式へフォールバックする
+// (= 安全性は β.85 方式で担保されるので、この経路の失敗は品質劣化のみ)。
+let _pendingRedactedSource = null; // { token: number, bytes: Uint8Array } | null
+let _redactTokenCounter = 0;
+
+ipcMain.handle("kpdf3:prepare-redacted-source", async (_e, pageRedactions) => {
+  if (!activeWorkspace) return { ok: false, reason: "no active workspace" };
+  const src = activeWorkspace.getSourceBytes();
+  if (!src) return { ok: false, reason: "no source bytes" };
+  try {
+    const bytes = redactSourceBytes(src, pageRedactions);
+    _pendingRedactedSource = { token: ++_redactTokenCounter, bytes };
+    return { ok: true, token: _pendingRedactedSource.token };
+  } catch (err) {
+    console.warn(
+      "[redact] vector redaction failed — renderer falls back to 900dpi raster:",
+      err?.message ?? err,
+    );
+    return { ok: false, reason: String(err?.message ?? err) };
+  }
+});
+
 /**
  * Hybrid PDF assembly. Each page is one of:
  *
@@ -2173,6 +2200,22 @@ ipcMain.handle("kpdf3:pick-export-pdf", async () => {
 // で呼び出す経路を第一選択にし、Sumatra は fallback として温存する
 // 三段構造に切替 (C アプローチ採用)。
 async function assembleHybridPdf(pages, sourceBytes) {
+  // 2026-07-10 真の墨消し v2: redactionToken を持つページがあれば、
+  // kpdf3:prepare-redacted-source が事前に作った「墨消し適用済み source」
+  // に差し替えてから組み立てる。token 不一致/紛失は **必ず throw** —
+  // 見た目の黒塗り (overlay PNG) だけ乗って中身が未削除の PDF を静かに
+  // 出すのは法律文書で最悪の事故なので、握りつぶし禁止 (vectorTexts の
+  // 方針と同じ)。redaction の無い従来ページは 1 バイトも挙動不変。
+  const redactionToken = pages.find((p) => p.redactionToken != null)?.redactionToken;
+  if (redactionToken != null) {
+    if (!_pendingRedactedSource || _pendingRedactedSource.token !== redactionToken) {
+      throw new Error(
+        "assembleHybridPdf: redacted source missing/stale — " +
+        "墨消し未適用のまま出力するのを防ぐため中断しました。もう一度実行してください",
+      );
+    }
+    sourceBytes = _pendingRedactedSource.bytes;
+  }
   let bytes;
   try {
     bytes = await _assembleHybridPdfOnce(pages, sourceBytes, false);

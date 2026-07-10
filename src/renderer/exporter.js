@@ -20,7 +20,7 @@
 // limits (~7440×10530 px for A4) and PNG output stays under a few MB
 // per page on text-heavy content.
 
-import { canonicalPageSize } from "../domain/coord.js";
+import { canonicalPageSize, canonicalRectToFitz } from "../domain/coord.js";
 import {
   getTextFontStack,
   getStampFontDefaults,
@@ -1124,6 +1124,55 @@ export async function composePagesForExport({
     }
   }
 
+  // 2026-07-10 真の墨消し v2: source ページの redaction は、可能なら
+  // 「ページ全面 900dpi ラスタ (β.85)」ではなく mupdf applyRedactions に
+  // よる物理削除 + ベクター維持で行う。ここで対象ページの redaction 矩形
+  // を fitz 空間に変換して main へ送り、成功したら redactionToken を得る。
+  // token を得たページは通常の overlay 戦略に落ち、main が組み立て時に
+  // 墨消し適用済み source へ差し替える (assembleHybridPdf 冒頭)。
+  // 失敗 (ok:false / IPC throw) は従来の full ラスタへフォールバック —
+  // 安全性はどちらの経路でも担保される。synthetic / external ページは
+  // 従来通り full ラスタのまま (対象は source PDF ページのみ)。
+  let redactionToken = null;
+  if (rasterRedactionPages && !overlayOnly) {
+    const pageRedactions = [];
+    for (const row of pages) {
+      if (row.isSynthetic || row.pageNo < 0) continue;
+      const redOvs = projectStore
+        .getPageOverlays(row.pageNo)
+        .filter((ov) => ov.type === "redaction");
+      if (redOvs.length === 0) continue;
+      const pageBox = {
+        mediaX: 0, mediaY: 0, mediaW: 0, mediaH: 0,
+        cropX: 0, cropY: 0,
+        cropW: row.cropW, cropH: row.cropH,
+        rotation: row.rotation ?? 0,
+        userRotation: row.userRotation ?? 0,
+      };
+      pageRedactions.push({
+        sourceIdx: row.pageNo - 1,
+        rects: redOvs.map((ov) =>
+          canonicalRectToFitz({ x: ov.x, y: ov.y, w: ov.w, h: ov.h }, pageBox),
+        ),
+      });
+    }
+    const prepare = (typeof window !== "undefined")
+      ? window.kpdf3?.prepareRedactedSource
+      : null;
+    if (pageRedactions.length > 0 && typeof prepare === "function") {
+      try {
+        const r = await prepare(pageRedactions);
+        if (r?.ok && r.token != null) {
+          redactionToken = r.token;
+        } else {
+          console.warn("[export] vector redaction unavailable — raster fallback:", r?.reason);
+        }
+      } catch (err) {
+        console.warn("[export] prepare-redacted-source failed — raster fallback:", err);
+      }
+    }
+  }
+
   const total = pages.length;
   // β.124: ページごとの処理 (overlay 合成 + PNG/JPEG エンコード + 場合に
   // よっては renderPage IPC) を 3 並列ワーカープールで処理。out は事前
@@ -1182,6 +1231,14 @@ export async function composePagesForExport({
     const hasRedactionOverlay =
       rasterRedactionPages
       && pageOvs.some((ov) => ov.type === "redaction");
+    // 2026-07-10 真の墨消し v2: source ページで mupdf 物理削除の準備が
+    // 成功していれば full ラスタへ格上げせず、通常の overlay 戦略で
+    // ベクター品質を維持する (視覚的な黒/白塗りは overlay PNG が担い、
+    // 中身は main が墨消し適用済み source から copy する)。
+    const vectorRedaction =
+      hasRedactionOverlay
+      && redactionToken != null
+      && !isSynthetic;
 
     let strategy;
     if (overlayOnly) {
@@ -1198,11 +1255,13 @@ export async function composePagesForExport({
       // レンダリング差を吸収し、明朝 hairline が FAX 200dpi で痩せる
       // 問題を構造的に防ぐ。
       strategy = "full";
-    } else if (hasRedactionOverlay) {
-      // β.85: redaction を含むページは source / external / overlay の
-      // どれでも "full" (900dpi raster) に強制。synthetic は元々 full
-      // 経路なのでそのまま。これでソース PDF の vector text 層が
-      // ピクセルに焼かれ、墨消し下のテキスト抽出が構造的に不可能になる。
+    } else if (hasRedactionOverlay && !vectorRedaction) {
+      // β.85: redaction を含むページは "full" (900dpi raster) に強制。
+      // v2 では source ページで mupdf 物理削除が使えるときは格上げせず
+      // 下の overlay 戦略へ落ちる (vectorRedaction)。ここに来るのは
+      // synthetic / external ページ、または mupdf 側の準備が失敗した
+      // フォールバック時のみ。ラスタ化により墨消し下のテキスト抽出は
+      // 構造的に不可能 (v1 と同じ安全性)。
       strategy = "full";
     } else if (hasExternalSource) {
       strategy = "external"; // copyPages from stored external PDF (vector)
@@ -1333,6 +1392,10 @@ export async function composePagesForExport({
       // v2.0.13: MS 明朝 text/form_field の行単位配置命令。main の
       // applyVectorTextLayer が実テキスト (フォント埋め込み) として焼く。
       vectorTexts,
+      // 2026-07-10 真の墨消し v2: このページの redaction が mupdf 物理
+      // 削除方式で準備済みであることを main に伝える。assembleHybridPdf
+      // が token 照合のうえ source を墨消し適用済みバイト列へ差し替える。
+      redactionToken: vectorRedaction ? redactionToken : null,
     };
   };
 
