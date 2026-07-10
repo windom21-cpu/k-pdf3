@@ -90,6 +90,11 @@ export function buildLpArgs(pdfPath, opts = {}) {
   else if (opts.duplex === "simplex") args.push("-o", "sides=one-sided");
   if (opts.color === "mono") args.push("-o", "print-color-mode=monochrome");
   if (opts.sizing === "fit") args.push("-o", "fit-to-page");
+  // 常に高品質 (IPP print-quality: 3=draft 4=normal 5=high)。AirPrint 系
+  // キューは Normal だと低めの解像度でラスタ処理することがあり、墨消し
+  // ページ (900dpi 全面画像、β.85) の縮小再標本化でテキストがぼやける
+  // (2026-07-10 Apeos C2360 実機で報告)。法律文書用途は品質最優先。
+  args.push("-o", "print-quality=5");
   const media = mediaNameForSizePt(opts.widthPt, opts.heightPt);
   if (media) args.push("-o", `media=${media}`);
   args.push("--", pdfPath);

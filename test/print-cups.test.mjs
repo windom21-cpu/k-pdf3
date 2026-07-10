@@ -30,9 +30,9 @@ test("media: 未知サイズ / 不正値は null (プリンタ既定に任せる
   assert.equal(mediaNameForSizePt(undefined, undefined), null);
 });
 
-test("args: 最小構成 (プリンタ + 部数 + ファイル)", () => {
+test("args: 最小構成 (プリンタ + 部数 + 常時高品質 + ファイル)", () => {
   assert.deepEqual(buildLpArgs("/tmp/x.pdf", { deviceName: "Apeos" }), [
-    "-d", "Apeos", "-n", "1", "--", "/tmp/x.pdf",
+    "-d", "Apeos", "-n", "1", "-o", "print-quality=5", "--", "/tmp/x.pdf",
   ]);
 });
 
