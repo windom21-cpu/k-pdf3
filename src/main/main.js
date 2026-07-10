@@ -153,8 +153,10 @@ app.on("web-contents-created", (_event, contents) => {
 // 初めて render-page を呼ぶ前に installLoadFontFunction が登録済である
 // 必要があるので、whenReady の前に同期実行 (mupdf module は import 時点で
 // ready)。エラーは握りつぶす — fallback 未登録でも従来の見た目に戻るだけ。
+// configPath: userData/font-fallback.json を置くと fallback フォントを
+// 差し替えられる (app.getPath は whenReady 前でも可)。
 try {
-  registerFontFallback();
+  registerFontFallback({ configPath: join(app.getPath("userData"), "font-fallback.json") });
 } catch { /* fallback 未登録でも従来の見た目に戻るだけ */ }
 // ---- Tab registry (ADR-0015 案 B) ----------------------------------------
 //
