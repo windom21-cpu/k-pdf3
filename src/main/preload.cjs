@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   copySourcePdf:      (savePath, opts) => ipcRenderer.invoke("kpdf3:copy-source-pdf", { savePath, ...(opts ?? {}) }),
   listPrinters:       ()         => ipcRenderer.invoke("kpdf3:list-printers"),
   listPrintEngines:   ()         => ipcRenderer.invoke("kpdf3:list-print-engines"),
+  listPrintPresets:   (deviceName) => ipcRenderer.invoke("kpdf3:list-print-presets", deviceName),
   hasPdfReader:       ()         => ipcRenderer.invoke("kpdf3:has-pdf-reader"),
   listSystemFonts:    ()         => ipcRenderer.invoke("kpdf3:list-system-fonts"),
   printViaReaderDialog: (payload) => ipcRenderer.invoke("kpdf3:print-via-reader-dialog", payload),

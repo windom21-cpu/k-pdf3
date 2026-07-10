@@ -80,14 +80,27 @@ export function mediaNameForSizePt(widthPt, heightPt) {
  *   color       "mono" | "color" | null → mono のみ -o print-color-mode=
  *   sizing      "fit" | "actual" | null → fit のみ -o fit-to-page
  *   widthPt / heightPt  1 ページ目のサイズ (media 照合用、無ければ omit)
+ *   ppdOptions  { Key: "Value", ... } | null — macOS プリセット由来の
+ *               PPD オプション (print-presets-mac.js で PPD 照合済のもの)。
+ *               そのまま -o Key=Value で渡す。プリセットが Duplex を持つ
+ *               ときは IPP の sides= と二重指定になるため duplex 指定を
+ *               抑止、PageSize を持つときは同様に media= を抑止する
+ *               (同じ意味の指示を二系統で送るとドライバの解釈が不定)。
  */
 export function buildLpArgs(pdfPath, opts = {}) {
+  const ppd = (opts.ppdOptions && typeof opts.ppdOptions === "object")
+    ? opts.ppdOptions
+    : null;
+  const ppdHas = (key) => ppd != null
+    && Object.prototype.hasOwnProperty.call(ppd, key);
   const args = ["-d", String(opts.deviceName ?? "")];
   const copies = Math.max(1, Number(opts.copies) || 1);
   args.push("-n", String(copies));
-  if (opts.duplex === "long-edge") args.push("-o", "sides=two-sided-long-edge");
-  else if (opts.duplex === "short-edge") args.push("-o", "sides=two-sided-short-edge");
-  else if (opts.duplex === "simplex") args.push("-o", "sides=one-sided");
+  if (!ppdHas("Duplex")) {
+    if (opts.duplex === "long-edge") args.push("-o", "sides=two-sided-long-edge");
+    else if (opts.duplex === "short-edge") args.push("-o", "sides=two-sided-short-edge");
+    else if (opts.duplex === "simplex") args.push("-o", "sides=one-sided");
+  }
   if (opts.color === "mono") args.push("-o", "print-color-mode=monochrome");
   if (opts.sizing === "fit") args.push("-o", "fit-to-page");
   // 常に高品質 (IPP print-quality: 3=draft 4=normal 5=high)。AirPrint 系
@@ -96,7 +109,16 @@ export function buildLpArgs(pdfPath, opts = {}) {
   // (2026-07-10 Apeos C2360 実機で報告)。法律文書用途は品質最優先。
   args.push("-o", "print-quality=5");
   const media = mediaNameForSizePt(opts.widthPt, opts.heightPt);
-  if (media) args.push("-o", `media=${media}`);
+  if (media && !ppdHas("PageSize")) args.push("-o", `media=${media}`);
+  if (ppd) {
+    // print-presets-mac.js が PPD 照合済の値だけを渡してくる契約だが、
+    // 引数列を組む最終段としてここでも形を検査する (防御的二重化)。
+    for (const [k, v] of Object.entries(ppd)) {
+      if (!/^[A-Za-z][A-Za-z0-9]*$/.test(k)) continue;
+      if (typeof v !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(v)) continue;
+      args.push("-o", `${k}=${v}`);
+    }
+  }
   args.push("--", pdfPath);
   return args;
 }

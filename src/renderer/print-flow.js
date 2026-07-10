@@ -100,7 +100,51 @@ async function ensurePrintEnginesPopulated() {
 printEngineSelect?.addEventListener("change", () => {
   try { localStorage.setItem("kpdf3.printEngine", printEngineSelect.value); }
   catch { /* ignore */ }
+  refreshPrintPresets();
 });
+
+// 2026-07-10: macOS 印刷プリセット (システムダイアログで保存したもの) を
+// CUPS 直送エンジンの追加オプションとして選べるようにする。実体はプリ
+// セット plist の PPD オプション (トレイ・両面等) を lp -o に渡すだけで、
+// 品質検証済の CUPS 経路はそのまま (詳細は main/print-presets-mac.js)。
+// 欄は「CUPS エンジン選択中 + そのプリンタにプリセットあり」の時だけ表示。
+// 選択は保存しない — 毎回「(使わない)」から手動選択 (プリンタ記憶で FAX
+// 誤送信を招いた教訓と同じ理由で、印刷のたびに明示させる)。
+const printPresetRow = $("print-preset-row");
+const printPresetSelect = $("print-preset");
+let _presetFetchToken = 0;
+async function refreshPrintPresets() {
+  if (!printPresetRow || !printPresetSelect) return;
+  const token = ++_presetFetchToken;
+  printPresetRow.hidden = true;
+  printPresetSelect.innerHTML = "";
+  const deviceName = printPrinterSelect.value;
+  if (printEngineSelect?.value !== "cups" || !deviceName) return;
+  if (typeof kpdf3.listPrintPresets !== "function") return;
+  let presets = [];
+  try { presets = await kpdf3.listPrintPresets(deviceName); }
+  catch (err) {
+    console.warn("[print] listPrintPresets failed:", err);
+    return;
+  }
+  // await 中にプリンタ/エンジンが変わっていたら古い応答を捨てる
+  if (token !== _presetFetchToken) return;
+  if (!Array.isArray(presets) || presets.length === 0) return;
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "(使わない)";
+  printPresetSelect.appendChild(none);
+  for (const p of presets) {
+    if (!p?.name) continue;
+    const opt = document.createElement("option");
+    opt.value = p.name;
+    opt.textContent = p.name;
+    printPresetSelect.appendChild(opt);
+  }
+  printPresetSelect.value = "";
+  printPresetRow.hidden = false;
+}
+printPrinterSelect?.addEventListener("change", () => { refreshPrintPresets(); });
 
 const printPropertiesBtn = $("print-properties");
 const printCopiesInput = $("print-copies");
@@ -174,8 +218,10 @@ function showPrintDialog(printers, pages, currentPageNo, preselected = null) {
   printState.driverBin = null;
   printState.driverColor = null;
 
-  // β70: 印刷エンジン select を populate (初回 IPC で取得)。
-  ensurePrintEnginesPopulated();
+  // β70: 印刷エンジン select を populate (初回 IPC で取得)。完了後に
+  // プリセット欄を更新 (エンジン値が決まらないと表示可否を判定できない。
+  // printer select はこの下で同期的に populate 済みなので then 時点で有効)。
+  ensurePrintEnginesPopulated().then(() => refreshPrintPresets());
 
   // Populate printer select
   printPrinterSelect.innerHTML = "";
@@ -371,6 +417,11 @@ printConfirmBtn.addEventListener("click", () => {
     pageNos: range,
     sizing: printSizeFit.checked ? "fit" : "actual",
     landscape: printOrientLandscape.checked,
+    // 2026-07-10: macOS プリセット。欄が非表示 (非 CUPS / プリセット無し)
+    // のときは必ず null
+    preset: (printPresetRow && !printPresetRow.hidden && printPresetSelect.value)
+      ? printPresetSelect.value
+      : null,
   });
 });
 printCancelBtn.addEventListener("click", () => settlePrintDialog(null));
@@ -698,10 +749,13 @@ export async function actionPrint() {
       // 2026-07-10: 「実寸 / 用紙に合わせる」radio。CUPS 直送 (Mac/Linux)
       // のみ解釈、Sumatra/Chromium は従来通り無視する。
       sizing: choice.sizing,
+      // 2026-07-10: macOS プリセット名 (CUPS 経路のみ解釈)。main 側が
+      // 印刷時点で plist → PPD オプションに解決して lp -o に展開する。
+      presetName: choice.preset ?? null,
     });
     if (printCancelled) return;
     hideBusy();
-    _wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部 / ${choice.pageNos.length} ページ）`;
+    _wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部 / ${choice.pageNos.length} ページ${choice.preset ? ` / プリセット「${choice.preset}」` : ""}）`;
   } catch (err) {
     hideBusy();
     if (printCancelled) return;

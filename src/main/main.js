@@ -28,6 +28,7 @@ import { applyVectorTextLayer, probeVectorText } from "../backend/vector-text-la
 import { repairPdfBytes } from "../backend/pdf-repair.js";
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
 import { cupsAvailable, cupsPrintPdf, cupsCancelInFlight } from "./print-cups.js";
+import { listMacPrintPresets, resolveMacPresetOptions } from "./print-presets-mac.js";
 import { redactSourceBytes } from "./redact-source.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
@@ -3590,6 +3591,22 @@ ipcMain.handle("kpdf3:list-print-engines", async () => {
 });
 
 /**
+ * 2026-07-10: macOS 印刷プリセット (システムダイアログで保存したもの) の
+ * 一覧。CUPS 直送エンジンの追加オプションとして自前ダイアログに出す。
+ * renderer には名前だけあれば足りるが、デバッグしやすさのため PPD 照合済
+ * options も添えて返す。非 darwin / プリセット無しは [] (UI 側で欄ごと
+ * 非表示)。詳細は print-presets-mac.js 冒頭。
+ */
+ipcMain.handle("kpdf3:list-print-presets", async (_, deviceName) => {
+  try {
+    return await listMacPrintPresets(deviceName);
+  } catch (err) {
+    console.warn("[print] listMacPrintPresets failed:", err);
+    return [];
+  }
+});
+
+/**
  * Silent print of a flatten / byte-copy PDF to a chosen printer. The
  * renderer collects deviceName / copies from a custom dialog and calls
  * this; main writes the temp PDF, loads it in the singleton hidden
@@ -3737,6 +3754,10 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     // 2026-07-10: ダイアログの「実寸 / 用紙に合わせる」radio。CUPS 経路
     // のみ解釈 (fit → -o fit-to-page)。Sumatra/Chromium は従来通り無視。
     sizing = null,
+    // 2026-07-10: macOS 印刷プリセット名 (自前ダイアログの「プリセット」
+    // 欄)。CUPS 経路のみ解釈 — 印刷時点で print-presets-mac.js が plist を
+    // 再読 + PPD 照合し、-o Key=Value 群に展開する。他エンジンでは無視。
+    presetName = null,
   } = payload ?? {};
   if (!deviceName) throw new Error("print-pdf-silent: deviceName missing");
 
@@ -3807,6 +3828,16 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     // 重ねると回転二重がけになる (print-cups.js 冒頭の設計判断参照)。
     if (!usedEngine && canCups && !forceChromium) {
       const first = Array.isArray(pages) && pages.length > 0 ? pages[0] : null;
+      // macOS プリセット: 名前 → PPD オプション解決は印刷時点で行う
+      // (ダイアログ表示後にシステム設定側で消された場合、黙って素通し
+      // 印刷すると「プリセットで刷れた」と誤認させるので明示エラー)。
+      let ppdOptions = null;
+      if (presetName) {
+        ppdOptions = await resolveMacPresetOptions(deviceName, presetName);
+        if (!ppdOptions) {
+          throw new Error(`印刷プリセット「${presetName}」が見つかりません。ダイアログを開き直して選び直してください`);
+        }
+      }
       await cupsPrintPdf(tempPath, {
         deviceName,
         copies,
@@ -3815,6 +3846,7 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
         sizing,
         widthPt: first?.widthPt,
         heightPt: first?.heightPt,
+        ppdOptions,
       });
       usedEngine = "cups";
     }
