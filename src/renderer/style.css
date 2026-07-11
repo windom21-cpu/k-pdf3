@@ -286,7 +286,7 @@ body {
   padding: 1px 4px;
   font-size: 12px;
 }
-/* Hidden until the user clicks 🔍 (or hits Ctrl+F). is-open is added
+/* Hidden until the user clicks 🔍 (or hits Ctrl+Shift+F). is-open is added
  * by the renderer to slide it in. */
 .toolbar-search:not(.is-open) .menu-search-input {
   display: none;

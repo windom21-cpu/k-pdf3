@@ -387,17 +387,9 @@ initBookmarkPane({
   isOpen: () => isOpen,
   showRangePrompt: (opts) => showRangePrompt(opts),
 });
-// 白黒印刷モード state (Phase 1)。ツールバーの「白黒」トグルで切替、
-// localStorage で永続化。print-flow.js が getter 経由で読みに来る。
-let _monoPrintMode = false;
-try {
-  _monoPrintMode = localStorage.getItem("kpdf3.monoPrintMode") === "1";
-} catch { /* private mode 等 — ignore */ }
-function _syncMonoPrintBtn() {
-  if (!btnMonoPrint) return;
-  btnMonoPrint.classList.toggle("is-on", _monoPrintMode);
-  btnMonoPrint.textContent = _monoPrintMode ? "白黒 ON" : "白黒";
-}
+// 2026-07-11: 白黒印刷は sticky トグル (β.88、localStorage 永続) を廃止し、
+// ワンショットの「白黒印刷」ボタンに変更 — actionPrint({ mono: true })。
+// モードが残留して次回以降の印刷を黒化する事故を避ける (毎回明示方針)。
 
 // β.114 → β.115: 罫線抑制トグルはツールバーから撤去 (メニュー簡素化)。
 // 内部の line-suppress.js / viewer.setSuppressLines は将来「ツール」経由
@@ -412,7 +404,6 @@ initPrintFlow({
   sidebarThumbSelection: () => sidebarThumbSelection,
   isSplitMode: () => isSplitMode,
   fetchVisiblePages: () => fetchVisiblePages(),
-  isMonoPrintMode: () => _monoPrintMode,
 });
 // β.80: 記入モード (form-fill)
 initFormFill({
@@ -2611,7 +2602,6 @@ function refreshMenuState() {
     "mode-marker": placementMode === "marker",
     "mode-callout": placementMode === "callout",
     "shape-palette": placementMode === "shape",
-    "mono-print-toggle": _monoPrintMode === true,
     "quality-standard": q === "standard",
     "quality-high": q === "high",
     "quality-max": q === "max",
@@ -4867,6 +4857,12 @@ function actionToggleBookmarks() {
   updateTabBarOffset();
   // Trigger thumb rendering for items now visible.
   if (!sidebar.hidden && currentSidebarTab === "thumbs") {
+    // 閉じている間は highlightCurrentThumb の scrollIntoView がスキップ
+    // され、hidden の間にスクロール位置も先頭へ戻る。開き直した時に
+    // 現在ページへ追従し直す (switchSidebarTab の thumbs 復帰と同じ)。
+    thumbList
+      ?.querySelector(".thumb-item.is-current")
+      ?.scrollIntoView({ block: "center", behavior: "auto" });
     requestVisibleThumbRenders();
   }
 }
@@ -4908,7 +4904,17 @@ function switchSidebarTab(tab) {
   for (const p of sidebarPanes) {
     p.hidden = p.dataset.pane !== tab;
   }
-  if (tab === "thumbs") requestVisibleThumbRenders();
+  if (tab === "thumbs") {
+    // しおりタブ等の間は highlightCurrentThumb の scrollIntoView が
+    // スキップされる (pane が hidden で layout が無い) うえ、hidden の
+    // 間にリストのスクロール位置は先頭へ戻る。戻ってきた時に現在ページの
+    // サムネへ追従し直す (block:center = タブ復帰は位置の把握が目的なので
+    // 端に張り付く nearest より文脈が見える中央寄せ)。
+    thumbList
+      ?.querySelector(".thumb-item.is-current")
+      ?.scrollIntoView({ block: "center", behavior: "auto" });
+    requestVisibleThumbRenders();
+  }
 }
 
 function ensureThumbObserver() {
@@ -5589,7 +5595,10 @@ function makeSplitInsertGap(afterPageNo, orderInSlot = null, afterKey = null) {
 
 // ---- Multi-select: separate state for sidebar vs split-save thumbs ----
 function makeSelection() {
-  return { pageNos: new Set(), anchor: null };
+  // explicit: true = Ctrl/Shift の修飾キーで作られた選択 (印刷/FAX の
+  // 範囲絞り込みは 1 ページでも尊重する)。プレーンクリックはページ移動を
+  // 兼ねるため false (print-flow 側は 2 ページ以上のときだけ絞る)。
+  return { pageNos: new Set(), anchor: null, explicit: false };
 }
 const sidebarThumbSelection = makeSelection();
 const splitThumbSelection = makeSelection();
@@ -5629,6 +5638,7 @@ function handleThumbSelectionClick(state, orderedPageNos, pageNo, evt) {
     state.pageNos.add(pageNo);
     state.anchor = pageNo;
   }
+  state.explicit = !!(evt.shiftKey || evt.ctrlKey || evt.metaKey);
   refreshThumbSelectionVisuals();
 }
 
@@ -5646,8 +5656,10 @@ function refreshThumbSelectionVisuals() {
 function clearThumbSelection() {
   sidebarThumbSelection.pageNos.clear();
   sidebarThumbSelection.anchor = null;
+  sidebarThumbSelection.explicit = false;
   splitThumbSelection.pageNos.clear();
   splitThumbSelection.anchor = null;
+  splitThumbSelection.explicit = false;
   refreshThumbSelectionVisuals();
 }
 
@@ -5849,6 +5861,9 @@ async function deleteSelectedPages(state = sidebarThumbSelection) {
         state.pageNos.clear();
         state.pageNos.add(focusPageNo);
         state.anchor = focusPageNo;
+        // 削除後のフォーカス復元はナビゲーション扱い (明示選択ではない) —
+        // ここで explicit を残すと直後の印刷がこの 1 ページに絞られてしまう。
+        state.explicit = false;
         refreshThumbSelectionVisuals();
         // Only the sidebar context drives the main viewer; the split panel
         // has no current-page highlight to chase, so leave it scrolled.
@@ -6597,8 +6612,14 @@ window.addEventListener("keydown", (e) => {
     if (inText && target instanceof HTMLElement) target.blur();
     setTimeout(() => actionExport(), 0);
     return;
-  } else if (key === "f") {
-    // Ctrl+F → reveal + focus the search box (collapsed by default)
+  } else if (key === "f" && !e.shiftKey) {
+    // Ctrl+F → FAX 送信 (2026-07-11 頻用機能へ昇格。検索は Ctrl+Shift+F へ移動)
+    e.preventDefault();
+    if (inText && target instanceof HTMLElement) target.blur();
+    setTimeout(() => actionFaxSend({ via: "auto" }), 0);
+    return;
+  } else if (key === "f" && e.shiftKey) {
+    // Ctrl+Shift+F → reveal + focus the search box (collapsed by default)
     e.preventDefault();
     if (!menuSearchInput.disabled) openSearchBox();
     return;
@@ -6838,15 +6859,15 @@ const MENU_HINTS = {
   "shape-palette": "図形を配置します (直線・矢印・四角・楕円)",
   "form-palette": "申請書テンプレ用フォームフィールドを配置します",
   "page-numbers": "全ページのフッターにページ番号を一括追加します",
-  "mono-print-toggle": "ON にすると印刷時に overlay (テキスト/スタンプ/印影/形/フォーム枠) の色を黒に変換します",
-  "fax-send": "既定の FAX プリンタへ直送 (白黒強制)",
+  "mono-print-toggle": "この 1 回だけ書き込み (テキスト/スタンプ/印影/形/フォーム枠) を黒に変換して印刷します (マーカーは除外、ファイルは変わりません)",
+  "fax-send": "既定の FAX プリンタへ直送 (白黒強制) (Ctrl+F)",
   "overlay-only-print": "申請書原本に重ね印刷 (背景なし、フィールドの値だけ印字)",
   properties: "この PDF の情報を表示 (メタデータ・ページサイズ・フォント一覧など)",
   "rotate-left": "現在のページを左に 90° 回転します",
   "rotate-right": "現在のページを右に 90° 回転します",
   "page-popup": "現在のページを別ウインドウで表示します (比較用)",
   "detach-tab": "現在のタブを別ウインドウに分離します",
-  find: "PDF 内のテキストを検索します (Ctrl+F)",
+  find: "PDF 内のテキストを検索します (Ctrl+Shift+F)",
   "quality-standard": "PDF 表示解像度: 標準 (軽量)",
   "quality-high": "PDF 表示解像度: 高 (推奨)",
   "quality-max": "PDF 表示解像度: 最高 (重め)",
@@ -7084,20 +7105,10 @@ btnExport.addEventListener("click", actionExport);
 if (btnRestoreMaster) btnRestoreMaster.addEventListener("click", actionRestoreEditableMaster);
 btnPrint.addEventListener("click", actionPrint);
 // 白黒印刷 sticky toggle (Phase 1)。state と sync 関数は initPrintFlow より
-// 前に宣言済 (print-flow.js が getter で読みに来るため)、ここでは初期
-// 表示の sync と click 配線のみ行う。
-_syncMonoPrintBtn();
+// ワンショット白黒印刷: 押した 1 回だけ overlay を黒化して通常の印刷
+// フローへ (Ctrl+P と同じ経路、monoOverlays だけ ON)。
 if (btnMonoPrint) {
-  btnMonoPrint.addEventListener("click", () => {
-    _monoPrintMode = !_monoPrintMode;
-    try { localStorage.setItem("kpdf3.monoPrintMode", _monoPrintMode ? "1" : "0"); }
-    catch { /* ignore */ }
-    _syncMonoPrintBtn();
-    refreshMenuState();
-    wsStatus.textContent = _monoPrintMode
-      ? "白黒印刷モード ON — overlay の色を黒に変換して印刷します (マーカーは除外)"
-      : "白黒印刷モード OFF — 通常のカラーで印刷します";
-  });
+  btnMonoPrint.addEventListener("click", () => actionPrint({ mono: true }));
 }
 // β.115: 罫線抑制ボタンはツールバーから撤去。viewer.setSuppressLines /
 // line-suppress.js は将来のツール経由再公開のため残置。

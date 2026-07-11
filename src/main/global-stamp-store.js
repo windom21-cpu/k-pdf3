@@ -13,7 +13,7 @@
 
 import Database from "better-sqlite3";
 import { app } from "electron";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -162,6 +162,78 @@ export function migrateFromWorkspaceIfEmpty(workspace) {
     copied += 1;
   }
   return copied;
+}
+
+function stampsDbPath() {
+  return join(app.getPath("userData"), "stamps.db");
+}
+
+/** Write a consistent snapshot of the live stamps db to destPath.
+ *  better-sqlite3 の backup() はオンラインバックアップ API なので、開いた
+ *  まま (WAL 途中でも) 整合したコピーが取れる。事前 checkpoint は不要だが
+ *  コピーを単一ファイルで完結させるため念のため実施。 */
+export async function exportStampsDbTo(destPath) {
+  const db = getDb();
+  try {
+    db.pragma("wal_checkpoint(TRUNCATE)");
+  } catch {
+    /* ignore — backup() 自体は checkpoint 無しでも整合する */
+  }
+  await db.backup(destPath);
+}
+
+/** Replace the global stamps db with the file at srcPath (丸ごと置き換え)。
+ *  取り込み前に候補ファイルを readonly で開いて検証し、現行 db は
+ *  stamps.db.bak として退避する。失敗時は .bak から復元。
+ *  Returns { presetCount, backupPath }. */
+export function importStampsDbFrom(srcPath) {
+  // 1) 候補ファイルの検証 (置き換える前に読み取り専用で開く)
+  const probe = new Database(srcPath, { readonly: true, fileMustExist: true });
+  let presetCount = 0;
+  try {
+    const tables = probe
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('stamp_presets', 'assets')",
+      )
+      .all();
+    if (tables.length < 2) {
+      throw new Error(
+        "スタンプの書き出しファイルではありません (stamp_presets / assets テーブルがありません)",
+      );
+    }
+    presetCount = probe.prepare("SELECT COUNT(*) AS n FROM stamp_presets").get()?.n ?? 0;
+  } finally {
+    probe.close();
+  }
+
+  // 2) 現行 db を閉じて退避 → 置き換え → 再オープン
+  const dbPath = stampsDbPath();
+  const bakPath = `${dbPath}.bak`;
+  closeStampStore();
+  const hadExisting = existsSync(dbPath);
+  try {
+    if (hadExisting) copyFileSync(dbPath, bakPath);
+    copyFileSync(srcPath, dbPath);
+    // 旧 db の WAL/SHM が残っていると置き換え後の内容と食い違うため除去
+    // (closeStampStore が checkpoint 済みなので通常は存在しない)。
+    rmSync(`${dbPath}-wal`, { force: true });
+    rmSync(`${dbPath}-shm`, { force: true });
+    getDb(); // 再オープン + スキーマ bootstrap で開けることを確認
+  } catch (err) {
+    // 失敗したら退避から復元して従来状態に戻す
+    try {
+      if (hadExisting && existsSync(bakPath)) {
+        copyFileSync(bakPath, dbPath);
+        rmSync(`${dbPath}-wal`, { force: true });
+        rmSync(`${dbPath}-shm`, { force: true });
+      }
+      getDb();
+    } catch {
+      /* ignore — 元エラーを優先して報告 */
+    }
+    throw err;
+  }
+  return { presetCount, backupPath: hadExisting ? bakPath : null };
 }
 
 export function closeStampStore() {

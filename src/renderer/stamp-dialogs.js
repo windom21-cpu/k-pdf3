@@ -87,6 +87,75 @@ $("stamp-mgr-text")?.addEventListener("click", () => openStampRegisterText());
 $("stamp-mgr-image")?.addEventListener("click", () => openStampRegisterImage());
 $("stamp-mgr-font")?.addEventListener("click", () => openStampFontDialog());
 
+// ---- スタンプ一式の書き出し / 取り込み (別 PC への持ち運び) ------------
+// 書き出し = stamps.db の整合コピーをダウンロードフォルダへ置くだけ。
+// 取り込み = 丸ごと置き換え (マージではない)。検証・.bak 退避・失敗時の
+// 復元は main 側 (global-stamp-store.importStampsDbFrom)。
+$("stamp-mgr-export")?.addEventListener("click", async () => {
+  const btn = $("stamp-mgr-export");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const res = await kpdf3.exportStampsDb();
+    await customConfirm({
+      title: "スタンプの書き出し",
+      message:
+        `ダウンロードフォルダに書き出しました:\n${res.path}\n\n` +
+        "このファイルを別の PC に持って行き、「スタンプ管理 → 取り込み…」で選ぶと同じスタンプが使えます。",
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+  } catch (err) {
+    await customConfirm({
+      title: "スタンプの書き出し",
+      message: `書き出しに失敗しました: ${err?.message ?? err}`,
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("stamp-mgr-import")?.addEventListener("click", async () => {
+  const btn = $("stamp-mgr-import");
+  if (btn.disabled) return;
+  const path = await showFileBrowser({
+    mode: "open",
+    title: "スタンプファイルを取り込み",
+    filterDefault: "all",
+  });
+  if (!path) return;
+  const ok = await customConfirm({
+    title: "スタンプの取り込み",
+    message:
+      "取り込むと、この PC に登録されているスタンプは選んだファイルの内容に丸ごと置き換わります (合体はされません)。",
+    warning: "直前の状態は stamps.db.bak として自動バックアップされます。",
+    okLabel: "取り込む",
+  });
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    const res = await kpdf3.importStampsDb(path);
+    await populateStampMgrList(); // パレットのキャッシュも一緒に更新される
+    await customConfirm({
+      title: "スタンプの取り込み",
+      message: `${res.presetCount} 個のスタンプを取り込みました。`,
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+  } catch (err) {
+    await customConfirm({
+      title: "スタンプの取り込み",
+      message: `取り込みに失敗しました: ${err?.message ?? err}\n(スタンプは取り込み前の状態のままです)`,
+      okLabel: "OK",
+      cancelLabel: null,
+    });
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 async function populateStampMgrList() {
   stampMgrList.innerHTML = "";
   await refreshStampPresetCacheAndSelect();

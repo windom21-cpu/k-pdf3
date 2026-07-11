@@ -34,10 +34,6 @@ let _splitThumbSelection = () => ({ pageNos: new Set() });
 let _sidebarThumbSelection = () => ({ pageNos: new Set() });
 let _isSplitMode = () => false;
 let _fetchVisiblePages = async () => [];
-// Phase 1: 白黒印刷モード getter。ツールバートグルの状態を読み取り、
-// composePagesForExport に monoOverlays として渡す。書き出し経路では
-// 使わない (印刷のみ適用、Phase 1 スコープ)。
-let _isMonoPrintMode = () => false;
 
 export function initPrintFlow({
   projectStore,
@@ -48,7 +44,6 @@ export function initPrintFlow({
   sidebarThumbSelection,
   isSplitMode,
   fetchVisiblePages,
-  isMonoPrintMode,
 }) {
   _projectStore = projectStore;
   _viewer = viewer;
@@ -58,7 +53,6 @@ export function initPrintFlow({
   _sidebarThumbSelection = sidebarThumbSelection;
   _isSplitMode = isSplitMode;
   _fetchVisiblePages = fetchVisiblePages;
-  if (typeof isMonoPrintMode === "function") _isMonoPrintMode = isMonoPrintMode;
 }
 
 const printDialog = $("print-dialog");
@@ -577,8 +571,9 @@ async function actionPrintViaReader(pages, preselected, preselectedSource, opts 
         // する (マーカーは除外)。Adobe `/p` 経路でも事前 raster に焼き込ま
         // れた overlay は黒になるので、ドライバ側の color → gray 変換に
         // 頼らずカラー印影が薄くなる事故を回避できる。
-        // Phase 2: forceMono=true (FAX 経路) ではトグル状態に関わらず ON。
-        monoOverlays: forceMono || _isMonoPrintMode(),
+        // FAX (forceMono) と「白黒印刷」ボタン (opts.monoOverlays) は
+        // どちらもこの 1 回だけ黒化する。
+        monoOverlays: forceMono || !!opts.monoOverlays,
         // v2.0.13: MS 明朝 text/form_field をベクターテキストとして印刷
         // (ラスタ AA の網点化で Word より薄く出る問題の構造解決)。
         // FAX 逃がし経路 (forceMono=true) は Phase 3 の「FAX はテキストを
@@ -612,7 +607,11 @@ async function actionPrintViaReader(pages, preselected, preselectedSource, opts 
   }
 }
 
-export async function actionPrint() {
+// mono: true = 白黒印刷 (ワンショット)。ツールバー「白黒印刷」ボタン経由。
+// 旧 β.88 の sticky トグル (localStorage 永続) は 2026-07-11 に廃止 —
+// モードが残留して次回以降の印刷を黒化する事故を避け、押した 1 回だけ
+// 適用する (Mac プリセットと同じ「選択は記憶せず毎回明示」方針)。
+export async function actionPrint({ mono = false } = {}) {
   if (!_isOpen()) return;
   const pages = await _fetchVisiblePages();
   if (pages.length === 0) return;
@@ -624,10 +623,11 @@ export async function actionPrint() {
   //
   // Selection precedence:
   //   1. split-view selection (any size, explicit batch intent)
-  //   2. sidebar selection of 2+ pages — single-page sidebar selection
-  //      is often a navigation side-effect (clicking a thumb both
-  //      selects AND scrolls), so we ignore size===1 to avoid surprising
-  //      the user with "今見ているページだけを印刷" when they wanted all.
+  //   2. sidebar selection — 2+ pages, or a single page selected with
+  //      Ctrl/Shift (explicit). A plain single click is often a
+  //      navigation side-effect (clicking a thumb both selects AND
+  //      scrolls), so that one still prints all pages. See
+  //      _sidebarSelectionUsable.
   let preselected = null;
   let preselectedSource = null;
   const splitSel = _splitThumbSelection();
@@ -635,7 +635,7 @@ export async function actionPrint() {
   if (splitSel.pageNos.size > 0) {
     preselected = [...splitSel.pageNos];
     preselectedSource = "split";
-  } else if (sidebarSel.pageNos.size >= 2) {
+  } else if (_sidebarSelectionUsable(sidebarSel)) {
     preselected = [...sidebarSel.pageNos];
     preselectedSource = "sidebar";
   }
@@ -663,7 +663,9 @@ export async function actionPrint() {
     console.warn("[print] hasPdfReader failed, fall back to legacy dialog:", err);
   }
   if (hasReader) {
-    return actionPrintViaReader(pages, preselected, preselectedSource);
+    return actionPrintViaReader(pages, preselected, preselectedSource, {
+      monoOverlays: mono,
+    });
   }
 
   showBusy("プリンタ情報を取得中...", "プリンタ一覧を読み込んでいます...", 50);
@@ -724,8 +726,8 @@ export async function actionPrint() {
         renderPage: kpdf3.renderPage,
         renderSyntheticPage: renderSyntheticPagePixels,
         rasterRedactionPages: true,
-        // Phase 1: legacy 印刷経路 (Sumatra silent) でも白黒モード適用
-        monoOverlays: _isMonoPrintMode(),
+        // legacy 印刷経路 (Sumatra silent) でも「白黒印刷」のワンショットを適用
+        monoOverlays: mono,
         // v2.0.13: legacy 経路 (Adobe 不在 = Sumatra/Chromium silent) には
         // ベクターテキストを **渡さない**。β63 ζ で「C2360 ドライバは
         // embedded CID TrueType を見ると全面 raster fallback する」ことを
@@ -861,7 +863,7 @@ export async function actionPrintOverlayOnly() {
   if (splitSel.pageNos.size > 0) {
     preselected = [...splitSel.pageNos];
     preselectedSource = "split";
-  } else if (sidebarSel.pageNos.size >= 2) {
+  } else if (_sidebarSelectionUsable(sidebarSel)) {
     preselected = [...sidebarSel.pageNos];
     preselectedSource = "sidebar";
   }
@@ -890,10 +892,11 @@ export async function actionPrintOverlayOnly() {
       renderSyntheticPage: renderSyntheticPagePixels,
       overlayOnly: true,
       rasterRedactionPages: true,
-      // Phase 1: 下敷き印刷 (overlay-only) でも白黒モードに従う。下敷き印刷
-      // は overlay だけを物理紙に乗せる経路なので、カラー印影が薄くなる
-      // 問題と完全に同じシナリオが該当する。
-      monoOverlays: _isMonoPrintMode(),
+      // 2026-07-11: 白黒トグル廃止 (ワンショット「白黒印刷」化) に伴い、
+      // 下敷き印刷は常に色そのまま (記入値は通常黒で、白黒化の選択肢は
+      // 不要とユーザー判断)。必要になれば下敷き確認ダイアログにチェックを
+      // 足す形で復活させる。
+      monoOverlays: false,
       // v2.0.13: 申請書の記入文字こそ「薄い」被害の本丸なのでベクター適用
       vectorTextProbe: kpdf3.vectorTextProbe,
       onProgress: ({ done, total }) => {
@@ -1103,13 +1106,23 @@ function _showFaxMixedDialog(mix) {
 }
 
 /** Split / sidebar 選択をプリ選択として読み出す (actionPrint と同じロジック)。 */
+// サイドバー選択を印刷/FAX の範囲として採用してよいか。2 ページ以上は
+// 常に採用。1 ページは Ctrl/Shift の明示選択 (selection.explicit) のとき
+// だけ採用 — プレーンクリックはページ移動の副作用で選択が付くため、
+// size===1 を無条件に絞ると「今見ているページだけ印刷」事故になる
+// (renderer.js makeSelection / handleThumbSelectionClick 参照)。
+function _sidebarSelectionUsable(sidebarSel) {
+  const n = sidebarSel.pageNos.size;
+  return n >= 2 || (n === 1 && sidebarSel.explicit === true);
+}
+
 function _gatherPreselection() {
   const splitSel = _splitThumbSelection();
   const sidebarSel = _sidebarThumbSelection();
   if (splitSel.pageNos.size > 0) {
     return { preselected: [...splitSel.pageNos], preselectedSource: "split" };
   }
-  if (sidebarSel.pageNos.size >= 2) {
+  if (_sidebarSelectionUsable(sidebarSel)) {
     return { preselected: [...sidebarSel.pageNos], preselectedSource: "sidebar" };
   }
   return { preselected: null, preselectedSource: null };

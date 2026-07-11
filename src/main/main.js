@@ -58,6 +58,8 @@ import {
   addStampAssetFromFileGlobal,
   migrateFromWorkspaceIfEmpty as migrateStampPresetsToGlobalIfEmpty,
   closeStampStore,
+  exportStampsDbTo,
+  importStampsDbFrom,
 } from "./global-stamp-store.js";
 import { setupAutoUpdater } from "./updater.js";
 import {
@@ -2030,6 +2032,29 @@ ipcMain.handle("kpdf3:remove-stamp-preset", async (_, id) => {
 ipcMain.handle("kpdf3:set-stamp-presets-order", async (_, ids) => {
   setStampPresetsOrderGlobal(Array.isArray(ids) ? ids : []);
   return { ok: true };
+});
+
+// スタンプ一式の持ち運び (別 PC への移行用)。書き出しはダウンロード
+// フォルダへ stamps.db の整合コピーを置くだけ、取り込みは丸ごと置き換え
+// (検証 + .bak 退避は global-stamp-store 側)。
+ipcMain.handle("kpdf3:export-stamps-db", async () => {
+  const downloads = app.getPath("downloads");
+  const d = new Date();
+  const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  let dest = join(downloads, `K-PDF3-stamps-${ymd}.db`);
+  for (let n = 2; existsSync(dest); n += 1) {
+    dest = join(downloads, `K-PDF3-stamps-${ymd}-${n}.db`);
+  }
+  await exportStampsDbTo(dest);
+  return { ok: true, path: dest };
+});
+
+ipcMain.handle("kpdf3:import-stamps-db", async (_, srcPath) => {
+  if (typeof srcPath !== "string" || !srcPath || !existsSync(srcPath)) {
+    throw new Error("取り込むファイルが見つかりません");
+  }
+  const res = importStampsDbFrom(srcPath);
+  return { ok: true, ...res };
 });
 
 /**
