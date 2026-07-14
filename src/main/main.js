@@ -25,7 +25,7 @@ import { computePdfFingerprint, extractPdfProperties, pdfIsEncrypted } from "../
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
 import { applyVectorTextLayer, probeVectorText } from "../backend/vector-text-layer.js";
-import { repairPdfBytes } from "../backend/pdf-repair.js";
+import { repairPdfBytes, decryptPdfBytesIfEncrypted } from "../backend/pdf-repair.js";
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
 import { cupsAvailable, cupsPrintPdf, cupsCancelInFlight } from "./print-cups.js";
 import { listMacPrintPresets, resolveMacPresetOptions, monoPpdOptionsFor, mergeMonoIntoPpdOptions } from "./print-presets-mac.js";
@@ -2291,8 +2291,11 @@ async function assembleHybridPdf(pages, sourceBytes) {
  *  (§8.2 追報の「先頭に Word 差し込み」ケース)。 */
 async function _assembleHybridPdfOnce(pages, sourceBytes, repairExternal) {
   const newPdf = await PDFDocument.create();
+  // pdf-lib は復号できない (ignoreEncryption は「throw しない」だけ) ので、
+  // 暗号化 PDF は load の前に必ず復号しておく。非暗号化なら入力そのものが
+  // 返るので正常系は挙動不変。詳細は pdf-repair.js のコメント。
   const sourcePdf = sourceBytes
-    ? await PDFDocument.load(sourceBytes, { ignoreEncryption: true })
+    ? await PDFDocument.load(decryptPdfBytesIfEncrypted(sourceBytes), { ignoreEncryption: true })
     : null;
   // β31: cache external-source PDFDocument handles per inserted_source_pdfs.id.
   // Multiple inserted pages from the same external PDF share one PDFDocument
@@ -2307,7 +2310,10 @@ async function _assembleHybridPdfOnce(pages, sourceBytes, repairExternal) {
     if (!row || !row.pdfBlob) {
       throw new Error(`assembleHybridPdf: inserted_source_pdfs id=${id} not found`);
     }
-    let blob = row.pdfBlob;
+    // 挿入した外部 PDF は復号ゲートを通っていない (import 経路と違い qpdf に
+    // かけていない) ため、暗号化のまま blob 保存されていることがある。既存
+    // ワークスペースの blob も含めてここで潰す (2026-07-14 の別名保存失敗)。
+    let blob = decryptPdfBytesIfEncrypted(row.pdfBlob);
     if (repairExternal) {
       try {
         blob = repairPdfBytes(blob);
@@ -4362,7 +4368,10 @@ async function _extractPagesAsPdfBuffer(srcWorkspace, pageKeys) {
     if (srcPdfDoc) return srcPdfDoc;
     const bytes = srcWorkspace.getSourceBytes();
     if (!bytes) return null;
-    srcPdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    // assembleHybridPdf と同じ理由で load 前に復号 (pdf-lib は復号できない)。
+    srcPdfDoc = await PDFDocument.load(decryptPdfBytesIfEncrypted(bytes), {
+      ignoreEncryption: true,
+    });
     return srcPdfDoc;
   }
   const extCache = new Map();
@@ -4372,7 +4381,9 @@ async function _extractPagesAsPdfBuffer(srcWorkspace, pageKeys) {
     if (!row?.pdfBlob) {
       throw new Error(`inserted_source_pdfs id=${id} missing`);
     }
-    const doc = await PDFDocument.load(row.pdfBlob, { ignoreEncryption: true });
+    const doc = await PDFDocument.load(decryptPdfBytesIfEncrypted(row.pdfBlob), {
+      ignoreEncryption: true,
+    });
     extCache.set(id, doc);
     return doc;
   }
