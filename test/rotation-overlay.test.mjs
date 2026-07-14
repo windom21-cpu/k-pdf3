@@ -17,7 +17,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PDFDocument, degrees, rgb } from "pdf-lib";
-import { rotatedSourcePlacement } from "../src/main/rotate-place.js";
+import {
+  rotatedSourcePlacement,
+  verbatimOverlayCopyEligible,
+} from "../src/main/rotate-place.js";
 import { renderPagePixels, openPdfDocument } from "../src/backend/mupdf-render.js";
 
 const W = 595, H = 842; // native A4 portrait
@@ -101,6 +104,98 @@ for (const rot of [0, 90, 180, 270]) {
     );
   });
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// 2026-07-14: 経路選択そのものの総当たり回帰。
+//
+// 上のテストはベイク経路の幾何しか守っておらず、assembleHybridPdf が
+// 「verbatim copyPages」と「ベイク」のどちらを選ぶかは無防備だった。条件が
+// `effRot === 0` だったため、sourceRot と userRot が**打ち消し合う**
+// (例: intrinsic /Rotate=90 のページをユーザーが 270° 回して画面で縦にした)
+// と verbatim copy に落ち、出力ページが /Rotate=90 を持ったまま = 画面は縦
+// なのに保存 PDF だけ横向き・幅高さが入れ替わって A3 が見切れる、という
+// ユーザー報告 (Mac で確認) になった。sourceRot=180 & userRot=180 は
+// 「A3 が天地さかさま」として出る。
+//
+// ここでは 4×4 の (sourceRot, userRot) 全組合せで overlay 戦略の実経路を
+// 再現し、**出力 PDF が実際に表示される寸法と向き**を mupdf で検証する。
+// ───────────────────────────────────────────────────────────────────────────
+
+/** mupdf が実際に表示するページ寸法 (= /Rotate 適用後)。 */
+function displayedSize(bytes) {
+  const doc = openPdfDocument(Buffer.from(bytes));
+  try {
+    const b = doc.loadPage(0).getBounds();
+    return { w: Math.round(b[2] - b[0]), h: Math.round(b[3] - b[1]) };
+  } finally {
+    doc.destroy();
+  }
+}
+
+/** assembleHybridPdf の overlay 戦略を、経路選択ごと再現する。 */
+async function assembleOverlayPage(sourceBytes, sourceRot, userRot) {
+  const effRot = ((sourceRot + userRot) % 360 + 360) % 360;
+  const canonW = effRot === 90 || effRot === 270 ? H : W; // 画面が見せている寸法
+  const canonH = effRot === 90 || effRot === 270 ? W : H;
+  const src = await PDFDocument.load(sourceBytes);
+  const out = await PDFDocument.create();
+  if (verbatimOverlayCopyEligible(sourceRot, userRot)) {
+    const [copied] = await out.copyPages(src, [0]);
+    out.addPage(copied);
+    copied.drawRectangle({
+      x: overlay.x, y: canonH - overlay.y - overlay.h,
+      width: overlay.w, height: overlay.h, color: rgb(1, 0, 0),
+    });
+  } else {
+    const [embedded] = await out.embedPdf(src, [0]);
+    const { tx, ty, rotate } = rotatedSourcePlacement(effRot, embedded.width, embedded.height);
+    const page = out.addPage([canonW, canonH]);
+    page.drawPage(embedded, {
+      x: tx, y: ty, width: embedded.width, height: embedded.height, rotate,
+    });
+    page.drawRectangle({
+      x: overlay.x, y: canonH - overlay.y - overlay.h,
+      width: overlay.w, height: overlay.h, color: rgb(1, 0, 0),
+    });
+  }
+  return { bytes: await out.save(), canonW, canonH, effRot };
+}
+
+for (const sourceRot of [0, 90, 180, 270]) {
+  for (const userRot of [0, 90, 180, 270]) {
+    const effRot = (sourceRot + userRot) % 360;
+    test(`overlay 出力の向き・寸法: source /Rotate=${sourceRot} × userRotation=${userRot} (effRot=${effRot})`, async () => {
+      const src = await buildSource(sourceRot);
+      const { bytes, canonW, canonH } = await assembleOverlayPage(src, sourceRot, userRot);
+
+      // (1) 出力 PDF が実際に表示される寸法 = 画面の canonical 寸法。
+      //     打ち消し合いケースで verbatim copy に落ちると、ここが入れ替わる
+      //     (A3 縦のはずが横になって見切れる、の正体)。
+      assert.deepEqual(
+        displayedSize(bytes), { w: canonW, h: canonH },
+        `出力ページの表示寸法が画面と食い違う (source=${sourceRot}, user=${userRot})`,
+      );
+
+      // (2) 吹き出しはユーザーが置いた canonical TOP-LEFT にある。
+      // (3) 元ページの内容は「画面が見せている向き」= /Rotate=effRot 相当と一致。
+      const m = markers(bytes);
+      assert.equal(m.red, "TOP-LEFT", `吹き出しが回った (source=${sourceRot}, user=${userRot})`);
+      assert.equal(
+        m.blue, markers(await buildSource(effRot)).blue,
+        `元ページの向きが画面と食い違う (source=${sourceRot}, user=${userRot})`,
+      );
+    });
+  }
+}
+
+test("verbatimOverlayCopyEligible: 打ち消し合い (sourceRot+userRot=360) を高速パスに入れない", () => {
+  assert.equal(verbatimOverlayCopyEligible(0, 0), true);
+  assert.equal(verbatimOverlayCopyEligible(90, 270), false, "effRot=0 でも /Rotate を持ち込むので不可");
+  assert.equal(verbatimOverlayCopyEligible(180, 180), false, "A3 天地さかさまの形");
+  assert.equal(verbatimOverlayCopyEligible(270, 90), false);
+  assert.equal(verbatimOverlayCopyEligible(90, 0), false);
+  assert.equal(verbatimOverlayCopyEligible(0, 90), false);
+});
 
 // Direct unit check of the placement table (clockwise, matching mupdf/Adobe).
 test("rotatedSourcePlacement returns clockwise params + canonical dims", () => {

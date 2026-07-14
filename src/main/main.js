@@ -20,7 +20,7 @@ import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
 import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
-import { rotatedSourcePlacement } from "./rotate-place.js";
+import { rotatedSourcePlacement, verbatimOverlayCopyEligible } from "./rotate-place.js";
 import { computePdfFingerprint, extractPdfProperties, pdfIsEncrypted } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
@@ -2346,7 +2346,10 @@ async function _assembleHybridPdfOnce(pages, sourceBytes, repairExternal) {
       }
     } else if (p.strategy === "overlay") {
       if (!sourcePdf) throw new Error("assembleHybridPdf: overlay strategy but no source PDF");
-      if (effRot === 0) {
+      // 2026-07-14: 条件は effRot ではなく「sourceRot も userRot も 0」。effRot===0 でも
+      // 打ち消し合い (例 /Rotate=90 のページを 270° 回して縦にした) のときは copyPages が
+      // /Rotate=90 を持って行ってしまい、画面は縦なのに出力だけ横 (A3 が見切れる) になる。
+      if (verbatimOverlayCopyEligible(sourceRot, userRot)) {
         const [copied] = await newPdf.copyPages(sourcePdf, [p.sourceIdx]);
         newPdf.addPage(copied);
         if (p.imageBytes && p.imageBytes.length > 0) {
@@ -2392,7 +2395,9 @@ async function _assembleHybridPdfOnce(pages, sourceBytes, repairExternal) {
         throw new Error(`assembleHybridPdf: external strategy missing source ids (page ${p.pageNo})`);
       }
       const extDoc = await getExternalPdf(p.externalSourcePdfId);
-      if (effRot === 0) {
+      // overlay 戦略と同じ理由で sourceRot/userRot の両方を見る (effRot だけでは
+      // 打ち消し合いケースで /Rotate 付きページを verbatim コピーしてしまう)。
+      if (verbatimOverlayCopyEligible(sourceRot, userRot)) {
         const [copied] = await newPdf.copyPages(extDoc, [p.externalSourcePageIndex]);
         newPdf.addPage(copied);
         if (p.imageBytes && p.imageBytes.length > 0) {
