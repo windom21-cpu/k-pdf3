@@ -29,6 +29,7 @@ import { repairPdfBytes, decryptPdfBytesIfEncrypted } from "../backend/pdf-repai
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
 import { cupsAvailable, cupsPrintPdf, cupsCancelInFlight } from "./print-cups.js";
 import { listMacPrintPresets, resolveMacPresetOptions, monoPpdOptionsFor, mergeMonoIntoPpdOptions } from "./print-presets-mac.js";
+import { listCupsTrays, resolveTrayOption, mergeTrayIntoPpdOptions } from "./print-trays-cups.js";
 import { redactSourceBytes } from "./redact-source.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
@@ -3660,6 +3661,21 @@ ipcMain.handle("kpdf3:list-print-presets", async (_, deviceName) => {
 });
 
 /**
+ * 2026-07-14: CUPS 直送で選べる給紙トレイ (用紙サイズごとにトレイを分けて
+ * いる事務所運用向け)。{ key, choices: [{ value, label }] } か、指定不可なら
+ * null。Windows / lpoptions 不在では null (UI 側で欄ごと非表示)。
+ * 詳細は print-trays-cups.js 冒頭。
+ */
+ipcMain.handle("kpdf3:list-print-trays", async (_, deviceName) => {
+  try {
+    return await listCupsTrays(deviceName);
+  } catch (err) {
+    console.warn("[print] listCupsTrays failed:", err);
+    return null;
+  }
+});
+
+/**
  * Silent print of a flatten / byte-copy PDF to a chosen printer. The
  * renderer collects deviceName / copies from a custom dialog and calls
  * this; main writes the temp PDF, loads it in the singleton hidden
@@ -3811,6 +3827,10 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     // 欄)。CUPS 経路のみ解釈 — 印刷時点で print-presets-mac.js が plist を
     // 再読 + PPD 照合し、-o Key=Value 群に展開する。他エンジンでは無視。
     presetName = null,
+    // 2026-07-14: 自前ダイアログの「給紙トレイ」欄 (CUPS 経路のみ)。値は
+    // PPD の選択肢キーワード (例 "Tray2")。印刷時点で print-trays-cups.js が
+    // lpoptions の広告と再照合して -o InputSlot=... に展開する。
+    trayValue = null,
   } = payload ?? {};
   if (!deviceName) throw new Error("print-pdf-silent: deviceName missing");
 
@@ -3898,6 +3918,17 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
       if (color === "mono") {
         const mono = await monoPpdOptionsFor(deviceName);
         if (mono) ppdOptions = mergeMonoIntoPpdOptions(ppdOptions, mono);
+      }
+      // ダイアログの「給紙トレイ」: プリセットと同じく印刷時点で PPD 再照合。
+      // 選択肢が消えていたら黙って素通し (プリンタ任せ) にせず明示エラー —
+      // 「A3 トレイから刷れた」と誤認させない。明示のトレイはプリセットの
+      // 給紙指定に勝つ (白黒と同じ方針)。
+      if (trayValue) {
+        const tray = await resolveTrayOption(deviceName, trayValue);
+        if (!tray) {
+          throw new Error(`給紙トレイ「${trayValue}」がこのプリンタで見つかりません。ダイアログを開き直して選び直してください`);
+        }
+        ppdOptions = mergeTrayIntoPpdOptions(ppdOptions, tray);
       }
       await cupsPrintPdf(tempPath, {
         deviceName,

@@ -115,6 +115,43 @@ const printPresetSelect = $("print-preset");
 const printColorRow = $("print-color-row");
 const printColorColor = $("print-color-color");
 const printColorMono = $("print-color-mono");
+// 2026-07-14: 給紙トレイ (用紙サイズごとにトレイを分けている運用向け)。
+// プリセットを作らなくてもトレイを指名できるようにする。プリンタが PPD で
+// 広告している給紙選択肢だけを出し、CUPS エンジン選択中のみ表示。
+// 選択は保存せず毎回「(プリンタ任せ)」に戻す (プリセット/カラーと同じ方針)。
+const printTrayRow = $("print-tray-row");
+const printTraySelect = $("print-tray");
+let _trayFetchToken = 0;
+async function refreshPrintTrays() {
+  if (!printTrayRow || !printTraySelect) return;
+  const token = ++_trayFetchToken;
+  printTrayRow.hidden = true;
+  printTraySelect.innerHTML = "";
+  const deviceName = printPrinterSelect.value;
+  if (printEngineSelect?.value !== "cups" || !deviceName) return;
+  if (typeof kpdf3.listPrintTrays !== "function") return;
+  let trays = null;
+  try { trays = await kpdf3.listPrintTrays(deviceName); }
+  catch (err) {
+    console.warn("[print] listPrintTrays failed:", err);
+    return;
+  }
+  if (token !== _trayFetchToken) return; // 応答待ちの間に選択が変わった
+  if (!trays || !Array.isArray(trays.choices) || trays.choices.length === 0) return;
+  const auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "(プリンタ任せ)";
+  printTraySelect.appendChild(auto);
+  for (const c of trays.choices) {
+    if (!c?.value) continue;
+    const opt = document.createElement("option");
+    opt.value = c.value;
+    opt.textContent = c.label || c.value;
+    printTraySelect.appendChild(opt);
+  }
+  printTraySelect.value = "";
+  printTrayRow.hidden = false;
+}
 let _presetFetchToken = 0;
 async function refreshPrintPresets() {
   if (!printPresetRow || !printPresetSelect) return;
@@ -124,6 +161,7 @@ async function refreshPrintPresets() {
   const deviceName = printPrinterSelect.value;
   // カラー行の表示可否はプリセットの有無と無関係 (CUPS エンジンなら常時)
   if (printColorRow) printColorRow.hidden = printEngineSelect?.value !== "cups";
+  refreshPrintTrays();
   if (printEngineSelect?.value !== "cups" || !deviceName) return;
   if (typeof kpdf3.listPrintPresets !== "function") return;
   let presets = [];
@@ -433,6 +471,13 @@ printConfirmBtn.addEventListener("click", () => {
     // 「カラー」はプリンタ既定に任せる (null)
     colorMode: (printColorRow && !printColorRow.hidden && printColorMono?.checked)
       ? "mono"
+      : null,
+    // 2026-07-14: 給紙トレイ (CUPS 経路のみ)。「(プリンタ任せ)」= null。
+    tray: (printTrayRow && !printTrayRow.hidden && printTraySelect.value)
+      ? printTraySelect.value
+      : null,
+    trayLabel: (printTrayRow && !printTrayRow.hidden && printTraySelect.value)
+      ? printTraySelect.selectedOptions[0]?.textContent ?? printTraySelect.value
       : null,
   });
 });
@@ -775,10 +820,13 @@ export async function actionPrint({ mono = false } = {}) {
       // 2026-07-10: macOS プリセット名 (CUPS 経路のみ解釈)。main 側が
       // 印刷時点で plist → PPD オプションに解決して lp -o に展開する。
       presetName: choice.preset ?? null,
+      // 2026-07-14: 給紙トレイ (CUPS 経路のみ解釈)。main 側が印刷時点で
+      // PPD 再照合し -o InputSlot=... に展開する。
+      trayValue: choice.tray ?? null,
     });
     if (printCancelled) return;
     hideBusy();
-    _wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部 / ${choice.pageNos.length} ページ${choice.preset ? ` / プリセット「${choice.preset}」` : ""}${choice.colorMode === "mono" ? " / 白黒" : ""}）`;
+    _wsStatus.textContent = `印刷を ${choice.deviceName} に送信しました（${choice.copies} 部 / ${choice.pageNos.length} ページ${choice.preset ? ` / プリセット「${choice.preset}」` : ""}${choice.trayLabel ? ` / ${choice.trayLabel}` : ""}${choice.colorMode === "mono" ? " / 白黒" : ""}）`;
   } catch (err) {
     hideBusy();
     if (printCancelled) return;
