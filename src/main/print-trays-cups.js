@@ -34,6 +34,40 @@ const TRAY_KEYS = ["InputSlot", "MediaSource", "InputTray"];
 // PPD の翻訳ラベルにも一応の形を要求する (UI に流し込むので制御文字を弾く)。
 const LABEL_RE = /^[^\x00-\x1f]{1,60}$/;
 
+// 2026-07-14 実機 (Apeos C2360): 選択肢が `auto` / `tray-1` … の **IPP 標準
+// キーワード**で出てきた (PPD が無い or 翻訳行を持たない driverless/IPP キュー)。
+// キーワードのままではダイアログとして読めないので、既知キーワードは日本語に
+// 直す。**PPD に翻訳がある場合はそちらが勝つ** (ドライバの言い回しが正)。
+// 表に無いキーワードはそのまま表示する (勝手に意訳して取り違えるより安全)。
+const IPP_TRAY_LABELS = new Map(Object.entries({
+  "auto": "自動選択",
+  "auto-select": "自動選択",
+  "default": "プリンタ既定",
+  "main": "主トレイ",
+  "main-roll": "主ロール",
+  "manual": "手差し",
+  "bypass-tray": "手差しトレイ",
+  "by-pass-tray": "手差しトレイ",
+  "alternate": "代替トレイ",
+  "top": "上トレイ",
+  "middle": "中トレイ",
+  "bottom": "下トレイ",
+  "side": "横トレイ",
+  "large-capacity": "大容量トレイ",
+  "envelope": "封筒トレイ",
+}));
+
+/** IPP 標準キーワードの日本語ラベル (pure)。tray-N / tray_N / trayN は
+ *  「トレイ N」に畳む。未知のキーワードは null (呼び出し側がそのまま表示)。 */
+export function ippTrayLabel(value) {
+  if (typeof value !== "string" || value.length === 0) return null;
+  const v = value.trim().toLowerCase();
+  const known = IPP_TRAY_LABELS.get(v);
+  if (known) return known;
+  const n = /^tray[-_ ]?(\d+)$/.exec(v)?.[1];
+  return n ? `トレイ ${Number(n)}` : null;
+}
+
 /** choicesMap (parseLpoptionsChoices の出力) から給紙キーワードを選ぶ。
  *  広告が無ければ null (= このプリンタではトレイ指定不可 → 欄を出さない)。 */
 export function pickTrayKey(choicesMap) {
@@ -63,13 +97,17 @@ export function parsePpdChoiceLabels(ppdText, key) {
   return labels;
 }
 
-/** 広告された選択肢 + PPD ラベルを UI 用の配列にする (pure)。
- *  PPD ラベルが無い選択肢はキーワードをそのまま表示名にする。 */
+/** 広告された選択肢を UI 用の配列にする (pure)。表示名の優先順位:
+ *  ①PPD の翻訳 (ドライバの言い回しが正) → ②IPP 標準キーワードの和訳
+ *  → ③キーワードそのまま (未知の値を意訳して取り違えない)。 */
 export function buildTrayChoices(advertised, labels) {
   if (!(advertised instanceof Set)) return [];
   const out = [];
   for (const value of advertised) {
-    out.push({ value, label: labels?.get(value) ?? value });
+    out.push({
+      value,
+      label: labels?.get(value) ?? ippTrayLabel(value) ?? value,
+    });
   }
   return out;
 }

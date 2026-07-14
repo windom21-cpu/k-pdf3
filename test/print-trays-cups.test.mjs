@@ -13,6 +13,7 @@ import {
   parsePpdChoiceLabels,
   buildTrayChoices,
   mergeTrayIntoPpdOptions,
+  ippTrayLabel,
 } from "../src/main/print-trays-cups.js";
 
 // Apeos C2360 相当の lpoptions 出力 (現在値の * 付き)
@@ -63,7 +64,7 @@ test("buildTrayChoices: 広告された選択肢だけを、ラベル付きで U
   const key = pickTrayKey(choices);
   const list = buildTrayChoices(choices.get(key), parsePpdChoiceLabels(PPD_TEXT, key));
   assert.deepEqual(list, [
-    { value: "Auto", label: "Auto" }, // PPD に翻訳が無ければキーワード表示
+    { value: "Auto", label: "自動選択" }, // PPD 翻訳が無い分は IPP 和訳で補う
     { value: "Tray1", label: "トレイ 1 (A4)" },
     { value: "Tray2", label: "トレイ 2 (A3)" },
     { value: "Tray3", label: "トレイ 3" },
@@ -71,10 +72,44 @@ test("buildTrayChoices: 広告された選択肢だけを、ラベル付きで U
   ]);
 });
 
-test("buildTrayChoices: PPD が無い (driverless) キューはキーワードをそのまま見せる", () => {
+test("buildTrayChoices: PPD が無い (driverless) キューでも読める日本語になる", () => {
   const choices = parseLpoptionsChoices(LPOPTIONS_OUT);
   const list = buildTrayChoices(choices.get("InputSlot"), new Map());
-  assert.deepEqual(list.map((c) => c.label), ["Auto", "Tray1", "Tray2", "Tray3", "Manual"]);
+  assert.deepEqual(
+    list.map((c) => c.label),
+    ["自動選択", "トレイ 1", "トレイ 2", "トレイ 3", "手差し"],
+  );
+});
+
+// 2026-07-14 実機 (Apeos C2360): PPD の翻訳が無く、選択肢が IPP 標準キーワード
+// (`auto` / `tray-1` …) のまま出てきた。キーワード直出しはダイアログとして読めない。
+test("ippTrayLabel: IPP 標準キーワードを日本語にする", () => {
+  assert.equal(ippTrayLabel("auto"), "自動選択");
+  assert.equal(ippTrayLabel("tray-1"), "トレイ 1");
+  assert.equal(ippTrayLabel("tray-2"), "トレイ 2");
+  assert.equal(ippTrayLabel("Tray3"), "トレイ 3", "大文字/区切り無しの揺れも畳む");
+  assert.equal(ippTrayLabel("manual"), "手差し");
+  assert.equal(ippTrayLabel("by-pass-tray"), "手差しトレイ");
+  assert.equal(ippTrayLabel("weird-vendor-slot"), null, "未知の値は意訳せず null");
+});
+
+test("buildTrayChoices: PPD 翻訳が無い IPP キューでも日本語で出す", () => {
+  const advertised = new Set(["auto", "tray-1", "tray-2", "manual", "vendor-x"]);
+  assert.deepEqual(buildTrayChoices(advertised, new Map()), [
+    { value: "auto", label: "自動選択" },
+    { value: "tray-1", label: "トレイ 1" },
+    { value: "tray-2", label: "トレイ 2" },
+    { value: "manual", label: "手差し" },
+    { value: "vendor-x", label: "vendor-x" }, // 未知はキーワードのまま
+  ]);
+});
+
+test("buildTrayChoices: PPD の翻訳があればそちらが勝つ (ドライバの言い回しが正)", () => {
+  const advertised = new Set(["tray-1"]);
+  assert.deepEqual(
+    buildTrayChoices(advertised, new Map([["tray-1", "トレイ 1 (A4 普通紙)"]])),
+    [{ value: "tray-1", label: "トレイ 1 (A4 普通紙)" }],
+  );
 });
 
 test("mergeTrayIntoPpdOptions: 明示したトレイがプリセットの給紙指定に勝つ", () => {
