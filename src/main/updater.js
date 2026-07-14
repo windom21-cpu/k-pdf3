@@ -30,7 +30,22 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import electronUpdater from "electron-updater";
 
+import { checkMacUpdate, downloadMacUpdate, applyMacUpdate } from "./updater-mac.js";
+
 const { autoUpdater, CancellationToken } = electronUpdater;
+
+// 2026-07-14: macOS はコード署名が無いと Squirrel.Mac (electron-updater の
+// mac 実装) が更新を受け付けないため、自前の更新層 (updater-mac.js) に
+// 委譲する。**renderer に飛ばすイベント名と IPC の返り値は同じ** なので、
+// 98 風の更新 UX (確認 → 進捗 → 再起動) はそのまま使い回せる。
+// Windows/Linux の経路 (β.132〜139 で実機検証済) は 1 バイトも変えない。
+const IS_MAC = process.platform === "darwin";
+
+/** darwin: 直近の checkMacUpdate 結果 (download が使う)。 */
+let macPendingUpdate = null;
+/** darwin: 検証済みでまだ適用していない zip のパス。 */
+let macDownloadedZip = null;
+let macCancelRequested = false;
 
 let initialised = false;
 /** @type {import('electron').BrowserWindow | null} */
@@ -97,12 +112,93 @@ function wireEvents() {
   });
 }
 
+// ---- macOS 自前更新 (2026-07-14) -------------------------------------
+//
+// electron-updater と **同じイベント名・同じ返り値** で振る舞うので、
+// renderer 側 (98 風の確認 → 進捗 → 再起動 UX) は一切変更しなくてよい。
+// 詳細と「なぜ Squirrel.Mac が使えないか」は updater-mac.js 冒頭。
+
+/** darwin: 更新確認。electron-updater の checkForUpdates 相当。 */
+async function macCheck() {
+  sendToWindow("kpdf3:updater-checking");
+  try {
+    const info = await checkMacUpdate(app.getVersion());
+    if (!info.available) {
+      sendToWindow("kpdf3:updater-not-available");
+      macPendingUpdate = null;
+      return { skipped: false, version: null };
+    }
+    macPendingUpdate = info;
+    sendToWindow("kpdf3:updater-update-available", {
+      version: info.version,
+      releaseNotes: "",
+      releaseDate: "",
+    });
+    return { skipped: false, version: info.version };
+  } catch (err) {
+    const message = err?.message || String(err);
+    sendToWindow("kpdf3:updater-error", { message });
+    return { skipped: false, error: message };
+  }
+}
+
+/** darwin: zip をダウンロードして sha512 検証まで済ませる。 */
+async function macDownload() {
+  if (!macPendingUpdate) return { ok: false, error: "更新情報がありません。もう一度「更新を確認」してください" };
+  macCancelRequested = false;
+  try {
+    const zipPath = await downloadMacUpdate(macPendingUpdate, {
+      onProgress: (p) => {
+        sendToWindow("kpdf3:updater-download-progress", {
+          percent: p.percent,
+          bytesPerSecond: 0, // 自前 DL では計測しない (UI は percent のみ使用)
+          transferred: p.transferred,
+          total: p.total,
+        });
+      },
+      shouldCancel: () => macCancelRequested,
+    });
+    macDownloadedZip = zipPath;
+    sendToWindow("kpdf3:updater-update-downloaded", { version: macPendingUpdate.version });
+    return { ok: true };
+  } catch (err) {
+    if (err?.cancelled) return { ok: false, cancelled: true };
+    const message = err?.message || String(err);
+    sendToWindow("kpdf3:updater-error", { message });
+    return { ok: false, cancelled: false, error: message };
+  }
+}
+
+/** darwin: 検証済み zip を適用して再起動 (切り離しスクリプトが差し替える)。 */
+async function macInstall() {
+  if (!macDownloadedZip) return { ok: false, error: "適用できる更新がありません" };
+  try {
+    await applyMacUpdate(macDownloadedZip, {
+      execPath: process.execPath,
+      pid: process.pid,
+    });
+  } catch (err) {
+    const message = err?.message || String(err);
+    sendToWindow("kpdf3:updater-error", { message });
+    return { ok: false, error: message };
+  }
+  // スクリプトは「親の終了待ち → 差し替え → 再起動」なので、ここで落ちる。
+  // 窓を先に閉じてから quit (Linux 経路と同じ理由: 差し替え中の窓が
+  // 「応答なし」に見えるのを避ける)。
+  for (const w of BrowserWindow.getAllWindows()) {
+    try { w.destroy(); } catch { /* already gone */ }
+  }
+  app.quit();
+  return { ok: true };
+}
+
 /** Install the IPC handlers. Idempotent (re-register is a no-op). */
 function wireIpc() {
   ipcMain.handle("kpdf3:updater-check", async () => {
     if (shouldSkip()) {
       return { skipped: true, reason: app.isPackaged ? "no-update flag" : "dev mode" };
     }
+    if (IS_MAC) return macCheck();
     try {
       const result = await autoUpdater.checkForUpdates();
       // result may be null when no update is available — normalize.
@@ -117,6 +213,7 @@ function wireIpc() {
 
   ipcMain.handle("kpdf3:updater-download", async () => {
     if (shouldSkip()) return { skipped: true };
+    if (IS_MAC) return macDownload();
     // If a previous download was abandoned without proper cancel (e.g.
     // app crashed mid-DL), the token would already be released; create
     // a fresh one. Holding the reference lets `updater-cancel-download`
@@ -145,6 +242,12 @@ function wireIpc() {
   // to corrupt the next version's diff calculation.
   ipcMain.handle("kpdf3:updater-cancel-download", () => {
     if (shouldSkip()) return { skipped: true };
+    if (IS_MAC) {
+      // downloadMacUpdate は次のチャンク受信時に shouldCancel() を見て中断し、
+      // 部分ファイルごと temp ディレクトリを消す。
+      macCancelRequested = true;
+      return { ok: true, hadActive: true };
+    }
     if (!activeDownloadToken) return { ok: true, hadActive: false };
     try {
       activeDownloadToken.cancel();
@@ -154,8 +257,9 @@ function wireIpc() {
     }
   });
 
-  ipcMain.handle("kpdf3:updater-install", () => {
+  ipcMain.handle("kpdf3:updater-install", async () => {
     if (shouldSkip()) return { skipped: true };
+    if (IS_MAC) return macInstall();
     // Linux (deb): electron-updater applies the update with a synchronous
     // pkexec/dpkg spawn inside quitAndInstall, freezing the main process
     // for 10+ seconds. If windows are still alive during that freeze,
@@ -224,6 +328,14 @@ export function setupAutoUpdater(win) {
   // fires. 3s is enough on slow disks; the user-facing dialog is
   // dismissable so a few extra seconds aren't disruptive.
   setTimeout(() => {
+    if (IS_MAC) {
+      // 自前の Mac 更新層。エラーはイベントで renderer に出る (起動時の
+      // 通信失敗でアプリを止めない)。
+      macCheck().catch((err) => {
+        console.warn("[updater] initial mac check failed:", err?.message || err);
+      });
+      return;
+    }
     autoUpdater.checkForUpdates().catch((err) => {
       console.warn("[updater] initial check failed:", err?.message || err);
     });
