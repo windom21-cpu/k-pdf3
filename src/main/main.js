@@ -2395,9 +2395,24 @@ async function _assembleHybridPdfOnce(pages, sourceBytes, repairExternal) {
         throw new Error(`assembleHybridPdf: external strategy missing source ids (page ${p.pageNo})`);
       }
       const extDoc = await getExternalPdf(p.externalSourcePdfId);
-      // overlay 戦略と同じ理由で sourceRot/userRot の両方を見る (effRot だけでは
-      // 打ち消し合いケースで /Rotate 付きページを verbatim コピーしてしまう)。
-      if (verbatimOverlayCopyEligible(sourceRot, userRot)) {
+      // 2026-07-14: 挿入ページ (synthetic 行) は **intrinsic /Rotate を DB に持たない**。
+      // 挿入時に記録するのは mupdf の getBounds() = /Rotate 適用後の「表示寸法」だけで、
+      // rotation 列は無い (= renderer が送る sourceRotation は常に 0)。画面は回転済みの
+      // ラスタ/vector を見ているので正しいが、書き出しの embedPdf は /Rotate を無視して
+      // native content を描くため、ベイク経路で **外部ページ自身の /Rotate が抜け落ちる** —
+      // 紙は canonical 寸法のまま中身だけ 90° 回って半分見切れる (A3 挿入ページの実機報告)。
+      // → 外部ページの /Rotate を pdf-lib から読み出し、ベイク量にも高速パス判定にも足す。
+      const extRot = (((extDoc.getPage(p.externalSourcePageIndex).getRotation().angle ?? 0) % 360) + 360) % 360;
+      const extEffRot = ((extRot + effRot) % 360 + 360) % 360;
+      // 高速パス (verbatim copyPages) は外部ページの /Rotate をそのまま持って行くので、
+      // 「userRot === 0」なら回転は画面と一致する。ただし overlay を載せる場合は
+      // canonical 座標を content 座標に置くことになるので extRot === 0 も要る
+      // (= verbatimOverlayCopyEligible と同じ条件)。overlay 無しの回転挿入ページは
+      // 従来どおり verbatim コピー (実機で正しく出ている経路を変えない)。
+      const hasOverlayPng = p.imageBytes && p.imageBytes.length > 0;
+      if (hasOverlayPng
+        ? verbatimOverlayCopyEligible(extRot, userRot)
+        : userRot === 0) {
         const [copied] = await newPdf.copyPages(extDoc, [p.externalSourcePageIndex]);
         newPdf.addPage(copied);
         if (p.imageBytes && p.imageBytes.length > 0) {
@@ -2422,12 +2437,14 @@ async function _assembleHybridPdfOnce(pages, sourceBytes, repairExternal) {
         }
       } else {
         // Reuse the rotated-source helper with the external doc as source
-        // and `externalSourcePageIndex` standing in for `sourceIdx`.
+        // and `externalSourcePageIndex` standing in for `sourceIdx`。
+        // 回転量は extEffRot (外部ページの intrinsic /Rotate + ユーザー回転) —
+        // embedPdf は /Rotate を無視するので、ここで足さないと 90° 抜ける。
         await _placeRotatedSourcePage(
           newPdf,
           extDoc,
           { ...p, sourceIdx: p.externalSourcePageIndex },
-          effRot,
+          extEffRot,
           p.imageBytes,
         );
       }
