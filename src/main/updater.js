@@ -30,7 +30,7 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import electronUpdater from "electron-updater";
 
-import { checkMacUpdate, downloadMacUpdate, applyMacUpdate } from "./updater-mac.js";
+import { checkMacUpdate, downloadMacUpdate, extractMacUpdate, applyMacUpdate, logMacUpdate, macUpdateLogPath } from "./updater-mac.js";
 
 const { autoUpdater, CancellationToken } = electronUpdater;
 
@@ -43,9 +43,13 @@ const IS_MAC = process.platform === "darwin";
 
 /** darwin: 直近の checkMacUpdate 結果 (download が使う)。 */
 let macPendingUpdate = null;
-/** darwin: 検証済みでまだ適用していない zip のパス。 */
+/** darwin: 検証 + 展開済みで、まだ適用していない新 .app のパス。 */
 let macDownloadedZip = null;
+/** darwin: 展開済みの新 .app (差し替え元)。 */
+let macStagedApp = null;
 let macCancelRequested = false;
+/** darwin: 差し替えスクリプトを起こしたか (二重適用と will-quit 再入の防止)。 */
+let macApplyStarted = false;
 
 let initialised = false;
 /** @type {import('electron').BrowserWindow | null} */
@@ -159,37 +163,78 @@ async function macDownload() {
       shouldCancel: () => macCancelRequested,
     });
     macDownloadedZip = zipPath;
+    // 展開はここで済ませる (130MB の ditto は数秒かかる)。適用段はスクリプトを
+    // 起こすだけにしておかないと、終了直前に固まったように見える。
+    macStagedApp = await extractMacUpdate(zipPath);
     sendToWindow("kpdf3:updater-update-downloaded", { version: macPendingUpdate.version });
     return { ok: true };
   } catch (err) {
     if (err?.cancelled) return { ok: false, cancelled: true };
     const message = err?.message || String(err);
-    sendToWindow("kpdf3:updater-error", { message });
+    logMacUpdate(`download: FAILED ${message}`);
+    sendToWindow("kpdf3:updater-error", {
+      message: `${message}\n(ログ: ${macUpdateLogPath()})`,
+    });
     return { ok: false, cancelled: false, error: message };
   }
 }
 
 /** darwin: 検証済み zip を適用して再起動 (切り離しスクリプトが差し替える)。 */
 async function macInstall() {
-  if (!macDownloadedZip) return { ok: false, error: "適用できる更新がありません" };
+  if (!macStagedApp) return { ok: false, error: "適用できる更新がありません" };
   try {
-    await applyMacUpdate(macDownloadedZip, {
+    await applyMacUpdate(macStagedApp, {
       execPath: process.execPath,
       pid: process.pid,
+      relaunch: true,
     });
   } catch (err) {
     const message = err?.message || String(err);
-    sendToWindow("kpdf3:updater-error", { message });
+    logMacUpdate(`install: FAILED ${message}`);
+    sendToWindow("kpdf3:updater-error", {
+      message: `${message}\n(ログ: ${macUpdateLogPath()})`,
+    });
     return { ok: false, error: message };
   }
-  // スクリプトは「親の終了待ち → 差し替え → 再起動」なので、ここで落ちる。
-  // 窓を先に閉じてから quit (Linux 経路と同じ理由: 差し替え中の窓が
-  // 「応答なし」に見えるのを避ける)。
+  macApplyStarted = true;
+  // スクリプトは「親の終了待ち → 差し替え → 再起動」。**アプリが終了しない限り
+  // 差し替えは始まらない** (起動中の .app を壊さないためスクリプト側で中止する)
+  // ので、確実に終了させる。窓を先に destroy (Linux 経路と同じ理由)。
   for (const w of BrowserWindow.getAllWindows()) {
     try { w.destroy(); } catch { /* already gone */ }
   }
   app.quit();
+  // quit が何かに阻まれた場合の保険 — ここで残ると「再起動もせず版も上がらない」
+  // (2026-07-14 実機報告と同じ見え方) になるので、少し待って強制終了する。
+  setTimeout(() => {
+    logMacUpdate("install: app.quit() did not exit in 4s — forcing exit");
+    app.exit(0);
+  }, 4000).unref?.();
   return { ok: true };
+}
+
+/**
+ * darwin: 「次回起動時に適用」(= 確認モーダルの右ボタン) の実装。
+ * Windows/Linux は electron-updater の autoInstallOnAppQuit が担うが、
+ * Mac は自前層なので **終了時に自分で適用する** 必要がある。これが無いと
+ * 「次回起動時に適用」を選んでも永遠に何も起きない (2026-07-14 実機報告の
+ * 有力候補)。終了は user 起点なので再起動はしない。
+ */
+function wireMacApplyOnQuit() {
+  app.on("will-quit", (e) => {
+    if (!macStagedApp || macApplyStarted) return;
+    macApplyStarted = true;
+    e.preventDefault(); // スクリプトを起こすまで数十 ms だけ終了を待たせる
+    applyMacUpdate(macStagedApp, {
+      execPath: process.execPath,
+      pid: process.pid,
+      relaunch: false, // ユーザーが自分で終了した = 勝手に再起動しない
+    }).catch((err) => {
+      logMacUpdate(`apply-on-quit: FAILED ${err?.message || err}`);
+    }).finally(() => {
+      app.exit(0);
+    });
+  });
 }
 
 /** Install the IPC handlers. Idempotent (re-register is a no-op). */
@@ -317,6 +362,7 @@ export function setupAutoUpdater(win) {
 
   wireEvents();
   wireIpc();
+  if (IS_MAC) wireMacApplyOnQuit();
 
   if (shouldSkip()) {
     console.log("[updater] skipped (dev mode or --no-update)");

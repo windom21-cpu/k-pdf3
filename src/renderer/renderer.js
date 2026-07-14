@@ -6152,12 +6152,20 @@ kpdf3.onUpdaterError?.((err) => {
   // Auto-check failures stay silent — testers on closed networks would
   // otherwise see an error on every launch. Manual checks surface the
   // problem so the user knows their explicit request failed.
-  if (updaterMode === "manual") {
+  //
+  // 2026-07-14: **ダウンロードを始めたあとの失敗は自動チェックでも必ず出す**。
+  // 従来は auto のまま黙って捨てていたため、Mac 更新で検証/差し替えに失敗
+  // しても「進捗バーが消えて何も起きない」ようにしか見えなかった (実機報告)。
+  // 更新サーバーに繋がらないのと、掴んだ更新の適用に失敗したのは別物。
+  if (updaterMode === "manual" || updaterDownloadInFlight) {
+    const wasDownloading = updaterDownloadInFlight;
     updaterDownloadInFlight = false;
     hideBusy();
     void customConfirm({
-      title: "更新の確認に失敗",
-      message: `更新サーバーへの接続に失敗しました。\n${err?.message || ""}`,
+      title: wasDownloading ? "更新の適用に失敗" : "更新の確認に失敗",
+      message: wasDownloading
+        ? `更新を適用できませんでした。\n${err?.message || ""}`
+        : `更新サーバーへの接続に失敗しました。\n${err?.message || ""}`,
       okLabel: "OK",
       cancelLabel: "閉じる",
     });
