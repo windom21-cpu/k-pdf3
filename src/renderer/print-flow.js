@@ -1282,7 +1282,19 @@ export async function actionFaxSend(opts = {}) {
   // β.89 hotfix: 記憶済 / 選択直後の faxDevice が実は FAX 名でないケース
   // を最終チェック (旧 β.88 で alllPrinters fallback から非 FAX を記憶した
   // 痕跡を一掃する保険)。
-  if (!_isFaxNameLike(faxDevice)) {
+  // 2026-07-15 (Mac 実機): Mac は CUPS キュー ID (= faxDevice、装置名) が
+  // 「変更不可 + fax を含まない」ことがある (FF Direct Fax で確認)。picker
+  // の抽出 (_fetchFaxPrinters) と同じく表示名でも照合しないと、表示名に
+  // FAX を入れても毎回この警告が出てしまう。
+  let looksFax = _isFaxNameLike(faxDevice);
+  if (!looksFax) {
+    try {
+      const all = await kpdf3.listPrinters();
+      const rec = Array.isArray(all) ? all.find((p) => p.name === faxDevice) : null;
+      if (rec && _isFaxNameLike(rec.displayName)) looksFax = true;
+    } catch { /* ignore — 従来どおり name のみで判定 */ }
+  }
+  if (!looksFax) {
     const proceed = await customConfirm({
       title: "FAX 送信 — 注意",
       message: `選択されたプリンタ「${faxDevice}」は FAX 系の名前ではありません。\n\n本当にこのプリンタに白黒で送信しますか? (キャンセル推奨。「FAX プリンタを変更…」から FAX 系プリンタを選び直してください)`,
@@ -1352,13 +1364,20 @@ export async function actionFaxSend(opts = {}) {
         + `ことを確認し、宛先を入力して送信してください。`,
         95,
       );
+      let sendResult = null;
       try {
-        await kpdf3.printPdfSilent({
+        sendResult = await kpdf3.printPdfSilent({
           source: "rasterized",
           pages: composed,
           deviceName: faxDevice,
           copies: 1,
           color: "mono",
+          // 2026-07-15 (Mac 実機): Mac の FAX キューは装置名 (main の
+          // isFaxDevice が見る deviceName) に fax を含まないことがある。
+          // 名前判定に任せると CUPS 直送 (宛先入力なしの silent 送信) に
+          // 流れてしまうため、この経路は FAX 確定として明示 hint で
+          // silent:false ダイアログ経路を強制する。
+          faxHint: true,
         });
       } catch (err) {
         if (faxCancelled) return; // 中止ボタン側で hideBusy + status 済み
@@ -1371,8 +1390,13 @@ export async function actionFaxSend(opts = {}) {
       }
       if (faxCancelled) return;
       hideBusy();
+      // 診断ガード: この経路は engine=chromium (silent:false ダイアログ)
+      // になるのが正。別エンジンに流れていたら status に明示して、次の
+      // 実機報告で経路を確定できるようにする (HANDOVER の診断段階方針)。
+      const eng = sendResult?.engine;
       _wsStatus.textContent =
-        `FAX 送信: ${faxDevice} — ${filteredPages.length} ページ${forceFitA4 ? " (A4 統一)" : ""}`;
+        `FAX 送信: ${faxDevice} — ${filteredPages.length} ページ${forceFitA4 ? " (A4 統一)" : ""}`
+        + (eng && eng !== "chromium" ? ` ⚠ 想定外の経路 (engine=${eng})` : "");
       return;
     }
     // β.129: 描画完了 → ここから先は Adobe / FAX ドライバでの送信操作

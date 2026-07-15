@@ -2623,7 +2623,9 @@ function silentPrintPdf(pdfPath, opts) {
         // restore するので、ダイアログをユーザがキャンセルしても
         // 規定プリンタは元に戻る。
         let faxDefaultToken = null;
-        const isFax = isFaxDevice(opts.deviceName);
+        // 2026-07-15: opts.faxHint = Mac FAX ボタン経路の明示 FAX 指定
+        // (装置名に fax を含まないキュー対策)。名前判定との OR。
+        const isFax = isFaxDevice(opts.deviceName) || opts.faxHint === true;
         if (isFax) {
           try {
             faxDefaultToken = await applyFaxAsDefaultPrinter(opts.deviceName);
@@ -3847,6 +3849,12 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
     // PPD の選択肢キーワード (例 "Tray2")。印刷時点で print-trays-cups.js が
     // lpoptions の広告と再照合して -o InputSlot=... に展開する。
     trayValue = null,
+    // 2026-07-15 (Mac FAX): renderer の FAX 送信ボタン経路からの明示 hint。
+    // Mac は CUPS キュー ID (deviceName) に fax を含まない機種があり
+    // (FF Direct Fax 実機で確認)、isFaxDevice の名前判定だけだと CUPS 直送
+    // (silent、宛先入力なし) に流れてしまう。true なら FAX 扱いを強制。
+    // 既定 false = 従来の名前判定のみ (Windows 経路は不変)。
+    faxHint = false,
   } = payload ?? {};
   if (!deviceName) throw new Error("print-pdf-silent: deviceName missing");
 
@@ -3873,7 +3881,8 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   // fails to initialize the FAX driver ("プリンタを初期化できませんで
   // した" / exit 1). FAX は silentPrintPdf へ直行し、silent:false で
   // OS 印刷ダイアログ (送信先入力含む) を出す。
-  const isFax = isFaxDevice(deviceName);
+  // 2026-07-15: faxHint (Mac FAX ボタン経路の明示指定) でも FAX 扱い。
+  const isFax = isFaxDevice(deviceName) || faxHint === true;
   const sumatraExe = sumatraPath();
   let forceSumatra = false;
   let forceChromium = false;
@@ -3976,7 +3985,7 @@ ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
           };
         }
       }
-      await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color, pageSize });
+      await silentPrintPdf(tempPath, { deviceName, copies, landscape, duplex, bin, color, pageSize, faxHint });
       usedEngine = "chromium";
     }
   } finally {
