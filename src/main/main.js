@@ -2636,6 +2636,20 @@ function silentPrintPdf(pdfPath, opts) {
             );
           }
         }
+        // 2026-07-15 (§15.6 Mac FAX): macOS のネイティブ印刷ダイアログは
+        // 親ウインドウの sheet として出ることがあり、printWindow が
+        // hidden のままだとダイアログごと不可視になる恐れがある。darwin
+        // + 非 silent (= FAX) のときだけ可視化する (中身は Chromium PDF
+        // viewer = 送信内容のプレビューを兼ねる)。印刷 callback / 例外で
+        // hide に戻す。Windows/Linux は従来どおり hidden のまま。
+        const showForDialog = isFax && process.platform === "darwin";
+        const hideAfterDialog = () => {
+          if (!showForDialog) return;
+          try { if (!win.isDestroyed()) win.hide(); } catch { /* ignore */ }
+        };
+        if (showForDialog) {
+          try { win.show(); } catch { /* ignore */ }
+        }
         try {
           // FAX: silent:true で送信すると Chromium がドライバ UI を
           // 抑止し送信先入力ダイアログ無しで失敗 → silent:false で OS
@@ -2670,6 +2684,7 @@ function silentPrintPdf(pdfPath, opts) {
           win.webContents.print(
             printOpts,
             (success, errorType) => {
+              hideAfterDialog();
               // 規定プリンタの復元は print の結果に関係なく必要。
               // restore は fire-and-forget で良い (ベストエフォート)。
               if (faxDefaultToken) {
@@ -2683,6 +2698,7 @@ function silentPrintPdf(pdfPath, opts) {
             },
           );
         } catch (err) {
+          hideAfterDialog();
           if (faxDefaultToken) {
             restoreDefaultPrinter(faxDefaultToken).catch(() => {});
           }

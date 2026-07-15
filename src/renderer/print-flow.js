@@ -990,6 +990,17 @@ export async function actionPrintOverlayOnly() {
 
 const LS_FAX_PRINTER = "kpdf3.faxPrinter";
 
+// 2026-07-15 (§15.6): Mac の FAX 分岐用プラットフォーム判定。getAppInfo
+// は about ダイアログでも使う軽量 IPC。一度取れば不変なので cache する。
+let _platformCache = null;
+async function _isMacPlatform() {
+  if (_platformCache === null) {
+    try { _platformCache = (await kpdf3.getAppInfo())?.platform ?? "unknown"; }
+    catch { _platformCache = "unknown"; }
+  }
+  return _platformCache === "darwin";
+}
+
 /** main 側の isFaxDevice と同じパターンで FAX 系プリンタ名を判定。 */
 function _isFaxNameLike(name) {
   if (!name) return false;
@@ -1118,13 +1129,16 @@ const faxMixedA4 = $("fax-mixed-a4");
 const faxMixedAdobe = $("fax-mixed-adobe");
 const faxMixedCancel = $("fax-mixed-cancel");
 
-/** ページサイズ混在ダイアログ。"a4" | "adobe" | "cancel" を resolve。 */
-function _showFaxMixedDialog(mix) {
+/** ページサイズ混在ダイアログ。"a4" | "adobe" | "cancel" を resolve。
+ *  hideAdobe: Mac には Adobe `/p` が無いので「Adobe 経由」ボタンを出さない
+ *  (2026-07-15 darwin 分岐と対)。 */
+function _showFaxMixedDialog(mix, { hideAdobe = false } = {}) {
   return new Promise((resolve) => {
     const labels = mix.sizes
       .map((s) => `${_labelForPageSize(s.w, s.h)} × ${s.count}p`)
       .join(" / ");
     faxMixedMessage.textContent = `送信対象に複数のページサイズが混在しています (${labels})。`;
+    faxMixedAdobe.hidden = hideAdobe;
     faxMixedDialog.hidden = false;
     setTimeout(() => faxMixedA4.focus(), 0);
 
@@ -1183,7 +1197,14 @@ function _gatherPreselection() {
  */
 export async function actionFaxSend(opts = {}) {
   if (!_isOpen()) return;
-  const via = opts.via === "adobe" ? "adobe" : "auto";
+  let via = opts.via === "adobe" ? "adobe" : "auto";
+  // 2026-07-15 (§15.6): Mac には Adobe `/p` 相当が無い (pdf-reader-finder
+  // は win32 専用 + Mac 版 Acrobat に CLI 印刷なし) — printViaReaderDialog
+  // は必ず「No PDF Reader detected」で落ちる。escape hatch も auto (OS
+  // ネイティブ印刷ダイアログ) に集約する。UI 側の「Adobe 経由」項目も
+  // renderer.js で非表示にしているが、キーボード等の別経路に備えた保険。
+  const isMac = await _isMacPlatform();
+  if (isMac && via === "adobe") via = "auto";
   const pages = await _fetchVisiblePages();
   if (pages.length === 0) return;
   const { preselected, preselectedSource } = _gatherPreselection();
@@ -1204,7 +1225,7 @@ export async function actionFaxSend(opts = {}) {
   const mix = _detectPageSizeMix(filteredPages);
   let forceFitA4 = false;
   if (mix.mixed) {
-    const choice = await _showFaxMixedDialog(mix);
+    const choice = await _showFaxMixedDialog(mix, { hideAdobe: isMac });
     if (choice === "cancel") {
       _wsStatus.textContent = "FAX 送信をキャンセルしました";
       return;
@@ -1294,8 +1315,10 @@ export async function actionFaxSend(opts = {}) {
   //   document を閉じないため Path B も遷移しない。そのため Adobe 起動後は
   //   busy modal を「送信完了」の明示確認モーダルへ切り替え、ユーザーの
   //   明示操作で Adobe を閉じる (自動検出に依存しない)。
+  let faxCancelled = false;
   showBusy("FAX 送信", `送信先 ${faxDevice} — ページを描画中...`, 0, {
     onCancel: () => {
+      faxCancelled = true;
       try { kpdf3.cancelPrint?.(); } catch { /* ignore */ }
       hideBusy();
       _wsStatus.textContent = "FAX 送信を中止しました";
@@ -1317,6 +1340,41 @@ export async function actionFaxSend(opts = {}) {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
     });
+    // 2026-07-15 (§15.6): macOS 分岐 — Adobe `/p` の代わりに既存の
+    // Chromium silent:false 経路へ流す。main 側が isFax 検出で OS の
+    // ネイティブ印刷ダイアログを出す (β.91 の pageSize 抑止も同経路に
+    // 実装済) ので、FUJIFILM 等のドライバ宛先ペインはそのダイアログ内で
+    // 使ってもらう。宛先を含む選択は毎回手動 (記憶しない方針)。
+    // Windows の Adobe `/p` 経路はこの分岐に入らず 1 バイトも変わらない。
+    if (isMac) {
+      updateBusy(
+        `OS の印刷ダイアログが開きます。プリンタが「${faxDevice}」になっている`
+        + `ことを確認し、宛先を入力して送信してください。`,
+        95,
+      );
+      try {
+        await kpdf3.printPdfSilent({
+          source: "rasterized",
+          pages: composed,
+          deviceName: faxDevice,
+          copies: 1,
+          color: "mono",
+        });
+      } catch (err) {
+        if (faxCancelled) return; // 中止ボタン側で hideBusy + status 済み
+        if (/cancel/i.test(String(err?.message ?? err))) {
+          hideBusy();
+          _wsStatus.textContent = "FAX 送信をキャンセルしました";
+          return;
+        }
+        throw err; // 共通 catch (「FAX 送信失敗」表示) へ
+      }
+      if (faxCancelled) return;
+      hideBusy();
+      _wsStatus.textContent =
+        `FAX 送信: ${faxDevice} — ${filteredPages.length} ページ${forceFitA4 ? " (A4 統一)" : ""}`;
+      return;
+    }
     // β.129: 描画完了 → ここから先は Adobe / FAX ドライバでの送信操作
     // フェーズ。自動完了検出が効かないので modal を明示確認に切り替える。
     updateBusy(

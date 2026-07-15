@@ -7125,6 +7125,18 @@ if (btnPrintOverlayOnly) {
 }
 // Phase 2: FAX 送信ボタン。左クリック = streamlined (auto)、右クリック =
 // context menu (Adobe 経由 / FAX プリンタ変更)。
+// 2026-07-15 (§15.6): Mac には Adobe `/p` が無いので「Adobe 経由」項目と
+// 直後の区切り線を出さない (print-flow.js の darwin 分岐と対。仮に発火
+// しても actionFaxSend 側で auto に集約される)。
+if (ctxFaxBtn) {
+  kpdf3.getAppInfo?.().then((info) => {
+    if (info?.platform !== "darwin") return;
+    const adobeItem = ctxFaxBtn.querySelector('[data-ctx="fax-adobe"]');
+    if (adobeItem) adobeItem.style.display = "none";
+    const sep = ctxFaxBtn.querySelector(".menu-separator");
+    if (sep) sep.style.display = "none";
+  }).catch(() => { /* ignore — 取得失敗時は従来表示のまま */ });
+}
 if (btnFaxSend) {
   btnFaxSend.addEventListener("click", () => actionFaxSend({ via: "auto" }));
   btnFaxSend.addEventListener("contextmenu", (e) => {
