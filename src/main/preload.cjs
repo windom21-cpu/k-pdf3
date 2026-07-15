@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld("kpdf3", {
   listSystemFonts:    ()         => ipcRenderer.invoke("kpdf3:list-system-fonts"),
   printViaReaderDialog: (payload) => ipcRenderer.invoke("kpdf3:print-via-reader-dialog", payload),
   printPdfSilent:     (payload)  => ipcRenderer.invoke("kpdf3:print-pdf-silent", payload),
+  faxOpenPreviewMac:  (payload)  => ipcRenderer.invoke("kpdf3:fax-open-preview-mac", payload),
   prepareRedactedSource: (pageRedactions) => ipcRenderer.invoke("kpdf3:prepare-redacted-source", pageRedactions),
   cancelPrint:        ()         => ipcRenderer.invoke("kpdf3:cancel-print"),
   // queries

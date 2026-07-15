@@ -3822,6 +3822,45 @@ ipcMain.handle("kpdf3:print-via-reader-dialog", async (_, payload) => {
   }
 });
 
+// 2026-07-15 (Mac FAX 案 A-2): Chromium silent:false 案は v2.0.19 実機で
+// 却下が確定 — macOS の webContents.print({silent:false}) は印刷ダイアログ
+// を出さず既定設定で即時投入し (宛先なしジョブがキューに残る)、しかも
+// printWindow の PDF viewer が白紙表示 = 白紙送信のリスクもある。
+// 代替として組み立て済み PDF をプレビュー.app で開き、ユーザーが ⌘P →
+// FAX キュー選択 → 宛先入力する手動送信に切り替える (Windows の Adobe
+// `/p` + β.129「送信完了」明示確認と同じ思想。プレビューは AppleScript
+// 非対応なので ⌘P の自動化はしない — GUI スクリプティングはアクセシ
+// ビリティ権限が要る上に脆く、却下)。
+ipcMain.handle("kpdf3:fax-open-preview-mac", async (_, payload) => {
+  if (process.platform !== "darwin") {
+    throw new Error("fax-open-preview-mac: darwin only");
+  }
+  if (!activeWorkspace) throw new Error("No active workspace");
+  const { pages } = payload ?? {};
+  if (!Array.isArray(pages) || pages.length === 0) {
+    throw new Error("fax-open-preview-mac: invalid pages");
+  }
+  const sourceBytes = activeWorkspace.getSourceBytes() ?? null;
+  const pdfBytes = await assembleHybridPdf(pages, sourceBytes);
+  const tempPath = tempPrintPath();
+  writeFileSync(tempPath, pdfBytes);
+  await new Promise((resolve, reject) => {
+    const child = spawn("open", ["-a", "Preview", tempPath], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.once("error", (err) => {
+      reject(new Error(`プレビューを開けませんでした: ${err?.message ?? err}`));
+    });
+    child.once("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`プレビューを開けませんでした (open exit ${code})`));
+    });
+    child.unref();
+  });
+  return { tempPath };
+});
+
 ipcMain.handle("kpdf3:print-pdf-silent", async (_, payload) => {
   if (!activeWorkspace) throw new Error("No active workspace");
   const {

@@ -1287,10 +1287,14 @@ export async function actionFaxSend(opts = {}) {
   // の抽出 (_fetchFaxPrinters) と同じく表示名でも照合しないと、表示名に
   // FAX を入れても毎回この警告が出てしまう。
   let looksFax = _isFaxNameLike(faxDevice);
+  // 案内表示用: Mac の印刷ダイアログのプリンタ欄には表示名が並ぶので、
+  // 取れれば表示名を使う (取れなければキュー名のまま)。
+  let faxDeviceLabel = faxDevice;
   if (!looksFax) {
     try {
       const all = await kpdf3.listPrinters();
       const rec = Array.isArray(all) ? all.find((p) => p.name === faxDevice) : null;
+      if (rec?.displayName) faxDeviceLabel = rec.displayName;
       if (rec && _isFaxNameLike(rec.displayName)) looksFax = true;
     } catch { /* ignore — 従来どおり name のみで判定 */ }
   }
@@ -1352,51 +1356,32 @@ export async function actionFaxSend(opts = {}) {
         updateBusy(`${done} / ${total} ページを描画中...`, (done / total) * 80);
       },
     });
-    // 2026-07-15 (§15.6): macOS 分岐 — Adobe `/p` の代わりに既存の
-    // Chromium silent:false 経路へ流す。main 側が isFax 検出で OS の
-    // ネイティブ印刷ダイアログを出す (β.91 の pageSize 抑止も同経路に
-    // 実装済) ので、FUJIFILM 等のドライバ宛先ペインはそのダイアログ内で
-    // 使ってもらう。宛先を含む選択は毎回手動 (記憶しない方針)。
-    // Windows の Adobe `/p` 経路はこの分岐に入らず 1 バイトも変わらない。
+    // 2026-07-15 (§15.6 案 A-2): macOS 分岐 — 組み立て済み PDF をプレビュー
+    // .app で開き、⌘P → FAX キュー選択 → 宛先入力の手動送信に委ねる。
+    // v2.0.19 実機で Chromium silent:false 案は却下が確定: macOS の
+    // webContents.print({silent:false}) は印刷ダイアログを出さず既定設定で
+    // 即時投入し (宛先なしジョブがキューに残る)、printWindow の PDF viewer
+    // も白紙表示 = 白紙送信リスク。送信完了の自動検出は Windows 同様に
+    // 構造的に不可能なので、β.129 と同じ「送信完了」明示確認で締める。
+    // Windows の Adobe `/p` 経路はこの分岐に入らず不変。
     if (isMac) {
-      updateBusy(
-        `OS の印刷ダイアログが開きます。プリンタが「${faxDevice}」になっている`
-        + `ことを確認し、宛先を入力して送信してください。`,
-        95,
-      );
-      let sendResult = null;
-      try {
-        sendResult = await kpdf3.printPdfSilent({
-          source: "rasterized",
-          pages: composed,
-          deviceName: faxDevice,
-          copies: 1,
-          color: "mono",
-          // 2026-07-15 (Mac 実機): Mac の FAX キューは装置名 (main の
-          // isFaxDevice が見る deviceName) に fax を含まないことがある。
-          // 名前判定に任せると CUPS 直送 (宛先入力なしの silent 送信) に
-          // 流れてしまうため、この経路は FAX 確定として明示 hint で
-          // silent:false ダイアログ経路を強制する。
-          faxHint: true,
-        });
-      } catch (err) {
-        if (faxCancelled) return; // 中止ボタン側で hideBusy + status 済み
-        if (/cancel/i.test(String(err?.message ?? err))) {
-          hideBusy();
-          _wsStatus.textContent = "FAX 送信をキャンセルしました";
-          return;
-        }
-        throw err; // 共通 catch (「FAX 送信失敗」表示) へ
-      }
+      updateBusy("プレビュー.app を開いています...", 95);
+      await kpdf3.faxOpenPreviewMac({ pages: composed });
       if (faxCancelled) return;
       hideBusy();
-      // 診断ガード: この経路は engine=chromium (silent:false ダイアログ)
-      // になるのが正。別エンジンに流れていたら status に明示して、次の
-      // 実機報告で経路を確定できるようにする (HANDOVER の診断段階方針)。
-      const eng = sendResult?.engine;
+      await customConfirm({
+        title: "FAX 送信 — プレビューから送信",
+        message:
+          "プレビュー.app で送信用 PDF (白黒) を開きました。\n\n"
+          + "1. プレビューで ⌘P (プリント...) を押す\n"
+          + `2. プリンタで「${faxDeviceLabel}」を選ぶ\n`
+          + "3. 宛先を入力して送信する\n\n"
+          + "送信が終わったら「送信完了」を押してください。",
+        okLabel: "送信完了",
+        cancelLabel: null,
+      });
       _wsStatus.textContent =
-        `FAX 送信: ${faxDevice} — ${filteredPages.length} ページ${forceFitA4 ? " (A4 統一)" : ""}`
-        + (eng && eng !== "chromium" ? ` ⚠ 想定外の経路 (engine=${eng})` : "");
+        `FAX 送信: ${faxDeviceLabel} — ${filteredPages.length} ページ${forceFitA4 ? " (A4 統一)" : ""} (プレビュー経由)`;
       return;
     }
     // β.129: 描画完了 → ここから先は Adobe / FAX ドライバでの送信操作
