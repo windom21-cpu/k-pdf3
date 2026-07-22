@@ -220,8 +220,8 @@
 **進捗 (2026-07-23 着手)**: 「次の大物」= テキスト表示ずれ根治 (案 C、HANDOVER §8.2 🆕) と位置づけて着手。
 - ✅ その1 `image-export.js` (`97c7243`) — β97 画像書き出し 2 機能 (~390 行)
 - ✅ その2 `save-flow.js` (`e86f5ef`) — 確定/上書き/別名 + ADR-0026 戻す (~420 行。workspaceMutated は setter 注入、menuBar は setMenuEnabled callback)
-- ⬜ その3 `sidebar-thumbs.js` (~1,300 行、最大の塊 — サムネ描画/observer/DnD/挿入 gap/複数選択/削除/コンテキストメニュー)
-- ⬜ その4 `split-view.js` (~600 行 — 分割保存パネル + 分割サムネ + actionSplitSave)
+- ✅ その3 `sidebar-thumbs.js` (`ee3e03f`) — サムネ描画/observer/DnD/挿入 gap+白紙ダイアログ/複数選択/削除/コンテキストメニュー (ページ保存含む) + サイドバー開閉/タブ切替 (~1,280 行、最大の塊。renderer.js 7,405 → 6,158 行。rotatePageBy は callback 注入で回転系本体は不動、currentSidebarTab はタブ snapshot 連携のため get/set export)
+- ⬜ その4 `split-view.js` (~600 行 — 分割保存パネル + 分割サムネ + actionSplitSave。sidebar-thumbs.js の selection / D&D / gap ヘルパーを import して共有)
 - ⬜ (余力) ページ番号一括 (~200 行) / フォーム Tab 順編集 (~475 行)
 - ⬜ 実機一巡 (全抽出後にまとめて)
 
