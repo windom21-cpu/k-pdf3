@@ -382,6 +382,82 @@ function _formFieldTextVectorOps(ctx, ov, zoom, monoOverlays) {
   return ops;
 }
 
+// ---- ADR-0028 案 C: 非編集時テキスト表示の共有採寸 ---------------------
+//
+// viewer の非編集時 text / form_field(text) 表示は DOM の自動折返しを使わず、
+// exporter と同一の canvas 採寸で「1 行 = 1 span」を絶対配置する (ADR-0028)。
+// 行分割・行位置の数式は drawOverlay / _textOverlayVectorOps /
+// _formFieldTextVectorOps と 1:1 — ここを変えるときは必ず 4 者を同時に
+// 直すこと。採寸は EXPORT_ZOOM (900dpi 相当) 固定で行い canonical pt で
+// 返すので、viewer の zoom (fit-width 倍率) や DPR に依存しない = どの
+// モニタでも折返しが確定出力と一致する。
+
+/**
+ * text / form_field(text) overlay の行レイアウトを canvas 採寸で計算する。
+ *
+ * 戻り値は natural frame (content rotation 適用前) の overlay 左上を原点と
+ * する canonical pt。回転は呼び出し側 (viewer の rotated inner コンテナ /
+ * exporter の ctx.rotate) が掛ける。空行は ink が無いので含めない — 絶対
+ * 配置なので後続行の位置はずれない。対象外 overlay は null。
+ *
+ * @param {any} ov
+ * @param {CanvasRenderingContext2D} [ctx] 採寸 ctx (テストで stub 注入可)
+ * @returns {{ rot:number, naturalW:number, naturalH:number,
+ *             lines: Array<{ text:string, x:number, baseline:number }> } | null}
+ */
+export function measureOverlayTextLayout(ov, ctx = _vectorMeasureCtx()) {
+  const props = ov?.properties ?? {};
+  const Z = EXPORT_ZOOM;
+  if (ov?.type === "text") {
+    const fontSize = props.fontSize ?? 12;
+    ctx.font = `${fontSize * Z}px ${getTextFontStack(props.fontId, {
+      digitsHanko: !!props.digitsHanko,
+    })}`;
+    const baseOff = _baselineOffsetPx(ctx) / Z;
+    const lineHeight = fontSize * (props.lineHeight ?? 1);
+    const rot = (((props.rotation ?? 0) % 360) + 360) % 360;
+    const isVert = rot === 90 || rot === 270;
+    const naturalW = isVert ? ov.h : ov.w;
+    const naturalH = isVert ? ov.w : ov.h;
+    const raw = wrapCanvasText(ctx, String(props.text ?? ""), naturalW * Z);
+    const lines = [];
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i].trim() === "") continue;
+      lines.push({ text: raw[i], x: 0, baseline: i * lineHeight + baseOff });
+    }
+    return { rot, naturalW, naturalH, lines };
+  }
+  if (ov?.type === "form_field" && (props.fieldKind ?? "text") === "text") {
+    const fontSize = props.fontSize ?? 12;
+    ctx.font = `${fontSize * Z}px ${getTextFontStack(props.fontFace)}`;
+    const baseOff = _baselineOffsetPx(ctx) / Z;
+    const padX = Math.max(1, Z) / Z; // drawOverlay の Math.max(1, zoom) と同値
+    const innerW = Math.max(0, ov.w - 2 * padX);
+    const value = String(props.value ?? "");
+    const raw = value === "" ? [] : wrapCanvasText(ctx, value, innerW * Z);
+    const lineHeight = fontSize * 1.2;
+    const totalH = raw.length * lineHeight;
+    const alignV = props.alignV ?? "middle";
+    let baseY;
+    if (alignV === "top") baseY = 0;
+    else if (alignV === "bottom") baseY = ov.h - totalH;
+    else baseY = (ov.h - totalH) / 2;
+    const alignH = props.alignH ?? "left";
+    const lines = [];
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i].trim() === "") continue;
+      const lineW = ctx.measureText(raw[i]).width / Z;
+      let x;
+      if (alignH === "right") x = ov.w - padX - lineW;
+      else if (alignH === "center") x = (ov.w - lineW) / 2;
+      else x = padX;
+      lines.push({ text: raw[i], x, baseline: baseY + i * lineHeight + baseOff });
+    }
+    return { rot: 0, naturalW: ov.w, naturalH: ov.h, lines };
+  }
+  return null;
+}
+
 /** 2 つの overlay 矩形 (canonical pt) が重なるか。 */
 function _overlayRectsIntersect(a, b) {
   return (

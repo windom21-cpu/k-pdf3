@@ -1,7 +1,9 @@
 # ADR-0002: Layout engine に mupdf.js を採用する
 
 - 日付: 2026-05-09
-- ステータス: 採用
+- ステータス: 一部 supersede（→ ADR-0028、2026-07-23）— 「viewer/pdf 共通 layout engine と
+  して mupdf を使う」部分は canvas 採寸（`wrapCanvasText` @ `EXPORT_ZOOM`）に置き換え、
+  `backend/mupdf-layout.js` は復活させない。mupdf のレンダリング・probe・修復用途は現役のまま。
 
 ## Context
 
