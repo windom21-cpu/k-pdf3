@@ -15,9 +15,6 @@ import {
 import {
   composePagesForExport,
   composeSinglePageCanvas,
-  composePageImage,
-  composeRegionImage,
-  byteCopyEligible,
 } from "./exporter.js";
 import {
   TEXT_FONT_DEFAULT_ID,
