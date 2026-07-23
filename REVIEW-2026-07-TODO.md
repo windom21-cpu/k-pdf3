@@ -222,8 +222,10 @@
 - ✅ その2 `save-flow.js` (`e86f5ef`) — 確定/上書き/別名 + ADR-0026 戻す (~420 行。workspaceMutated は setter 注入、menuBar は setMenuEnabled callback)
 - ✅ その3 `sidebar-thumbs.js` (`ee3e03f`) — サムネ描画/observer/DnD/挿入 gap+白紙ダイアログ/複数選択/削除/コンテキストメニュー (ページ保存含む) + サイドバー開閉/タブ切替 (~1,280 行、最大の塊。renderer.js 7,405 → 6,158 行。rotatePageBy は callback 注入で回転系本体は不動、currentSidebarTab はタブ snapshot 連携のため get/set export)
 - ✅ その4 `split-view.js` (`cd6a79d`) — 分割保存パネル + 分割サムネ (β.123 プログレッシブ生成) + actionSplitSave / 分割確定 / refreshSplitView (~575 行。renderer.js 6,158 → 5,646 行。sidebar-thumbs.js の selection / D&D / gap ヘルパーを import 共有、isSplitMode は isSplitModeActive() で export し print-flow / sidebar-thumbs への注入は従来どおり renderer 経由。splitState は export して renderer の thumbCache invalidate 経路は不変)
-- ⬜ (余力) ページ番号一括 (~200 行) / フォーム Tab 順編集 (~475 行)
-- ⬜ 実機一巡 (全抽出後にまとめて)
+- ✅ その5 `page-numbers.js` (`1bea32a`) — ＋ページ番号一括 (β.119 プリセット永続化含む、~200 行。renderer.js 5,646 → 5,456 行。isOpen / projectStore / history / pendingDeletedPages を getter 注入、移動で未使用化した getTextFontStack / measureTextOverlaySize の import も除去)
+- ✅ その6 `form-tab-order.js` (`a1a2b74`) — β.82 (B-6) Tab 順編集モード一式 (番号バッジ + MutationObserver / バッジ D&D / リスト popup、~465 行。renderer.js 5,456 → 4,997 行。tabOrderEditMode は state ごと移動し isTabOrderEditMode() で公開 = §4.4 パターン 3、記入モードとの排他は setFormFillMode callback 注入で双方向維持、projectStore 購読からの popup 再描画は refreshTabOrderListPopupIfOpen() に集約)
+- ✅ 残置 cleanup (`9e09cd9`) — exporter 未使用 import 3 件 (composePageImage / composeRegionImage / byteCopyEligible) を除去
+- ⬜ 実機一巡 (全抽出後にまとめて。分割保存パネル重点 + フォーム Tab 順編集 / ＋ページ番号も確認)
 
 各ステップ = 純移動 1 commit・npm test 全緑確認。回転系 (`rotatePageBy` 周辺) は完成領域のため対象外。
 
@@ -285,4 +287,4 @@
 | 4 | byte-copy 総当たりテスト | ✅ 完了 (ゲート一本化 + print 末尾削除バグ 2 件同時修正、β.4 配信済) | 2026-07-06 / 94f0b44・配信 f331ee9 |
 | 9 | 確定版ステータス可視化 | ✅ 完了 (ステータスバー常時表示、v2.0.13 同乗。「編集に戻す」文言は紛らわしさ報告なし→現状維持) | 2026-07-10 / 53028ec |
 | 7 | HANDOVER 乖離修正 + ADR 起草 | ✅ 完了 (遡及 ADR 0017〜0025 全 9 本、ADR-0016 は 0019 に吸収) | 2026-07-10 |
-| 8 | renderer.js S6 リファクタ | 🔨 **進行中** (その1〜その4 抽出完了: image-export / save-flow / sidebar-thumbs / split-view、8,050→5,646 行。残り = (余力) ページ番号一括・フォーム Tab 順 → 実機一巡) | 着手 2026-07-23 / 97c7243・e86f5ef・ee3e03f・cd6a79d |
+| 8 | renderer.js S6 リファクタ | 🔨 **進行中** (その1〜その6 抽出完了: image-export / save-flow / sidebar-thumbs / split-view / page-numbers / form-tab-order + 残置 import cleanup、8,050→4,997 行。余力 2 件も消化済み、残り = 実機一巡のみ) | 着手 2026-07-23 / 97c7243・e86f5ef・ee3e03f・cd6a79d・1bea32a・a1a2b74・9e09cd9 |
