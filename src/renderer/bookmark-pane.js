@@ -560,6 +560,28 @@ bookmarkTree?.addEventListener("keydown", (e) => {
   else actionIndentBookmark();
 });
 
+/** Guarded auto-import: workspace のしおりが 0 件で、いま開いている PDF に
+ *  /Outlines があるときだけ actionImportOutlines を走らせる。1 件でもあれば
+ *  何もしない (再取込はユーザー編集を複製/破壊するため禁止 — openPdfPath の
+ *  初回自動取込と同じガード)。
+ *  呼び元: openPdfPath (初回オープン) と、確定保存 (上書き) 後の
+ *  新フラット workspace への切替 (save-flow.js)。後者を通さないと
+ *  「確定後にしおり追加 → 既存しおりが /Outlines フォールバック表示から
+ *  workspace 表示 (新規 1 件のみ) に切り替わって全部消えたように見える」。 */
+export async function autoImportOutlinesIfEmpty() {
+  if (!_isOpen()) return;
+  try {
+    const existing = await kpdf3.listBookmarks();
+    if (Array.isArray(existing) && existing.length > 0) return;
+    const outline = await kpdf3.getOutline();
+    if (Array.isArray(outline) && outline.length > 0) {
+      await actionImportOutlines();
+    }
+  } catch (err) {
+    console.warn("[bookmark] auto-import failed:", err);
+  }
+}
+
 /** Flatten the source-PDF /Outlines tree into workspace bookmarks so the
  *  user can edit / extend them. The tree is walked depth-first; titles
  *  for nodes without a target page get suffixed "(章)" so they stay

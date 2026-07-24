@@ -145,7 +145,7 @@ import {
 import {
   initBookmarkPane,
   refreshBookmarks,
-  actionImportOutlines,
+  autoImportOutlinesIfEmpty,
   getBookmarkSnapshot,
   setBookmarkSnapshot,
   clearBookmarkState,
@@ -2184,17 +2184,7 @@ async function openPdfPath(pdfPath) {
     // edit) we never re-import — that would duplicate or trample the
     // user's edits. β tester explicitly asked for the manual 取込
     // button to be removed in favour of "当然に取り込んで".
-    try {
-      const existing = await kpdf3.listBookmarks();
-      if (!Array.isArray(existing) || existing.length === 0) {
-        const outline = await kpdf3.getOutline();
-        if (Array.isArray(outline) && outline.length > 0) {
-          await actionImportOutlines();
-        }
-      }
-    } catch (err) {
-      console.warn("[bookmark] auto-import failed:", err);
-    }
+    await autoImportOutlinesIfEmpty();
     await refreshViewer();
     renderTabBar();
     // ADR-0026: フラット版 (確定版) を開いたら「編集に戻す」で再編集できる

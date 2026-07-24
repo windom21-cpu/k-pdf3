@@ -19,6 +19,7 @@ import {
 import { renderSyntheticPagePixels } from "./viewer.js";
 import { showBusy, updateBusy, hideBusy } from "./busy-modal.js";
 import { customConfirm } from "./dialogs.js";
+import { autoImportOutlinesIfEmpty } from "./bookmark-pane.js";
 import {
   getActiveTab,
   getActiveTabId,
@@ -291,6 +292,14 @@ export async function actionExportToPath(
           tab.activeSourceName = savePath.split(/[\\/]/).pop() ?? "";
         }
         await _refreshViewer();
+        // 確定 (再合成) は新しいフラット workspace に切り替わるため、しおり
+        // テーブルが空になる。openPdfPath と同じ自動取込を通さないと、書き
+        // 戻された /Outlines がフォールバック表示 (編集不可) のまま残り、
+        // しおりを 1 件追加した瞬間に workspace 表示へ切り替わって既存しおりが
+        // 全部消えたように見える (アプリ再起動で直る、の正体)。さらにその
+        // まま再確定すると write-back 0 件でファイルからしおりが消える。
+        // byte-copy (同一 workspace 再利用) はしおりが残っているので no-op。
+        await autoImportOutlinesIfEmpty();
       }
     } catch (switchErr) {
       console.error("[renderer] post-save workspace switch failed:", switchErr);
