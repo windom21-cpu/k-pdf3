@@ -159,3 +159,20 @@ Web 公開機能なし、UI も `98.css` + DOM の伝統的構成のため、新
 - 代替案 (b) better-sqlite3 自前ビルドは不採用: CI に native build が入り Win/Mac/Linux 3 OS 分の複雑化・保守負担が発生し、見合わない。
 - **容認は条件付き**: better-sqlite3 の 42 対応（prebuild npm 公開 or ソースビルド安定宣言）が出た時点で、次の patch/β で即 42 化する。
 - 月次監視 routine（`trig_014hyr1dE1yVZZWf23J1PRZN`、毎月 1 日 09:05 JST）による自動判定 + 42 化 PR 準備の枠組みは維持。
+
+## 更新 (2026-07-24): Electron 42 へ更新（EOL 前に解除条件が充足）
+
+### 背景
+- **Electron 41 は 2026-08-25 で EOL**。上記 (a) の容認条件を待つまでもなく、解除条件が充足された:
+  - `WiseLibs/better-sqlite3` **v12.11.1** (2026-06-15) が **electron-v146（Electron 42）prebuild** を win32-x64 / darwin-x64 / darwin-arm64 / linux-x64 の全 4 プラットフォームで提供（release assets を gh api で確認済み）。
+  - Windows の Electron 42 ビルドエラー修正 PR **#1488** が v12.11.1 に収録、issue **#1474**/**#1475**（V8 external API）も closed。
+- 2026-07-01 に `security/electron-42-upgrade` ブランチ（42.5.2 / 12.11.1）で先行準備していたが、v2.0.11 分岐だったため main へ載せ直し（本更新が正、ブランチは破棄）。
+
+### 決定
+- `devDependencies.electron` を `41.7.1` → **`42.7.1` (exact)** に更新（2026-07-24 時点の 42 系最新。CVE-2026-34781 clipboard DoS / CVE-2026-34769 commandLineSwitches injection とも修正済みの版数）。
+- `dependencies.better-sqlite3` を `12.10.0` → **`12.11.1` (exact)** に更新（13.x は major のため見送り、単独載せ替えの切り分け優先）。
+- これにより **EOL を脱却し、Electron 42（サポート期限 〜2026-10-20）に移行**。
+
+### 検証方針
+- **単独 β（v2.0.23-beta.2 想定）で配信し、他の変更と混ぜない**（42 = Chromium 更新はフォントメトリクスが変わり得るため。ADR-0028 のテキストレイアウトが直後の stable にあることも考慮）。
+- ローカル npm test 全通過 → CI test.yml（3 OS で実 Electron 起動 = test:m1）緑 → 実機 Windows スモーク確認（blob 画像・印刷・ポップアップ表示・テキスト表示の折返し一致）。
