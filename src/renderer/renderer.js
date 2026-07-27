@@ -485,6 +485,7 @@ initSidebarThumbs({
   refreshMenuState: () => refreshMenuState(),
   updateTabBarOffset: () => updateTabBarOffset(),
   rotatePageBy: (pageNo, delta) => rotatePageBy(pageNo, delta),
+  actionPrint: (opts) => actionPrint(opts),
 });
 initSplitView({
   viewer,

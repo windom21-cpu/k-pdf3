@@ -43,6 +43,7 @@ let _refreshDirtyIndicator = () => {};
 let _refreshMenuState = () => {};
 let _updateTabBarOffset = () => {};
 let _rotatePageBy = async () => {};
+let _actionPrint = async () => {};
 
 export function initSidebarThumbs({
   viewer: viewerRef,
@@ -57,6 +58,7 @@ export function initSidebarThumbs({
   refreshMenuState,
   updateTabBarOffset,
   rotatePageBy,
+  actionPrint,
 }) {
   viewer = viewerRef;
   _isOpen = isOpen;
@@ -70,6 +72,7 @@ export function initSidebarThumbs({
   _refreshMenuState = refreshMenuState;
   _updateTabBarOffset = updateTabBarOffset;
   _rotatePageBy = rotatePageBy;
+  _actionPrint = actionPrint ?? _actionPrint;
 }
 
 // ---- Thumb context menu (sidebar + split-save thumbs) -----------------
@@ -89,6 +92,12 @@ function showThumbContextMenu(pageNo, x, y) {
     saveItem.textContent = useMulti
       ? `選択した ${sel.size} ページを PDF として保存…`
       : "このページを PDF として保存…";
+  }
+  const printItem = ctxThumb.querySelector('[data-ctx="print-page"]');
+  if (printItem) {
+    printItem.textContent = useMulti
+      ? `選択した ${sel.size} ページを印刷…`
+      : "このページを印刷…";
   }
   const deleteItem = ctxThumb.querySelector('[data-ctx="delete-page"]');
   if (deleteItem) {
@@ -124,6 +133,15 @@ function dispatchThumbCtx(target) {
     } else {
       actionSavePagesAsPdf([pageNo]);
     }
+  } else if (action === "print-page") {
+    // save-page と同じ複数選択セマンティクス: 右クリックしたページが
+    // アクティブな複数選択に含まれるなら選択全体を、そうでなければ
+    // クリックした 1 ページだけを印刷する。右クリックは選択状態を変え
+    // ないため、actionPrint の選択推測 (_sidebarSelectionUsable) には
+    // 頼らず forcePages で明示指定する (選択外ページの単独印刷対応)。
+    const sel = sidebarThumbSelection.pageNos;
+    const targets = sel.size > 1 && sel.has(pageNo) ? [...sel] : [pageNo];
+    _actionPrint({ forcePages: targets });
   } else if (action === "delete-page") {
     // Same multi-select semantics as save-page: if the right-clicked
     // page is part of the active multi-selection, delete the whole

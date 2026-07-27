@@ -656,7 +656,11 @@ async function actionPrintViaReader(pages, preselected, preselectedSource, opts 
 // 旧 β.88 の sticky トグル (localStorage 永続) は 2026-07-11 に廃止 —
 // モードが残留して次回以降の印刷を黒化する事故を避け、押した 1 回だけ
 // 適用する (Mac プリセットと同じ「選択は記憶せず毎回明示」方針)。
-export async function actionPrint({ mono = false } = {}) {
+// forcePages: サムネ右クリック「選択した N ページを印刷」用の明示ページ指定。
+// 指定時は split / sidebar 選択の推測ロジックを飛ばしてこのリストを採用する
+// (右クリックは選択状態を変えないため、選択外ページの単独印刷が推測では
+// 表現できない)。null なら従来どおり。
+export async function actionPrint({ mono = false, forcePages = null } = {}) {
   if (!_isOpen()) return;
   const pages = await _fetchVisiblePages();
   if (pages.length === 0) return;
@@ -677,7 +681,10 @@ export async function actionPrint({ mono = false } = {}) {
   let preselectedSource = null;
   const splitSel = _splitThumbSelection();
   const sidebarSel = _sidebarThumbSelection();
-  if (splitSel.pageNos.size > 0) {
+  if (Array.isArray(forcePages) && forcePages.length > 0) {
+    preselected = [...forcePages];
+    preselectedSource = "sidebar";
+  } else if (splitSel.pageNos.size > 0) {
     preselected = [...splitSel.pageNos];
     preselectedSource = "split";
   } else if (_sidebarSelectionUsable(sidebarSel)) {
