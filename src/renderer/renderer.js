@@ -2567,12 +2567,19 @@ async function rotatePageBy(pageNo, delta) {
  *      multi-select via Ctrl/Shift+click
  *   3. main viewer's currentPage — the page the user is looking at
  *
- * A *single-page* sidebar selection is intentionally ignored: clicking
- * a sidebar thumb both selects AND scrolls the viewer there, so the
- * selection is often just a leftover from navigation. After the user
- * scrolls to a different page, they expect "rotate" to act on what
- * they're SEEING, not on the long-stale clicked thumb (β8/β9 testers
- * reported "サイドバーで選択 → 回転で関係ないページが回転").
+ * A *single-page* sidebar selection is honored only while the selected
+ * page is still visible in the viewport: clicking a sidebar thumb both
+ * selects AND scrolls the viewer there, so an off-screen selection is
+ * just a leftover from navigation. After the user scrolls to a
+ * different page, they expect "rotate" to act on what they're SEEING,
+ * not on the long-stale clicked thumb (β8/β9 testers reported
+ * "サイドバーで選択 → 回転で関係ないページが回転").
+ *
+ * The visibility check matters for pages near the end of the document:
+ * scrollToPage clamps at the bottom, so the clicked page may never
+ * reach the top of the viewport and visiblePageNow() (topmost visible
+ * page) would return the page *before* it — 2026-07-27 report
+ * "最後のページを左サムネで選択して回転すると 1 つ前のページが回転".
  *
  * Multi-page sidebar selections are clearly deliberate, so we honor
  * those without ambiguity.
@@ -2585,6 +2592,10 @@ function resolveRotationTargets() {
   if (sidebarThumbSelection.pageNos.size >= 2) {
     const ordered = getOrderedThumbPageNos(thumbList, ".thumb-item");
     return ordered.filter((n) => sidebarThumbSelection.pageNos.has(n));
+  }
+  if (sidebarThumbSelection.pageNos.size === 1) {
+    const [selNo] = sidebarThumbSelection.pageNos;
+    if (viewer.isPageVisibleNow?.(selNo)) return [selNo];
   }
   // visiblePageNow() reads scrollTop synchronously rather than the
   // cached _currentPage — protects against a race where the user has
