@@ -42,6 +42,17 @@ const CALLOUT_PAD_Y_BOTTOM = 1; // 1 (border) only
 // top of each line-box. Stay matched with editor-side style.lineHeight.
 const CALLOUT_LINE_HEIGHT = 1.0;
 
+// Content rotation carried onto the overlay by rotatePageBy (0/90/180/270).
+// At 90/270 the stored canonical w/h are the POST-rotation outer box while
+// the text flows in the pre-rotation (natural) frame with the axes swapped
+// — see the rotated textNode in viewer.js and drawOverlay in exporter.js.
+// Every fit/measure in this file must therefore work in the natural frame
+// and map the result back, or a rotated callout snaps on the wrong axis.
+function isVertRotation(ov) {
+  const rot = (((ov?.properties?.rotation ?? 0) % 360) + 360) % 360;
+  return rot === 90 || rot === 270;
+}
+
 export function handleTextEditCommit(id, newText, opts = {}) {
   if (!_isOpen()) return;
   const projectStore = _projectStore();
@@ -73,16 +84,27 @@ export function handleTextEditCommit(id, newText, opts = {}) {
   let sizePatch = {};
   const isCallout = ov.type === "rect" && ov.properties?.kind === "callout";
   if (ov.type === "text" || isCallout) {
+    // The inline editor always runs upright, so both the reported visible
+    // size and the measure fallback are natural-frame dimensions. For a
+    // 90/270° rotated overlay they must be transposed before saving.
+    const isVert = isVertRotation(ov);
     if (opts.visibleCanonicalW != null && opts.visibleCanonicalH != null) {
-      sizePatch = {
-        w: Math.max(40, Math.ceil(opts.visibleCanonicalW)),
-        h: Math.max(ov.properties?.fontSize ?? 12, Math.ceil(opts.visibleCanonicalH)),
-      };
+      const naturalW = Math.max(40, Math.ceil(opts.visibleCanonicalW));
+      const naturalH = Math.max(
+        ov.properties?.fontSize ?? 12,
+        Math.ceil(opts.visibleCanonicalH),
+      );
+      sizePatch = isVert
+        ? { w: naturalH, h: naturalW }
+        : { w: naturalW, h: naturalH };
     } else {
       // Legacy fallback: page-edge-capped measure (β.25 C1 recipe).
+      // The cap models "box left edge → paper right edge", which only
+      // describes an upright overlay — a 90/270° one grows along the
+      // page's vertical axis, so leave it uncapped there.
       let maxCanonicalW = Infinity;
       const row = _viewer._pages?.find((p) => p.pageNo === ov.pageNo);
-      if (row) {
+      if (row && !isVert) {
         const cw = row.cropW ?? row.width ?? 595;
         const ch = row.cropH ?? row.height ?? 842;
         const userRot = (((row.userRotation ?? 0) % 360) + 360) % 360;
@@ -95,8 +117,10 @@ export function handleTextEditCommit(id, newText, opts = {}) {
         digitsHanko: !!ov.properties?.digitsHanko,
       });
       const measure = isCallout ? measureCalloutSize : measureTextOverlaySize;
-      const m = measure(newText, fontSize, fontStack, ov.w, maxCanonicalW);
-      sizePatch = { w: m.w, h: m.h };
+      const m = measure(
+        newText, fontSize, fontStack, isVert ? ov.h : ov.w, maxCanonicalW,
+      );
+      sizePatch = isVert ? { w: m.h, h: m.w } : { w: m.w, h: m.h };
     }
   }
   history.execute(
@@ -270,9 +294,15 @@ export function handleOverlayResizeEnd(id, bbox) {
     const fontSize = ov.properties.fontSize ?? 12;
     const text = ov.properties.text ?? "";
     const minW = measureCalloutMinWidth(text, fontSize, fontStack);
-    const w = Math.max(bbox.w, minW);
-    const wrappedH = measureCalloutWrappedHeight(text, fontSize, fontStack, w);
-    bbox = { ...bbox, w, h: wrappedH };
+    // 90/270° rotated callout: the text wraps at the natural width,
+    // which is the canonical (displayed) HEIGHT — fit in the natural
+    // frame, then transpose back into canonical w/h.
+    const isVert = isVertRotation(ov);
+    const naturalW = Math.max(isVert ? bbox.h : bbox.w, minW);
+    const wrappedH = measureCalloutWrappedHeight(text, fontSize, fontStack, naturalW);
+    bbox = isVert
+      ? { ...bbox, w: wrappedH, h: naturalW }
+      : { ...bbox, w: naturalW, h: wrappedH };
   }
   history.execute(new UpdateOverlayCommand(projectStore, id, bbox));
 }
@@ -309,9 +339,13 @@ export function fitCalloutBox(ov) {
   const fontSize = ov.properties?.fontSize ?? 12;
   const text = ov.properties?.text ?? "";
   const minW = measureCalloutMinWidth(text, fontSize, fontStack);
-  const w = Math.max(ov.w ?? 0, minW);
-  const h = measureCalloutWrappedHeight(text, fontSize, fontStack, w);
-  return { w, h };
+  // Same natural-frame mapping as handleOverlayResizeEnd: at 90/270 the
+  // current natural width is ov.h, and the fitted natural box transposes
+  // back into canonical { w: naturalH, h: naturalW }.
+  const isVert = isVertRotation(ov);
+  const naturalW = Math.max((isVert ? ov.h : ov.w) ?? 0, minW);
+  const naturalH = measureCalloutWrappedHeight(text, fontSize, fontStack, naturalW);
+  return isVert ? { w: naturalH, h: naturalW } : { w: naturalW, h: naturalH };
 }
 
 /** Measure the height (canonical pt) needed to fit `text` in a box of
