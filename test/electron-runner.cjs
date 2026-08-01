@@ -21,6 +21,8 @@ const { pathToFileURL } = require("node:url");
 // Tests that need Electron ABI (currently: anything touching better-sqlite3).
 // Coord and render tests do not need Electron — they run via `node` directly.
 const ELECTRON_TESTS = [
+  // renderer graph のロード事故 (v2.0.23 TDZ) を最初に検知する
+  "./renderer-load-smoke.mjs",
   "./m1-exit-criteria.mjs",
   "./m3-overlay-persistence.mjs",
   "./workspace-cleanup.test.mjs",

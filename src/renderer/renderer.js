@@ -4994,3 +4994,11 @@ setOpen(false);
   const info = await kpdf3.getAppInfo();
   $("appinfo").textContent = `v${info.appVersion} / Electron ${info.electronVersion}`;
 })();
+
+// ---- Module-load sentinel ---------------------------------------------
+// renderer は単一 ES module graph (index.html はこのファイルだけを読む)。
+// import 先のどこか 1 箇所でもトップレベル評価が throw すると UI 全体が
+// 無反応で死ぬのに、ダイアログも出ず気付けない (v2.0.23 の TDZ 事故)。
+// この行は graph 全体の評価が完走したときだけ実行される。
+// test/renderer-load-smoke.mjs が実 BrowserWindow でこれを assert する。
+window.__rendererLoaded = true;

@@ -85,7 +85,11 @@ const ctxThumb = $("ctx-thumb");
 // acted on the clicked page, because the dispatch always read the
 // *sidebar* selection. Set by showThumbContextMenu, read by
 // dispatchThumbCtx (same per-context pattern as the Del key handlers).
-let ctxThumbSelection = sidebarThumbSelection;
+// ⚠️ sidebarThumbSelection はファイル末尾で宣言される const なので、
+// ここ (モジュールトップレベル) で初期値に使うと TDZ ReferenceError で
+// renderer graph 全体が死ぬ (v2.0.23 stable の全 UI 無反応事故)。
+// null 初期化し、読む側 (dispatchThumbCtx) で fallback する。
+let ctxThumbSelection = null;
 function showThumbContextMenu(pageNo, x, y, selection = sidebarThumbSelection) {
   ctxThumbSelection = selection;
   ctxThumb.dataset.targetPageNo = String(pageNo);
@@ -123,7 +127,10 @@ function hideThumbContextMenu() {
 }
 function dispatchThumbCtx(target) {
   const pageNoStr = ctxThumb.dataset.targetPageNo;
-  const ctxSel = ctxThumbSelection;
+  // fallback は「メニュー未表示のまま dispatch された」防御 (通常は
+  // showThumbContextMenu が必ず先に代入する)。関数実行時なら
+  // sidebarThumbSelection は宣言済みで TDZ に当たらない。
+  const ctxSel = ctxThumbSelection ?? sidebarThumbSelection;
   hideThumbContextMenu();
   if (!(target instanceof HTMLElement) || !pageNoStr) return;
   const action = target.dataset.ctx;
