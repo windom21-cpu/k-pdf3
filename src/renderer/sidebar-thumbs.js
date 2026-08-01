@@ -77,15 +77,25 @@ export function initSidebarThumbs({
 
 // ---- Thumb context menu (sidebar + split-save thumbs) -----------------
 const ctxThumb = $("ctx-thumb");
-function showThumbContextMenu(pageNo, x, y) {
+// Selection set that owns the currently-open ctx menu. The menu is
+// shared between the sidebar thumbs and the split-save thumbs, but each
+// list has its own multi-selection (sidebarThumbSelection /
+// splitThumbSelection) — 2026-08-01 report: right-clicking a split
+// thumb showed the same「選択した N ページを保存/印刷」items yet only
+// acted on the clicked page, because the dispatch always read the
+// *sidebar* selection. Set by showThumbContextMenu, read by
+// dispatchThumbCtx (same per-context pattern as the Del key handlers).
+let ctxThumbSelection = sidebarThumbSelection;
+function showThumbContextMenu(pageNo, x, y, selection = sidebarThumbSelection) {
+  ctxThumbSelection = selection;
   ctxThumb.dataset.targetPageNo = String(pageNo);
   ctxThumb.style.left = `${x}px`;
   ctxThumb.style.top = `${y}px`;
   // Reflect multi-selection in the「保存」/「削除」menu items so the
   // user can tell (before clicking) whether the action will hit just
-  // the clicked page or the whole sidebar multi-selection. Mirrors the
-  // dispatch logic in dispatchThumbCtx.
-  const sel = sidebarThumbSelection.pageNos;
+  // the clicked page or the whole multi-selection of the list that was
+  // right-clicked. Mirrors the dispatch logic in dispatchThumbCtx.
+  const sel = selection.pageNos;
   const useMulti = sel.size > 1 && sel.has(pageNo);
   const saveItem = ctxThumb.querySelector('[data-ctx="save-page"]');
   if (saveItem) {
@@ -113,6 +123,7 @@ function hideThumbContextMenu() {
 }
 function dispatchThumbCtx(target) {
   const pageNoStr = ctxThumb.dataset.targetPageNo;
+  const ctxSel = ctxThumbSelection;
   hideThumbContextMenu();
   if (!(target instanceof HTMLElement) || !pageNoStr) return;
   const action = target.dataset.ctx;
@@ -127,7 +138,7 @@ function dispatchThumbCtx(target) {
     // the rest of their selection on the floor. If the clicked page is
     // part of the active multi-selection, save the whole set as one PDF;
     // otherwise fall back to the single-page path.
-    const sel = sidebarThumbSelection.pageNos;
+    const sel = ctxSel.pageNos;
     if (sel.size > 1 && sel.has(pageNo)) {
       actionSavePagesAsPdf([...sel]);
     } else {
@@ -139,7 +150,7 @@ function dispatchThumbCtx(target) {
     // クリックした 1 ページだけを印刷する。右クリックは選択状態を変え
     // ないため、actionPrint の選択推測 (_sidebarSelectionUsable) には
     // 頼らず forcePages で明示指定する (選択外ページの単独印刷対応)。
-    const sel = sidebarThumbSelection.pageNos;
+    const sel = ctxSel.pageNos;
     const targets = sel.size > 1 && sel.has(pageNo) ? [...sel] : [pageNo];
     _actionPrint({ forcePages: targets });
   } else if (action === "delete-page") {
@@ -148,10 +159,10 @@ function dispatchThumbCtx(target) {
     // set; otherwise delete just the clicked page. Mirrors the Del
     // shortcut path (deleteSelectedPages) so confirmation dialog +
     // pending/synthetic split logic stays unified.
-    const sel = sidebarThumbSelection.pageNos;
+    const sel = ctxSel.pageNos;
     const useMulti = sel.size > 1 && sel.has(pageNo);
     if (useMulti) {
-      deleteSelectedPages();
+      deleteSelectedPages(ctxSel);
     } else {
       const oneShot = { pageNos: new Set([pageNo]), anchor: null };
       deleteSelectedPages(oneShot);
@@ -280,11 +291,13 @@ document.addEventListener("keydown", (e) => {
 
 /** Attach a contextmenu handler on a thumb element so right-click pops
  *  the rotate menu anchored at the click coords. Used by both the
- *  sidebar thumbs and the split-save thumbs. */
-export function attachThumbContextMenu(el, pageNo) {
+ *  sidebar thumbs and the split-save thumbs — the split-save panel
+ *  passes its own selection set so 保存/印刷/削除 act on the split
+ *  multi-selection, not the sidebar's. */
+export function attachThumbContextMenu(el, pageNo, selection = sidebarThumbSelection) {
   el.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    showThumbContextMenu(pageNo, e.clientX, e.clientY);
+    showThumbContextMenu(pageNo, e.clientX, e.clientY, selection);
   });
 }
 

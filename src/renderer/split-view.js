@@ -394,7 +394,9 @@ function createThumbElement(pageRow, visualPos) {
       viewer.scrollToPage(pageRow.pageNo);
     }
   });
-  attachThumbContextMenu(wrap, pageRow.pageNo);
+  // splitThumbSelection を渡すことで右クリックの 保存/印刷/削除 が
+  // 分割側の複数選択を拾う (2026-08-01 要望: 左サムネと同じ操作感)。
+  attachThumbContextMenu(wrap, pageRow.pageNo, splitThumbSelection);
   // Same D&D handler as the sidebar thumbs — a single mechanism for
   // page reordering means split-save view picks up the same display_
   // order machinery, including synthetic-page support.
