@@ -19,6 +19,7 @@ import { showBusy, updateBusy, hideBusy } from "./busy-modal.js";
 import { showFileBrowser } from "./file-browser.js";
 import {
   splitThumbSelection,
+  sidebarThumbSelection,
   getOrderedThumbPageNos,
   handleThumbSelectionClick,
   refreshThumbSelectionVisuals,
@@ -465,7 +466,15 @@ export async function actionSplitSave() {
   // progress ノード挿入の後にスクロールする (先にやると挿入分ずれる)。
   // observer 生成より前なので、初期 intersection がスクロール後の
   // viewport で発火し、見ている位置のサムネから優先生成される。
-  const curPage = viewer?.currentPage;
+  let curPage = viewer?.currentPage;
+  // v2.0.23-beta.3 (回転ターゲット) と同じ規則: 単一のサイドバー選択が
+  // いま viewport 内に見えているなら、それが「ユーザーの見ているページ」
+  // として current より優先 (背の低い最終ページは clamp で current に
+  // なれないケースの保険)。複数選択・画面外の stale 選択は従来どおり無視。
+  if (sidebarThumbSelection.pageNos.size === 1) {
+    const [selNo] = sidebarThumbSelection.pageNos;
+    if (viewer?.isPageVisibleNow?.(selNo)) curPage = selNo;
+  }
   const curThumb = curPage
     ? splitFlow.querySelector(`.split-thumb[data-page-no="${curPage}"]`)
     : null;
