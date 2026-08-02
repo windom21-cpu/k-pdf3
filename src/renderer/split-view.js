@@ -458,6 +458,28 @@ export async function actionSplitSave() {
   progressNode.textContent = `サムネイルを準備中... 0 / ${pages.length}`;
   splitFlow.insertBefore(progressNode, splitFlow.firstChild);
 
+  // 2026-08-02 要望: メインビューアでスクロールして見ていたページを、
+  // 分割サムネ側でも選択 + その位置まで送って表示する (「いま見ている
+  // ページから作業を始める」導線)。選択の意味は plain クリックと同一 =
+  // 右クリック 保存/印刷/削除 や印刷 preselect がこの 1 ページに効く。
+  // progress ノード挿入の後にスクロールする (先にやると挿入分ずれる)。
+  // observer 生成より前なので、初期 intersection がスクロール後の
+  // viewport で発火し、見ている位置のサムネから優先生成される。
+  const curPage = viewer?.currentPage;
+  const curThumb = curPage
+    ? splitFlow.querySelector(`.split-thumb[data-page-no="${curPage}"]`)
+    : null;
+  if (curThumb) {
+    splitThumbSelection.pageNos.clear();
+    splitThumbSelection.pageNos.add(curPage);
+    splitThumbSelection.anchor = curPage;
+    // plain クリックと同じ「非明示」選択 (前回セッションの explicit が
+    // 残らないようリセットも兼ねる)
+    splitThumbSelection.explicit = false;
+    refreshThumbSelectionVisuals();
+    curThumb.scrollIntoView({ block: "center", behavior: "auto" });
+  }
+
   const observer = new IntersectionObserver(
     (entries) => {
       for (const ent of entries) {
