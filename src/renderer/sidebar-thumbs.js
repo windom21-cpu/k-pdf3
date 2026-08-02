@@ -1379,6 +1379,7 @@ function requestVisibleThumbRenders() {
   }
 }
 
+let thumbFollowTimer = 0;
 export function highlightCurrentThumb(pageNo) {
   if (!thumbList) return;
   if (lastHighlightedThumb && lastHighlightedThumb.dataset.pageNo === String(pageNo)) return;
@@ -1386,9 +1387,22 @@ export function highlightCurrentThumb(pageNo) {
   const next = thumbList.querySelector(`.thumb-item[data-page-no="${pageNo}"]`);
   if (next) {
     next.classList.add("is-current");
-    if (currentSidebarTab === "thumbs" && !sidebar.hidden) {
-      next.scrollIntoView({ block: "nearest", behavior: "auto" });
-    }
+    // scrollIntoView は同期レイアウト強制 + サイドバー側のサムネ遅延
+    // render (IPC) を連鎖させるので、メインビューアのスクロール中に
+    // ページを跨ぐたび呼ぶとちょうど境界でカクつく。ハイライトは即時の
+    // まま、追従スクロールだけ連続切替が落ち着いてから 1 回にまとめる。
+    // (タブ復帰 / F4 の中央寄せは switchSidebarTab 等が直接
+    //  scrollIntoView するので、この debounce の影響を受けない。)
+    clearTimeout(thumbFollowTimer);
+    thumbFollowTimer = setTimeout(() => {
+      if (
+        lastHighlightedThumb?.isConnected &&
+        currentSidebarTab === "thumbs" &&
+        !sidebar.hidden
+      ) {
+        lastHighlightedThumb.scrollIntoView({ block: "nearest", behavior: "auto" });
+      }
+    }, 150);
   }
   lastHighlightedThumb = next ?? null;
 }
