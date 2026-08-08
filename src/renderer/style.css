@@ -947,6 +947,12 @@ button.toggled {
 .viewer-container.placement-text .viewer-page {
   cursor: text;
 }
+/* マーカー「範囲」(行で塗るタイプ) も行を狙う操作なので I-beam。
+ * 「直線」タイプは上の generic crosshair のまま (renderer.js の
+ * syncMarkerCursor がこのクラスを付け外しする)。 */
+.viewer-container.placement-marker-range .viewer-page {
+  cursor: text;
+}
 /* While a stamp ghost preview follows the cursor, hide the OS crosshair
  * so it doesn't cover the (often small) preview. The ghost + its center
  * dot (.stamp-ghost::after) are the placement feedback instead. */
@@ -3151,4 +3157,36 @@ body.file-dragging .thumb-insert-gap-vertical {
 }
 .busy-footer button {
   min-width: 70px;
+}
+
+/* ---- テキスト選択モード (text-select.js) --------------------------------
+ * OCR 済み PDF の透明テキストレイヤー。ページ canvas と同じ
+ * 「中央合わせ + rotate(userRotation)」で重ねる (viewer.js の canvas
+ * 描画と同じ流儀)。文字は透明で、選択ハイライトだけが見える。 */
+.text-select-layer {
+  position: absolute;
+  overflow: hidden;
+  z-index: 40; /* overlay より上 (popup 類 999 よりは下) */
+  user-select: text;
+  cursor: text;
+}
+.text-select-line {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  transform-origin: 0 0;
+  user-select: text;
+}
+.text-select-line::selection {
+  background: rgba(0, 105, 220, 0.35);
+}
+/* モード中は overlay を素通しにして、文字ドラッグを邪魔させない
+ * (edit-mode 系のクリック配置は placementMode 分岐が select-text に
+ * 一致しないため元々何も起きない)。 */
+.text-select-mode .overlay {
+  pointer-events: none;
+}
+/* edit-mode の crosshair を上書きして、ページ全面を I-beam に。 */
+.viewer-container.text-select-mode .viewer-page {
+  cursor: text;
 }

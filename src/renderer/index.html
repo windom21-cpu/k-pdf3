@@ -180,8 +180,10 @@
        without having to reach for the toolbar. β15 testers asked for this
        so they could chain text/stamp/marker insertions in-place. -->
   <div class="menu-dropdown" id="ctx-page" hidden>
+    <div class="menu-item" data-ctx="copy-text" hidden>選択テキストをコピー (Ctrl+C)</div>
     <div class="menu-item" data-ctx="paste">貼り付け (Ctrl+V)</div>
     <div class="menu-separator"></div>
+    <div class="menu-item" data-ctx="select-text">テキスト選択</div>
     <div class="menu-item" data-ctx="text">テキスト</div>
     <div class="menu-item" data-ctx="stamp">スタンプ</div>
     <div class="menu-item" data-ctx="marker">マーカー</div>
@@ -1071,6 +1073,8 @@
       <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="6.5" width="11" height="6.5"/><path d="M5 2.5h5.5v4H5z"/><rect class="fill" x="3.8" y="8.6" width="3" height="1.3"/><rect x="9.7" y="8.5" width="3.3" height="3.3"/></svg><span>FAX</span></button>
     <button id="btn-print-overlay-only" hidden disabled title="下敷き印刷 — 申請書原本に重ね印刷 (背景なし、フィールドの値だけ印字)">下敷き印刷</button>
     <span class="toolbar-sep"></span>
+    <button id="btn-mode-select-text" class="tb-iconlabel" disabled title="テキスト選択 — OCR 済み PDF の文字をなぞって選択し、Ctrl+C (または右クリック) でコピーします">
+      <svg class="ti" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 2.5h2M9.5 2.5h-2M7.5 2.5v11M5.5 13.5h2M9.5 13.5h-2M9 5h4.5v6H9"/></svg><span>文字選択</span></button>
     <button id="btn-mode-text" class="tb-icon" disabled title="テキスト — クリックした位置に文字を書き込みます">
       <span class="ti-A" aria-hidden="true">A</span></button>
     <button id="btn-mode-stamp" class="tb-icon" disabled title="スタンプ — 日付・印影・画像のスタンプを押します">

@@ -82,6 +82,8 @@ contextBridge.exposeInMainWorld("kpdf3", {
   getAppInfo:         ()        => ipcRenderer.invoke("kpdf3:get-app-info"),
   // viewer rendering
   renderPage:         (pageNo, opts = {}) => ipcRenderer.invoke("kpdf3:render-page", pageNo, opts),
+  // テキスト選択モード: 行単位の埋め込みテキスト box (text-select.js)
+  getPageText:        (pageNo)  => ipcRenderer.invoke("kpdf3:get-page-text", pageNo),
   // window controls (frame: false custom title bar)
   windowMinimize:     ()        => ipcRenderer.invoke("kpdf3:window-minimize"),
   windowMaximizeToggle: ()      => ipcRenderer.invoke("kpdf3:window-maximize-toggle"),

@@ -5,6 +5,7 @@
 // automatically.
 
 import { Viewer, renderSyntheticPagePixels } from "./viewer.js";
+import { initTextSelect } from "./text-select.js";
 import { MenuBar } from "./menu-bar.js";
 import {
   AddOverlayCommand,
@@ -216,6 +217,7 @@ const btnFaxSend = $("btn-fax-send");
 const btnPrintOverlayOnly = $("btn-print-overlay-only");
 const ctxFaxBtn = $("ctx-fax-btn");
 const zoomSelect = $("zoom-select");
+const btnModeSelectText = $("btn-mode-select-text");
 const btnModeText = $("btn-mode-text");
 const btnModeStamp = $("btn-mode-stamp");
 const btnModeRedaction = $("btn-mode-redaction");
@@ -298,6 +300,17 @@ const viewer = new Viewer(viewerContainer, {
   onPageChange: updatePageIndicator,
 });
 
+// テキスト選択モード (OCR 済み PDF の文字選択 → コピー)。表示専用の
+// 透明テキストレイヤーを text-select.js が管理する。viewer._pages は
+// load() 済みページ行 (userRotation 込み) — _editingId と同じ内部参照の
+// 前例に倣う。
+const textSelect = initTextSelect({
+  container: viewerContainer,
+  getZoom: () => viewer.zoom || 1,
+  getPages: () => viewer._pages ?? [],
+  getPageText: (pageNo) => kpdf3.getPageText(pageNo),
+});
+
 const pagePrevBtn = $("page-prev-btn");
 const pageNextBtn = $("page-next-btn");
 const pageNumInput = $("page-num-input");
@@ -341,7 +354,7 @@ function updatePageIndicator(current, total) {
 }
 
 let isOpen = false;
-/** @type {'none' | 'text' | 'stamp' | 'redaction' | 'marker' | 'callout' | 'form-text' | 'form-check' | 'form-circle' | 'form-radio'} */
+/** @type {'none' | 'text' | 'stamp' | 'redaction' | 'marker' | 'callout' | 'form-text' | 'form-check' | 'form-circle' | 'form-radio' | 'select-text'} */
 let placementMode = "none";
 // β.80: 申請書フォームの「記入モード」フラグ。true 時はフィールドを
 // 配置・移動・サイズ変更できず、Tab で次のフィールドへ移動して値だけ
@@ -921,6 +934,7 @@ $("btn-detach-tab")?.addEventListener("click", () => {
   const ORDER = [
     "tb-zoom", "tb-search", "tb-rotate",
     "btn-mode-region-image", "btn-split",
+    "btn-mode-select-text",
     "btn-shape-palette", "btn-form-palette",
     "btn-mode-callout", "btn-mode-marker", "btn-mode-redaction",
     "btn-mode-stamp", "btn-mode-text",
@@ -1334,6 +1348,12 @@ function showPageContextMenu(x, y, anchor = null) {
       const enabled = !!(_overlayClipboard && _overlayClipboard.length);
       item.classList.toggle("disabled", !enabled);
     }
+    // 「選択テキストをコピー」はテキスト選択モードで実際に文字を選択して
+    // いるときだけ見せる。
+    if (mode === "copy-text") {
+      const sel = window.getSelection?.();
+      item.hidden = !(placementMode === "select-text" && sel && !sel.isCollapsed);
+    }
   }
   ctxPage.style.left = `${x}px`;
   ctxPage.style.top = `${y}px`;
@@ -1355,6 +1375,20 @@ function dispatchPageCtx(target) {
     const anchor = _pagePasteAnchor;
     hidePageContextMenu();
     void tryPasteFromAnyClipboard(anchor);
+    return;
+  }
+  if (mode === "copy-text") {
+    // pointerdown ハンドラ内なので選択はまだ生きている (collapse は
+    // mousedown の default action で起きる)。同期で読んでからコピー。
+    const sel = window.getSelection?.();
+    const text = sel && !sel.isCollapsed ? sel.toString() : "";
+    hidePageContextMenu();
+    if (text) {
+      void navigator.clipboard?.writeText(text).then(
+        () => { wsStatus.textContent = "選択テキストをコピーしました"; },
+        () => {},
+      );
+    }
     return;
   }
   hidePageContextMenu();
@@ -1461,6 +1495,12 @@ document.addEventListener("keydown", (e) => {
     if (tag === "input" || tag === "textarea" || t.isContentEditable) return;
   }
   if (key === "c") {
+    // テキスト選択モードで文字を選択中なら、ブラウザネイティブのコピー
+    // (text-select.js の透明レイヤー) に譲る。
+    if (placementMode === "select-text") {
+      const sel = window.getSelection?.();
+      if (sel && !sel.isCollapsed) return;
+    }
     // β.80: multi-select 全部をコピー。getSelectedIds は選択順を維持
     // しないが、paste 側はオフセット +12 で一括配置するので順序は
     // 重要ではない (相対位置はそのまま再現される)。
@@ -1497,6 +1537,13 @@ function setPlacementMode(mode) {
   }
   placementMode = mode;
   viewer.setEditMode(mode);
+  // テキスト選択モード: 透明テキストレイヤーの ON/OFF を同期。入るとき
+  // は overlay 選択を外す (レイヤーが overlay より上に乗り、pointer-events
+  // も CSS で殺すので、選択が残ると Delete 等が効いたままになる)。
+  textSelect.setEnabled(mode === "select-text");
+  if (mode === "select-text") setSelectedOverlay(null);
+  syncMarkerCursor();
+  if (btnModeSelectText) btnModeSelectText.classList.toggle("toggled", mode === "select-text");
   btnModeText.classList.toggle("toggled", mode === "text");
   btnModeStamp.classList.toggle("toggled", mode === "stamp");
   btnModeRedaction.classList.toggle("toggled", mode === "redaction");
@@ -1518,6 +1565,17 @@ function setPlacementMode(mode) {
   syncStampPalettePopup();
   refreshMenuState();
   refreshModeOptionsBar();
+}
+
+/** マーカー「範囲」(行で塗るタイプ) は行を狙う操作なので、テキスト
+ *  モードと同じ I-beam カーソルを出す。「直線」は従来どおり crosshair。
+ *  マーカーモード中に種類 select を切り替えた場合も追従が要るため、
+ *  setPlacementMode と marker-style change の両方から呼ぶ。 */
+function syncMarkerCursor() {
+  viewerContainer.classList.toggle(
+    "placement-marker-range",
+    placementMode === "marker" && currentMarkerStyle() === "range",
+  );
 }
 
 /** β.80: 「記入」トグル — 作成モード ↔ 記入モードの切替。記入モードで
@@ -1573,6 +1631,9 @@ function refreshModeOptionsBar() {
   let which;
   if (placementMode === "callout") {
     which = "text";
+  } else if (placementMode === "select-text") {
+    // テキスト選択モードに専用オプションはない — バーは出さない。
+    which = null;
   } else if (placementMode !== "none") {
     which = placementMode;
   } else if (!formFillMode && getSelectionSize() >= 1) {
@@ -1648,6 +1709,7 @@ function setOpen(open) {
   if (btnFaxSend) btnFaxSend.disabled = !open;
   if (btnPrintOverlayOnly) btnPrintOverlayOnly.disabled = !open;
   zoomSelect.disabled = !open;
+  if (btnModeSelectText) btnModeSelectText.disabled = !open;
   btnModeText.disabled = !open;
   btnModeStamp.disabled = !open;
   btnModeRedaction.disabled = !open;
@@ -1952,6 +2014,12 @@ async function refreshViewer() {
   // annotations on the new PDF's pages — setAnnotations re-fires below.
   viewer.setAnnotations(null);
   viewer.load(pages);
+  // テキスト選択キャッシュはタブ切替 / PDF 差し替えで無効になる (pageNo が
+  // 別ドキュメントを指す)。ページ挿入・削除では再抽出コストが小さいので
+  // 区別せず一律 reset。placementMode はタブ切替で直接代入されるため、
+  // ここでレイヤーの ON/OFF も同期する。
+  textSelect.reset();
+  textSelect.setEnabled(placementMode === "select-text");
   // Apply the active fit mode so a fresh PDF lands at the user's
   // chosen sizing instead of the viewer's intrinsic default zoom.
   if (zoomMode === "fit-width") applyFitWidthNow();
@@ -4111,6 +4179,11 @@ if (ctxFaxBtn) {
     else if (action === "fax-set-printer") actionFaxChangePrinter();
   });
 }
+if (btnModeSelectText) {
+  btnModeSelectText.addEventListener("click", () =>
+    setPlacementMode(placementMode === "select-text" ? "none" : "select-text"),
+  );
+}
 btnModeText.addEventListener("click", () =>
   setPlacementMode(placementMode === "text" ? "none" : "text"),
 );
@@ -4943,6 +5016,9 @@ if (markerStyleSel) {
     // 種類を選んだ = マーカーを引きたい意思表示。色 select と同じ流儀で
     // マーカーモードに入れておく。
     if (isOpen && placementMode !== "marker") setPlacementMode("marker");
+    // 既にマーカーモードのときは setPlacementMode を通らないので、
+    // カーソル (範囲=I-beam / 直線=crosshair) をここでも同期する。
+    syncMarkerCursor();
   });
 }
 

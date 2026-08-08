@@ -23,6 +23,7 @@ import { PDFDocument, degrees } from "pdf-lib";
 import { rotatedSourcePlacement, verbatimOverlayCopyEligible } from "./rotate-place.js";
 import { computePdfFingerprint, extractPdfProperties, pdfIsEncrypted } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
+import { extractPageTextLines } from "../backend/mupdf-text.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
 import { applyVectorTextLayer, probeVectorText } from "../backend/vector-text-layer.js";
 import { repairPdfBytes, decryptPdfBytesIfEncrypted } from "../backend/pdf-repair.js";
@@ -4075,6 +4076,21 @@ ipcMain.handle("kpdf3:render-page", async (event, pageNo, opts) => {
     zoom: opts?.zoom ?? 1.0,
     alpha: opts?.alpha ?? true,
   });
+});
+
+// テキスト選択モード (renderer/text-select.js) 用。ページの埋め込み
+// テキスト (OCR 済み PDF の透明テキスト層を含む) を行単位の box で返す。
+// synthetic page (pageNo < 0) はソース PDF にテキストを持たないので空。
+// render-page と同じく activeForEvent でウインドウごとの workspace を引く。
+ipcMain.handle("kpdf3:get-page-text", async (event, pageNo) => {
+  if (pageNo < 0) return { w: 0, h: 0, lines: [] };
+  const { doc, pages } = activeForEvent(event);
+  const useDoc = doc ?? activeDoc;
+  const usePages = doc ? pages : activePages;
+  if (!useDoc) throw new Error("No PDF loaded");
+  const row = usePages.find((p) => p.pageNo === pageNo);
+  if (!row) throw new Error(`Page ${pageNo} not found in workspace`);
+  return extractPageTextLines(useDoc, row.pageNo - 1);
 });
 
 ipcMain.handle("kpdf3:get-source-meta", async (event) => {
