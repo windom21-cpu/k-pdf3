@@ -265,6 +265,7 @@ export async function actionExportToPath(
     // workspace に predecessor として紐づける。byte-copy (isCopy=編集なし)
     // は fingerprint 不変で同一 workspace を再利用するので紐づけ不要。
     let flattenedMasterAvailable = false;
+    let bookmarkImport = null;
     try {
       if (isSaveAs) {
         // 新タブで保存先 PDF を開く。元タブの projectStore / workspaceMutated /
@@ -299,15 +300,20 @@ export async function actionExportToPath(
         // 全部消えたように見える (アプリ再起動で直る、の正体)。さらにその
         // まま再確定すると write-back 0 件でファイルからしおりが消える。
         // byte-copy (同一 workspace 再利用) はしおりが残っているので no-op。
-        await autoImportOutlinesIfEmpty();
+        bookmarkImport = await autoImportOutlinesIfEmpty();
       }
     } catch (switchErr) {
       console.error("[renderer] post-save workspace switch failed:", switchErr);
     }
     hideBusy();
-    wsStatus.textContent = flattenedMasterAvailable
-      ? `${verb}しました — あとで［編集に戻す］で編集内容に戻せます`
-      : `${verb}しました（rev ${result.revisionId.slice(0, 8)}）`;
+    // 自動取込が落ちたら黙って通さない。ここを無言にしたせいで「しおりが
+    // 全部消えた」に見えた (2026-08-18、741MB PDF で mupdf が malloc 失敗)。
+    // ファイル側の /Outlines は生きているので、取込を再試行すれば戻る。
+    wsStatus.textContent = bookmarkImport && bookmarkImport.ok === false
+      ? `${verb}しました — ⚠ しおりの自動取込に失敗しました（${bookmarkImport.error}）。しおりタブの［取込］で再試行してください`
+      : flattenedMasterAvailable
+        ? `${verb}しました — あとで［編集に戻す］で編集内容に戻せます`
+        : `${verb}しました（rev ${result.revisionId.slice(0, 8)}）`;
     // ADR-0026: 確定でフラット化したら「編集に戻す」ボタン/メニューを点灯。
     void refreshRestoreMasterUI();
     if (secureExport && result?.qpdfMissing) {
@@ -343,7 +349,15 @@ export async function actionRestoreEditableMaster() {
     res = await kpdf3.restoreEditableMaster(getActiveTabId());
   } catch (err) {
     console.error("[renderer] restore-editable-master failed:", err);
-    wsStatus.textContent = `編集可能な状態に戻せませんでした: ${err.message ?? err}`;
+    // 巨大 PDF (700MB 級) はマスターの元 PDF を丸ごとメモリに載せるので
+    // `malloc (... bytes) failed` になる。生エラーだけ出すと打つ手が
+    // 分からないので、効く操作 (再起動して即実行) まで書く。
+    const raw = String(err?.message ?? err);
+    const oom = /malloc|out of memory|allocation failed|bad_alloc/i.test(raw);
+    wsStatus.textContent = oom
+      ? "編集可能な状態に戻せませんでした — 元 PDF が大きく、メモリが足りません。"
+        + "他のタブを閉じてアプリを再起動し、開いた直後にもう一度お試しください"
+      : `編集可能な状態に戻せませんでした: ${raw}`;
     return;
   }
   if (!res || !res.ok) {

@@ -28,6 +28,7 @@ import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
 import { applyVectorTextLayer, probeVectorText } from "../backend/vector-text-layer.js";
 import { repairPdfBytes, decryptPdfBytesIfEncrypted } from "../backend/pdf-repair.js";
 import { findQpdfBinary, sanitizePdfBytes, decryptPdfBytes } from "./qpdf-sanitize.js";
+import { extractOutlineViaQpdf } from "./qpdf-outline.js";
 import { cupsAvailable, cupsPrintPdf, cupsCancelInFlight } from "./print-cups.js";
 import { listMacPrintPresets, resolveMacPresetOptions, monoPpdOptionsFor, mergeMonoIntoPpdOptions } from "./print-presets-mac.js";
 import { listCupsTrays, resolveTrayOption, mergeTrayIntoPpdOptions } from "./print-trays-cups.js";
@@ -1938,7 +1939,25 @@ ipcMain.handle("kpdf3:get-outline", async (event) => {
   // B3-α: per-event resolution (race-safe across windows)
   const ws = activeForEvent(event).workspace ?? activeWorkspace;
   if (!ws) return [];
-  return ws.getOutline();
+  try {
+    return ws.getOutline();
+  } catch (err) {
+    // 巨大 PDF (β.134 のサイドカー経路) は getSourceBytes() の全読み +
+    // mupdf WASM ヒープへのコピーで `malloc (... bytes) failed` になる。
+    // ここで諦めると確定後の自動取込が空振りし、しおりペインが 0 件に
+    // 見えるだけでなく、次の確定で /Outlines write-back がスキップされて
+    // ファイルからしおりが本当に消える (2026-08-18 実機、741MB)。
+    // qpdf ならファイル経路で逐次読みできるので逃がす。
+    const sourcePath = ws.getSourcePath?.() ?? null;
+    if (!sourcePath) throw err;
+    console.warn(
+      "[outline] mupdf failed — falling back to qpdf:",
+      err?.message ?? err,
+    );
+    const outline = await extractOutlineViaQpdf(sourcePath);
+    console.warn(`[outline] qpdf fallback ok (${outline.length} top-level entries)`);
+    return outline;
+  }
 });
 
 ipcMain.handle("kpdf3:list-bookmarks", async (event) => {

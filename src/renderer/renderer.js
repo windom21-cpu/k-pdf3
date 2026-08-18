@@ -2253,13 +2253,19 @@ async function openPdfPath(pdfPath) {
     // edit) we never re-import — that would duplicate or trample the
     // user's edits. β tester explicitly asked for the manual 取込
     // button to be removed in favour of "当然に取り込んで".
-    await autoImportOutlinesIfEmpty();
+    const bookmarkImport = await autoImportOutlinesIfEmpty();
     await refreshViewer();
     renderTabBar();
     // ADR-0026: フラット版 (確定版) を開いたら「編集に戻す」で再編集できる
     // ことを一度だけ案内する。lineage が切れている (別 PC 確定 / userData 掃除)
     // 場合は黙らず明示する。
-    if (result.hasEditableMaster) {
+    if (bookmarkImport && bookmarkImport.ok === false) {
+      // しおり自動取込の失敗は無言にしない (2026-08-18: 741MB PDF で mupdf が
+      // malloc 失敗し、しおりペインが 0 件 =「全部消えた」に見えた)。ファイル側の
+      // /Outlines は無事なので、取込の再試行で戻せることまで出す。
+      wsStatus.textContent =
+        `⚠ しおりの自動取込に失敗しました（${bookmarkImport.error}）。しおりタブの［取込］で再試行してください`;
+    } else if (result.hasEditableMaster) {
       wsStatus.textContent =
         "このファイルは確定版です — ［編集に戻す］でテキスト等をまた動かせます";
     } else if (result.masterMissing) {

@@ -111,7 +111,24 @@ export async function refreshBookmarks() {
   workspaceBookmarksCache = [];
   selectedBookmarkId = null;
   if (sourceLabel) sourceLabel.textContent = "(元 PDF / 編集不可)";
-  const outline = await kpdf3.getOutline();
+  // 巨大 PDF では main 側の mupdf 読取が OOM することがある (qpdf fallback
+  // で救えなければ throw)。ここで throw を通すと呼び元 (タブ切替 / 開いた
+  // 直後) ごと死ぬので、ペイン内に理由を出して握る。「無言で 0 件」は
+  // しおり消失と区別が付かない、が今回の事故の教訓。
+  let outline = null;
+  try {
+    outline = await kpdf3.getOutline();
+  } catch (err) {
+    console.error("[bookmark] /Outlines read failed:", err);
+    const li = document.createElement("li");
+    li.className = "bookmark-empty";
+    li.textContent = "(しおりを読み取れませんでした)";
+    bookmarkTree.appendChild(li);
+    if (sourceLabel) sourceLabel.textContent = "(元 PDF / 読み取り失敗)";
+    _wsStatus.textContent = `しおりの読み取りに失敗しました: ${err.message ?? err}`;
+    refreshBookmarkToolbarState();
+    return;
+  }
   if (!outline || outline.length === 0) {
     const li = document.createElement("li");
     li.className = "bookmark-empty";
@@ -569,16 +586,24 @@ bookmarkTree?.addEventListener("keydown", (e) => {
  *  「確定後にしおり追加 → 既存しおりが /Outlines フォールバック表示から
  *  workspace 表示 (新規 1 件のみ) に切り替わって全部消えたように見える」。 */
 export async function autoImportOutlinesIfEmpty() {
-  if (!_isOpen()) return;
+  if (!_isOpen()) return { ok: true, imported: 0 };
   try {
     const existing = await kpdf3.listBookmarks();
-    if (Array.isArray(existing) && existing.length > 0) return;
+    if (Array.isArray(existing) && existing.length > 0) {
+      return { ok: true, imported: 0, skipped: true };
+    }
     const outline = await kpdf3.getOutline();
     if (Array.isArray(outline) && outline.length > 0) {
-      await actionImportOutlines();
+      const res = await actionImportOutlines();
+      return { ok: res?.ok !== false, imported: res?.added ?? 0, error: res?.error };
     }
+    return { ok: true, imported: 0 };
   } catch (err) {
-    console.warn("[bookmark] auto-import failed:", err);
+    // 2026-08-18 実機事故: 741MB の PDF を確定保存した直後、ここが
+    // mupdf の malloc 失敗で無言 return し「しおりが全部消えた」ように
+    // 見えた。呼び元 (openPdfPath / save-flow) に失敗を返して必ず表に出す。
+    console.error("[bookmark] auto-import failed:", err);
+    return { ok: false, imported: 0, error: err?.message ?? String(err) };
   }
 }
 
@@ -588,11 +613,11 @@ export async function autoImportOutlinesIfEmpty() {
  *  visible but skip navigation. Subsequent calls are guarded by the
  *  toolbar disabled state when workspace bookmarks already exist. */
 export async function actionImportOutlines() {
-  if (!_isOpen()) return;
+  if (!_isOpen()) return { ok: false, added: 0, error: "not open" };
   const outline = await kpdf3.getOutline();
   if (!Array.isArray(outline) || outline.length === 0) {
     _wsStatus.textContent = "取り込めるしおりがありません";
-    return;
+    return { ok: true, added: 0 };
   }
   // Depth-first walk that preserves the source PDF's hierarchy. Nodes
   // without a pageNo of their own inherit the parent's (or 1 if absent)
@@ -619,8 +644,10 @@ export async function actionImportOutlines() {
     await walk(outline, 1, null);
     await refreshBookmarks();
     _wsStatus.textContent = `${added} 件のしおりを取り込みました`;
+    return { ok: true, added };
   } catch (err) {
     console.error("[bookmark] import failed", err);
     _wsStatus.textContent = `取り込み失敗: ${err.message ?? err}`;
+    return { ok: false, added, error: err?.message ?? String(err) };
   }
 }

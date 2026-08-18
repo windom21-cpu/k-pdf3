@@ -224,6 +224,25 @@ export class Workspace {
   }
 
   /**
+   * 元 PDF の実体パス (β.134 のサイドカー経路) — BLOB 格納 (閾値以下の
+   * 小さい PDF) なら null。getSourceBytes() と同じ stale-path 救済
+   * (隣接 <workspace>.source.pdf) を通す。
+   *
+   * 用途: 全体をメモリに載せずにファイル経路で処理したい呼び元
+   * (main.js の qpdf /Outlines fallback — 700MB 級だと mupdf が malloc
+   * 失敗する)。バイト列が要る従来の呼び元は getSourceBytes() のまま。
+   *
+   * @returns {string | null}
+   */
+  getSourcePath() {
+    const meta = getSourcePdfMeta(this.db);
+    if (!meta?.externalPath) return null;
+    if (existsSync(meta.externalPath)) return meta.externalPath;
+    const sibling = `${this.filePath}.source.pdf`;
+    return existsSync(sibling) ? sibling : null;
+  }
+
+  /**
    * Document-order page list = source PDF pages merged with user-inserted
    * blank/text pages, in the slot order specified by `after_page_no` /
    * `order_in_slot`. Inserted pages have a synthetic `pageNo = -id`
