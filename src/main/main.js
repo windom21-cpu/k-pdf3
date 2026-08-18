@@ -18,10 +18,10 @@ import { spawn, spawnSync } from "node:child_process";
 import * as mupdf from "mupdf";
 import { Workspace } from "../domain/workspace.js";
 import { openPdfDocument } from "../backend/mupdf-render.js";
-import { addFlatOutlinesToPdf } from "../backend/pdf-outlines.js";
+import { addFlatOutlinesToPdf, outlineToFlatBookmarks } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
 import { rotatedSourcePlacement, verbatimOverlayCopyEligible } from "./rotate-place.js";
-import { computePdfFingerprint, extractPdfProperties, pdfIsEncrypted } from "../backend/mupdf-pdf-info.js";
+import { computePdfFingerprint, extractPdfProperties, pdfIsEncrypted, extractOutline } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { extractPageTextLines } from "../backend/mupdf-text.js";
 import { registerFontFallback } from "../backend/mupdf-font-fallback.js";
@@ -1935,29 +1935,50 @@ ipcMain.handle("kpdf3:list-recent-pdfs", async () => {
   return listRecentPdfs(10);
 });
 
-ipcMain.handle("kpdf3:get-outline", async (event) => {
-  // B3-α: per-event resolution (race-safe across windows)
-  const ws = activeForEvent(event).workspace ?? activeWorkspace;
-  if (!ws) return [];
+/**
+ * 元 PDF の /Outlines を読む共通経路 (2026-08-18)。
+ *
+ * 巨大 PDF (β.134 のサイドカー経路 = 200MB 超) は getSourceBytes() の全読み +
+ * mupdf WASM ヒープへのコピーで `malloc (... bytes) failed` になる。ここで
+ * 諦めると確定後の自動取込が空振りし、しおりペインが 0 件に見えるだけでなく、
+ * 次の確定で /Outlines write-back が空振りしてファイルからしおりが本当に
+ * 消える (2026-08-18 実機、741MB)。qpdf はファイル経路で逐次読みするので
+ * メモリを食わない。
+ *
+ * @param {import("../domain/workspace.js").Workspace} ws
+ * @param {{ preferQpdf?: boolean, bytes?: Buffer | null }} [opts]
+ *        preferQpdf: サイドカー実体があるなら mupdf を試さず qpdf から入る
+ *          (保存経路。既に出力 PDF を抱えている状態で 700MB の確保を試すのは
+ *           それ自体が危険なので、安い方から入る)
+ *        bytes: 呼び元が既に読んである元 PDF バイト列 (再読込を避ける)
+ * @returns {Promise<import("../backend/mupdf-pdf-info.js").OutlineNode[]>}
+ */
+async function readSourceOutline(ws, opts = {}) {
+  const { preferQpdf = false, bytes = undefined } = opts;
+  const sourcePath = ws.getSourcePath?.() ?? null;
+  if (preferQpdf && sourcePath) {
+    try {
+      return await extractOutlineViaQpdf(sourcePath);
+    } catch (err) {
+      console.warn("[outline] qpdf read failed — trying mupdf:", err?.message ?? err);
+    }
+  }
   try {
-    return ws.getOutline();
+    return bytes === undefined ? ws.getOutline() : bytes ? extractOutline(bytes) : [];
   } catch (err) {
-    // 巨大 PDF (β.134 のサイドカー経路) は getSourceBytes() の全読み +
-    // mupdf WASM ヒープへのコピーで `malloc (... bytes) failed` になる。
-    // ここで諦めると確定後の自動取込が空振りし、しおりペインが 0 件に
-    // 見えるだけでなく、次の確定で /Outlines write-back がスキップされて
-    // ファイルからしおりが本当に消える (2026-08-18 実機、741MB)。
-    // qpdf ならファイル経路で逐次読みできるので逃がす。
-    const sourcePath = ws.getSourcePath?.() ?? null;
-    if (!sourcePath) throw err;
-    console.warn(
-      "[outline] mupdf failed — falling back to qpdf:",
-      err?.message ?? err,
-    );
+    if (!sourcePath || preferQpdf) throw err;
+    console.warn("[outline] mupdf failed — falling back to qpdf:", err?.message ?? err);
     const outline = await extractOutlineViaQpdf(sourcePath);
     console.warn(`[outline] qpdf fallback ok (${outline.length} top-level entries)`);
     return outline;
   }
+}
+
+ipcMain.handle("kpdf3:get-outline", async (event) => {
+  // B3-α: per-event resolution (race-safe across windows)
+  const ws = activeForEvent(event).workspace ?? activeWorkspace;
+  if (!ws) return [];
+  return await readSourceOutline(ws);
 });
 
 ipcMain.handle("kpdf3:list-bookmarks", async (event) => {
@@ -3508,10 +3529,36 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
   // renderer passes the visible-pages list to composePagesForExport,
   // and assembleHybridPdf builds the PDF in that same order).
   try {
-    const bookmarks = activeWorkspace.listBookmarks();
+    let bookmarks = activeWorkspace.listBookmarks();
+    let rescuedFromSource = false;
+    if (!Array.isArray(bookmarks) || bookmarks.length === 0) {
+      // workspace しおりが 0 件でも素通しにしない (2026-08-18 ユーザー決定:
+      // 「しおりを意図的に全部消す」運用は無い)。pdf-lib 再合成は元 PDF の
+      // /Outlines を運ばないので、ここで渡さないと出力ファイルからしおりが
+      // 消える — 741MB PDF で自動取込が OOM した実機事故では、マスター側に
+      // しおりが残っていたから助かっただけだった。0 件の実態は「取込前」か
+      // 「取込失敗」なので、元 PDF のしおりをそのまま書き戻すのが正。
+      // 副作用として全消し → 保存で復活するが、上記決定により許容。
+      try {
+        const srcOutline = await readSourceOutline(activeWorkspace, {
+          preferQpdf: true,
+          bytes: sourceBytes,
+        });
+        bookmarks = outlineToFlatBookmarks(srcOutline);
+        rescuedFromSource = bookmarks.length > 0;
+      } catch (err) {
+        console.warn("[export] source /Outlines rescue failed:", err?.message ?? err);
+        bookmarks = [];
+      }
+    }
     if (Array.isArray(bookmarks) && bookmarks.length > 0) {
       const pageOrder = pages.map((p) => p.pageNo);
       pdfBytes = await addFlatOutlinesToPdf(pdfBytes, bookmarks, pageOrder);
+      if (rescuedFromSource) {
+        console.warn(
+          `[export] workspace しおり 0 件 — 元 PDF の /Outlines ${bookmarks.length} 件を書き戻した`,
+        );
+      }
     }
   } catch (err) {
     console.error("[export] /Outlines write-back failed (continuing without):", err);

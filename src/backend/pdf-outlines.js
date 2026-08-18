@@ -141,3 +141,45 @@ function buildOutlineTree(bookmarks, indexByPageNo) {
   sortRec(top);
   return top;
 }
+
+/**
+ * 元 PDF から読んだ /Outlines 木 (OutlineNode[]) を addFlatOutlinesToPdf が
+ * 食える flat な bookmarks 配列に落とす。
+ *
+ * 用途 (2026-08-18): 確定/別名保存で workspace しおりが 0 件のとき、元 PDF に
+ * あったしおりをそのまま書き戻すための救済経路。pdf-lib 再合成は /Outlines を
+ * 運ばないので、ここで渡さないと出力ファイルからしおりが消える。
+ * 「しおりを意図的に全部消す」運用は無い、というユーザー判断が前提
+ * (全消し → 保存で復活する挙動を許容する)。
+ *
+ * ページを持たないノード (章見出し等) は親のページを継承する
+ * (renderer 側の手動取込 actionImportOutlines と同じ規則)。
+ *
+ * @param {import("./mupdf-pdf-info.js").OutlineNode[]} nodes
+ * @returns {Array<{id:string, parentId:string|null, title:string, pageNo:number, sortOrder:number}>}
+ */
+export function outlineToFlatBookmarks(nodes) {
+  const flat = [];
+  let seq = 0;
+  const walk = (list, parentId, fallbackPage) => {
+    if (!Array.isArray(list)) return;
+    for (const n of list) {
+      const pageNo =
+        typeof n?.pageNo === "number" && n.pageNo > 0 ? n.pageNo : fallbackPage;
+      const id = `src-outline-${seq}`;
+      flat.push({
+        id,
+        parentId,
+        title: typeof n?.title === "string" && n.title ? n.title : "(無題)",
+        pageNo,
+        sortOrder: seq,
+      });
+      seq += 1;
+      if (Array.isArray(n?.children) && n.children.length > 0) {
+        walk(n.children, id, pageNo);
+      }
+    }
+  };
+  walk(nodes, null, 1);
+  return flat;
+}
