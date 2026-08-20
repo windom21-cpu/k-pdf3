@@ -466,6 +466,11 @@ export function renderTabBar() {
     attachTabDragHandlers(item, id);
     list.appendChild(item);
   }
+  // Many-tabs overflow: refresh ◀ ▶ ▼ visibility, then make sure the
+  // active tab is actually on screen (a freshly opened tab lands at the
+  // far right, past the visible strip, and was otherwise unreachable).
+  updateTabOverflowUi();
+  scrollActiveTabIntoView();
   reportOpenFilesToSession();
 }
 
@@ -584,6 +589,167 @@ document.addEventListener("pointerdown", (ev) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideTabContextMenu();
+});
+
+// ---- Tab-bar overflow (many tabs) -------------------------------------
+//
+// `.tab-list` scrolls horizontally but its scrollbar is hidden by CSS
+// (user request), and a vertical mouse wheel does not scroll a
+// horizontal overflow container. With enough tabs the ones past the
+// right edge were visible only as a sliver — or not at all — and could
+// not be selected. Fixes, all additive to the existing tab DOM:
+//   1. wheel over the strip → horizontal scroll
+//   2. active tab is auto-scrolled into view on every render
+//   3. ◀ ▶ scroll buttons + ▼ "all tabs" menu appear only while the
+//      list actually overflows (few-tabs layout is unchanged)
+//   4. dragging a tab near either edge auto-scrolls (reorder across
+//      the fold)
+
+const _tabListEl = document.getElementById("tab-list");
+const _tabScrollLeftBtn = document.getElementById("tab-scroll-left");
+const _tabScrollRightBtn = document.getElementById("tab-scroll-right");
+const _tabListMenuBtn = document.getElementById("tab-list-menu");
+const ctxTabList = document.getElementById("ctx-tab-list");
+
+function tabListOverflows() {
+  return !!_tabListEl && _tabListEl.scrollWidth > _tabListEl.clientWidth + 1;
+}
+
+/** Show/hide the overflow buttons and grey out ◀ / ▶ at either end.
+ *  Toggling the buttons changes the list width, but only in the
+ *  "stricter" direction (hide only when it fits *with* the buttons
+ *  shown), so this never oscillates. */
+function updateTabOverflowUi() {
+  if (!_tabListEl) return;
+  const over = tabListOverflows();
+  for (const b of [_tabScrollLeftBtn, _tabScrollRightBtn, _tabListMenuBtn]) {
+    if (b) b.hidden = !over;
+  }
+  if (!over) {
+    hideTabListMenu();
+    return;
+  }
+  const max = _tabListEl.scrollWidth - _tabListEl.clientWidth;
+  if (_tabScrollLeftBtn) _tabScrollLeftBtn.disabled = _tabListEl.scrollLeft <= 0;
+  if (_tabScrollRightBtn) _tabScrollRightBtn.disabled = _tabListEl.scrollLeft >= max - 1;
+}
+
+/** Scroll the strip just enough that the active tab is fully visible.
+ *  Uses bounding rects (not offsetLeft — .tab-item is position:
+ *  relative, so offsetParent would be ambiguous) and only touches
+ *  scrollLeft of the strip itself, never an ancestor. */
+function scrollActiveTabIntoView() {
+  if (!_tabListEl || !tabListOverflows()) return;
+  const item = _tabListEl.querySelector(".tab-item.is-active");
+  if (!item) return;
+  const lr = _tabListEl.getBoundingClientRect();
+  const ir = item.getBoundingClientRect();
+  if (ir.left < lr.left) {
+    _tabListEl.scrollLeft += ir.left - lr.left;
+  } else if (ir.right > lr.right) {
+    _tabListEl.scrollLeft += ir.right - lr.right;
+  }
+  updateTabOverflowUi();
+}
+
+_tabListEl?.addEventListener(
+  "wheel",
+  (e) => {
+    if (!tabListOverflows()) return;
+    // Trackpads / tilt wheels already deliver deltaX — let those through.
+    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    e.preventDefault();
+    _tabListEl.scrollLeft += e.deltaY;
+  },
+  { passive: false },
+);
+_tabListEl?.addEventListener("scroll", () => updateTabOverflowUi(), { passive: true });
+if (_tabListEl && typeof ResizeObserver !== "undefined") {
+  // Sidebar toggle / window resize changes how many tabs fit. Defer a
+  // frame so toggling the buttons inside the callback doesn't trip the
+  // "ResizeObserver loop" warning.
+  let raf = 0;
+  new ResizeObserver(() => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      updateTabOverflowUi();
+    });
+  }).observe(_tabListEl);
+}
+
+function scrollTabListBy(sign) {
+  if (!_tabListEl) return;
+  const step = Math.max(80, Math.round(_tabListEl.clientWidth * 0.6));
+  // Instant (not smooth): deterministic, and the Win9x look doesn't
+  // animate anyway. The scroll event refreshes the ◀ ▶ disabled state.
+  _tabListEl.scrollLeft += sign * step;
+  updateTabOverflowUi();
+}
+_tabScrollLeftBtn?.addEventListener("click", () => scrollTabListBy(-1));
+_tabScrollRightBtn?.addEventListener("click", () => scrollTabListBy(1));
+
+// Edge auto-scroll while dragging a tab (reorder / detach) across the
+// fold. dragover repeats while the pointer hovers, so a fixed small
+// step per event gives a steady crawl near the edge.
+_tabListEl?.addEventListener("dragover", (e) => {
+  if (!hasTabPayload(e.dataTransfer) || !tabListOverflows()) return;
+  const r = _tabListEl.getBoundingClientRect();
+  const EDGE = 28;
+  if (e.clientX < r.left + EDGE) _tabListEl.scrollLeft -= 12;
+  else if (e.clientX > r.right - EDGE) _tabListEl.scrollLeft += 12;
+});
+
+/** ▼ menu: every open tab as a menu row (✓ = active, ● = dirty), so a
+ *  tab that is scrolled out of sight can still be picked directly. Built
+ *  fresh on each open; positioned under the button, right-aligned so it
+ *  never runs off the window's right edge. */
+function showTabListMenu() {
+  if (!ctxTabList || !_tabListMenuBtn) return;
+  ctxTabList.innerHTML = "";
+  for (const [id, tab] of tabs) {
+    const row = document.createElement("div");
+    row.className = "menu-item";
+    if (id === activeTabId) row.classList.add("checked");
+    row.dataset.tabListId = id;
+    const name = tabDisplayTitle(tab);
+    row.textContent = tabIsDirty(tab) ? `● ${name}` : name;
+    row.title = tab.activeSourcePdfPath ?? name;
+    ctxTabList.appendChild(row);
+  }
+  const r = _tabListMenuBtn.getBoundingClientRect();
+  ctxTabList.hidden = false;
+  const w = ctxTabList.offsetWidth;
+  ctxTabList.style.top = `${Math.round(r.bottom)}px`;
+  ctxTabList.style.left = `${Math.max(0, Math.round(r.right - w))}px`;
+}
+function hideTabListMenu() {
+  if (ctxTabList) ctxTabList.hidden = true;
+}
+_tabListMenuBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (ctxTabList && !ctxTabList.hidden) hideTabListMenu();
+  else showTabListMenu();
+});
+ctxTabList?.addEventListener("pointerdown", (e) => {
+  e.stopPropagation();
+  let el = e.target;
+  while (el && el !== ctxTabList && !(el.dataset && el.dataset.tabListId)) {
+    el = el.parentElement;
+  }
+  const id = el && el !== ctxTabList ? el.dataset.tabListId : null;
+  hideTabListMenu();
+  if (id) void applyTab(id);
+});
+ctxTabList?.addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("pointerdown", (ev) => {
+  if (!ctxTabList || ctxTabList.hidden) return;
+  if (ev.target instanceof Node && ctxTabList.contains(ev.target)) return;
+  if (ev.target instanceof Node && _tabListMenuBtn?.contains(ev.target)) return; // click toggles
+  hideTabListMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideTabListMenu();
 });
 
 const TAB_DND_MIME = "application/x-kpdf3-tab-id";

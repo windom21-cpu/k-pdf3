@@ -240,6 +240,38 @@ body {
   line-height: 1;
   align-self: flex-end;
 }
+/* Overflow affordances (many tabs): ◀ ▶ scroll buttons flanking the
+ * list and a ▼ "all tabs" menu button. All three stay `hidden` until
+ * the list actually overflows (tab-manager.js updateTabOverflowUi), so
+ * the common few-tabs layout is byte-identical to before. The explicit
+ * [hidden] rule is needed because 98.css sets `display` on button. */
+.tab-scroll,
+.tab-list-menu {
+  flex: 0 0 auto;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  margin: 1px 1px 0 1px;
+  font-size: 9px;
+  line-height: 1;
+  align-self: flex-end;
+}
+.tab-scroll[hidden],
+.tab-list-menu[hidden] {
+  display: none !important;
+}
+.tab-list-dropdown {
+  max-height: 60vh;
+  max-width: 420px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.tab-list-dropdown .menu-item {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* Drag-reorder visuals — the dragged tab dims, and the drop target
  * gets a vertical navy bar on the left or right edge to preview where
  * it'll land when released. */

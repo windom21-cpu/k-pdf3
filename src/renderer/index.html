@@ -176,6 +176,10 @@
     <div class="menu-item" data-ctx="close">タブを閉じる</div>
   </div>
 
+  <!-- タブが溢れて見切れたときの「すべてのタブ」一覧 (▼ ボタン)。中身は
+       tab-manager.js showTabListMenu が開くたびに組み立てる。 -->
+  <div class="menu-dropdown tab-list-dropdown" id="ctx-tab-list" hidden></div>
+
   <!-- Right-click context menu for empty page area — toggles placement mode
        without having to reach for the toolbar. β15 testers asked for this
        so they could chain text/stamp/marker insertions in-place. -->
@@ -1396,7 +1400,14 @@
          toolbar directly. -->
     <div id="main-content" class="main-content">
       <div class="tab-bar" id="tab-bar">
+        <!-- ◀ ▶ ▼ はタブが溢れたときだけ表示 (tab-manager.js
+             updateTabOverflowUi)。#tab-list は #tab-bar の直接の子のまま
+             にすること — renderer.js reportTabBarRect が list.parentElement
+             を .tab-bar として読む。 -->
+        <button class="tab-scroll" id="tab-scroll-left" title="左のタブへスクロール" hidden>◀</button>
         <div class="tab-list" id="tab-list"></div>
+        <button class="tab-scroll" id="tab-scroll-right" title="右のタブへスクロール" hidden>▶</button>
+        <button class="tab-list-menu" id="tab-list-menu" title="すべてのタブを一覧から選ぶ" hidden>▼</button>
         <button class="tab-add" id="tab-add" title="新しいタブで PDF を開く (Ctrl+T)">+</button>
       </div>
       <main id="viewer-container" class="viewer-container">
