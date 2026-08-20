@@ -576,8 +576,8 @@ npm run test:m1          # m1 + m3-overlay-persistence (electron-runner 経由)
 cd ~/デスクトップ/k-pdf3
 git fetch --all --tags --force
 git pull --ff-only origin main
-git log --oneline | head -20       # 最新は v2.0.21 (stable)
-npm test                           # 全 18 スイート fail 0 (528 pass、2026-07-10 実測)
+git log --oneline | head -20       # 最新は v2.0.26 (stable、2026-08-20。3 OS の CI ビルド成功・配布物 11 点を確認済み)
+npm test                           # node --test 16 スイート + electron-runner、全 fail 0 (2026-08-20 実測)
 npm run dev                        # electronmon (推奨、自動 reload。Wayland では reload が効かない時あり、その場合 dev を完全 kill + 再起動)
 # または npm start                 # 単発起動
 ```
