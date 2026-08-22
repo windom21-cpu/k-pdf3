@@ -3,6 +3,7 @@
 import {
   PageRegistry,
   visiblePageRange,
+  currentPagePos,
 } from "../src/domain/page-registry.js";
 
 let pass = 0;
@@ -166,6 +167,43 @@ v = visiblePageRange(bigLay, expectedTotal400 / 2, 1000);
 const t1 = process.hrtime.bigint();
 ok(v.first >= 1 && v.last <= 400 && v.first <= v.last, `halfway visible range = [${v.first}, ${v.last}]`);
 ok(Number(t1 - t0) < 1_000_000, `binary search < 1ms (${Number(t1 - t0) / 1000}μs)`);
+
+console.log("\n[11] currentPagePos — probeRatio=0 は旧規則 (visiblePageRange().first - 1) と一致");
+// lay0: tops 0 / 842 / 1437 / 2279 / 2874, total 3716 (zoom=1 gap=0)
+for (const [sy, vh] of [[0, 100], [0, 1000], [842, 1], [841, 1], [1500, 300], [lay0.totalHeight - 100, 200]]) {
+  const old = visiblePageRange(lay0, sy, vh).first - 1;
+  eq(currentPagePos(lay0, sy, vh, 0), old, `ratio=0 scroll=${sy} vp=${vh}`);
+}
+
+console.log("\n[12] currentPagePos — probeRatio=1/3 (v2.0.27-beta.1 の現在ページ規則)");
+const R = 1 / 3;
+eq(currentPagePos(lay0, 0, 900, R), 0, "先頭: probe=300 → page 1");
+// 前ページ (p1, 下端 842) の尻尾が画面上端に 142px 残っている状態。
+// 旧規則では p1、新規則では probe=1000 が p2 に入るので p2。
+eq(currentPagePos(lay0, 700, 900, 0), 0, "scroll=700: 旧規則 = page 1 (上端に尻尾)");
+eq(currentPagePos(lay0, 700, 900, R), 1, "scroll=700: 新規則 = page 2 (尻尾 < 1/3)");
+// 尻尾がまだ画面上 1/3 以上残っている → 前ページのまま
+eq(currentPagePos(lay0, 500, 900, R), 0, "scroll=500: 尻尾 342px > 300 → page 1");
+// 境界ぴったり: probe == page1 bottom → pageBot > probe が偽 → page 2
+eq(currentPagePos(lay0, 542, 900, R), 1, "scroll=542: probe=842 = p1 bottom → page 2");
+// scrollToPage(p2) 直後 (p2 上端 = viewport 上端): ページ高さ 595 > 300 → p2
+eq(currentPagePos(lay0, 842, 900, R), 1, "scrollToPage(p2) 相当 vp=900 → page 2");
+// 縮小表示相当: ページ高さ 595 < vp×1/3 = 667 → probe が次ページに落ちる
+// (= scrollToPage 直後は nav pin で固定する必要がある理由)
+eq(currentPagePos(lay0, 842, 2000, R), 2, "vp=2000 で p2 上端揃え → probe は page 3 (pin が要る)");
+// 最下部: 文書末尾が viewport 内、probe が最終ページより下 → 最終ページ
+eq(currentPagePos(lay0, lay0.totalHeight - 200, 900, R), 4, "末尾 clamp 相当 → 最終 page 5");
+// viewport が文書の完全に外 → -1 (呼び手は current 据え置き)
+eq(currentPagePos(lay0, lay0.totalHeight + 1000, 100, R), -1, "文書外 → -1");
+eq(currentPagePos(lay, 0, 1000, R), -1, "空文書 → -1");
+
+console.log("\n[13] currentPagePos — 隙間 (lay2: zoom=2 gap=10) と 400 ページ");
+// lay2: p1 高さ 1684、隙間 1684..1694、p2 top 1694
+eq(currentPagePos(lay2, 1584, 300, R), 1, "probe=1684 (隙間先頭) → 次の page 2");
+eq(currentPagePos(lay2, 1583, 300, R), 0, "probe=1683 (p1 内) → page 1");
+const bigPos = currentPagePos(bigLay, expectedTotal400 / 2, 1000, R);
+ok(bigPos >= 0 && bigPos < 400, `400 ページ中間 pos=${bigPos}`);
+eq(bigPos, visiblePageRange(bigLay, expectedTotal400 / 2 + 1000 / 3, 1).first - 1, "probe 点を visiblePageRange に渡した結果と一致");
 
 console.log(`\n=== Result: ${pass} pass, ${fail} fail ===`);
 if (fail > 0) {

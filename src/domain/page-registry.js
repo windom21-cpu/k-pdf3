@@ -199,3 +199,54 @@ export function visiblePageRange(layout, scrollY, viewportH) {
   }
   return { first: first + 1, last: last + 1 };
 }
+
+/**
+ * 「現在ページ」判定 (v2.0.27-beta.1)。
+ *
+ * viewport 上端から `viewportH × probeRatio` だけ下の点 (probe) を含む
+ * ページの 0-based position を返す。旧規則「viewport 最上端に掛かっている
+ * ページ」(= `visiblePageRange().first`) は probeRatio = 0 と等価。
+ * 1/3 等にすると「前ページの尻尾が画面上 1/3 より上に消えた時点で次ページ」
+ * になり、次ページの本文を読み始めている状態で前ページが current のまま
+ * (しおり・回転が 1 つ前に乗る) という体感ずれを減らせる。
+ *
+ * - probe がページ間の隙間にあれば次のページ (旧規則と同じ)
+ * - probe が最終ページより下 (最下部で短い最終ページが見えている等) なら
+ *   最終ページが viewport に掛かっている限り最終ページ
+ * - それ以外 (空文書 / viewport が文書の外) は -1 — 呼び手は current を
+ *   据え置く
+ *
+ * @param {DocumentLayout} layout
+ * @param {number} scrollY
+ * @param {number} viewportH
+ * @param {number} [probeRatio=0] 0..1
+ * @returns {number} 0-based position or -1
+ */
+export function currentPagePos(layout, scrollY, viewportH, probeRatio = 0) {
+  const N = layout.pageTops.length;
+  if (N === 0) return -1;
+  const probe = scrollY + Math.max(0, viewportH) * probeRatio;
+  // First page whose bottom edge > probe (binary search, same shape as
+  // visiblePageRange so the cost stays O(log N) for 400-page documents).
+  let lo = 0;
+  let hi = N - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const pageBot = layout.pageTops[mid] + layout.pageHeights[mid];
+    if (pageBot > probe) {
+      found = mid;
+      hi = mid - 1;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  if (found >= 0) return found;
+  // probe is below every page: adopt the last page if it still intersects
+  // the viewport (bottom-clamped view of a short final page), else -1.
+  const last = N - 1;
+  const lastTop = layout.pageTops[last];
+  const lastBot = lastTop + layout.pageHeights[last];
+  if (lastTop < scrollY + viewportH && lastBot > scrollY) return last;
+  return -1;
+}
