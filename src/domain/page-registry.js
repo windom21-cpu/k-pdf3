@@ -210,11 +210,22 @@ export function visiblePageRange(layout, scrollY, viewportH) {
  * になり、次ページの本文を読み始めている状態で前ページが current のまま
  * (しおり・回転が 1 つ前に乗る) という体感ずれを減らせる。
  *
+ * 両端は probe に関係なく明示規則 (v2.0.27-beta.2):
+ * - 文書先頭が見えている (scrollY ≤ 0) → 1 ページ目。先頭ページが
+ *   viewport × probeRatio より低い縮小表示で、先頭なのに 2 ページ目が
+ *   current になるのを防ぐ
+ * - 文書末尾が viewport 内 (scrollY + viewportH ≥ totalHeight) → 最終ページ
+ *   (viewport に掛かっている限り)。最下部 clamp では最終ページ下端が
+ *   viewport 下端に張り付くため、最終ページの高さが viewport × (1 −
+ *   probeRatio) 未満だと probe が前ページに落ち、「末尾まで表示しても
+ *   最終ページにならない」(β1 実機報告) — これ以上スクロールできない
+ *   以上、末尾が見えていれば最終ページを見ているとみなす
+ * それ以外:
  * - probe がページ間の隙間にあれば次のページ (旧規則と同じ)
- * - probe が最終ページより下 (最下部で短い最終ページが見えている等) なら
- *   最終ページが viewport に掛かっている限り最終ページ
- * - それ以外 (空文書 / viewport が文書の外) は -1 — 呼び手は current を
- *   据え置く
+ * - 空文書 / viewport が文書の外は -1 — 呼び手は current を据え置く
+ *
+ * probeRatio = 0 は両端規則を除き旧規則と等価 (両端では旧規則の答えと
+ * 一致するか、より直感に合う側に倒れる)。
  *
  * @param {DocumentLayout} layout
  * @param {number} scrollY
@@ -225,7 +236,17 @@ export function visiblePageRange(layout, scrollY, viewportH) {
 export function currentPagePos(layout, scrollY, viewportH, probeRatio = 0) {
   const N = layout.pageTops.length;
   if (N === 0) return -1;
-  const probe = scrollY + Math.max(0, viewportH) * probeRatio;
+  const vh = Math.max(0, viewportH);
+  const last = N - 1;
+  // 文書先頭が見えている → 1 ページ目 (両端規則、上記)。
+  if (scrollY <= 0) return 0;
+  // 文書末尾が viewport 内 → 最終ページ (viewport に掛かっている限り)。
+  const lastTop = layout.pageTops[last];
+  const lastBot = lastTop + layout.pageHeights[last];
+  if (scrollY + vh >= layout.totalHeight && lastTop < scrollY + vh && lastBot > scrollY) {
+    return last;
+  }
+  const probe = scrollY + vh * probeRatio;
   // First page whose bottom edge > probe (binary search, same shape as
   // visiblePageRange so the cost stays O(log N) for 400-page documents).
   let lo = 0;
@@ -242,11 +263,9 @@ export function currentPagePos(layout, scrollY, viewportH, probeRatio = 0) {
     }
   }
   if (found >= 0) return found;
-  // probe is below every page: adopt the last page if it still intersects
-  // the viewport (bottom-clamped view of a short final page), else -1.
-  const last = N - 1;
-  const lastTop = layout.pageTops[last];
-  const lastBot = lastTop + layout.pageHeights[last];
-  if (lastTop < scrollY + viewportH && lastBot > scrollY) return last;
+  // probe is below every page (末尾規則に掛からなかった = 最終ページが
+  // viewport に掛かっていない): adopt the last page only if it intersects
+  // the viewport, else -1.
+  if (lastTop < scrollY + vh && lastBot > scrollY) return last;
   return -1;
 }

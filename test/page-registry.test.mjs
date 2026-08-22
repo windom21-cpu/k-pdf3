@@ -168,7 +168,7 @@ const t1 = process.hrtime.bigint();
 ok(v.first >= 1 && v.last <= 400 && v.first <= v.last, `halfway visible range = [${v.first}, ${v.last}]`);
 ok(Number(t1 - t0) < 1_000_000, `binary search < 1ms (${Number(t1 - t0) / 1000}μs)`);
 
-console.log("\n[11] currentPagePos — probeRatio=0 は旧規則 (visiblePageRange().first - 1) と一致");
+console.log("\n[11] currentPagePos — probeRatio=0 は両端規則を除き旧規則 (visiblePageRange().first - 1) と一致");
 // lay0: tops 0 / 842 / 1437 / 2279 / 2874, total 3716 (zoom=1 gap=0)
 for (const [sy, vh] of [[0, 100], [0, 1000], [842, 1], [841, 1], [1500, 300], [lay0.totalHeight - 100, 200]]) {
   const old = visiblePageRange(lay0, sy, vh).first - 1;
@@ -178,6 +178,9 @@ for (const [sy, vh] of [[0, 100], [0, 1000], [842, 1], [841, 1], [1500, 300], [l
 console.log("\n[12] currentPagePos — probeRatio=1/3 (v2.0.27-beta.1 の現在ページ規則)");
 const R = 1 / 3;
 eq(currentPagePos(lay0, 0, 900, R), 0, "先頭: probe=300 → page 1");
+// 先頭規則: 縮小表示で p1 (842) < vp/3 でも scrollY=0 なら page 1
+eq(currentPagePos(lay0, 0, 3000, R), 0, "先頭規則: vp=3000 (probe=1000 は p2) でも page 1");
+eq(currentPagePos(lay0, 1, 3000, R), 1, "scrollY=1 で先頭規則が外れる → probe どおり page 2");
 // 前ページ (p1, 下端 842) の尻尾が画面上端に 142px 残っている状態。
 // 旧規則では p1、新規則では probe=1000 が p2 に入るので p2。
 eq(currentPagePos(lay0, 700, 900, 0), 0, "scroll=700: 旧規則 = page 1 (上端に尻尾)");
@@ -197,7 +200,24 @@ eq(currentPagePos(lay0, lay0.totalHeight - 200, 900, R), 4, "末尾 clamp 相当
 eq(currentPagePos(lay0, lay0.totalHeight + 1000, 100, R), -1, "文書外 → -1");
 eq(currentPagePos(lay, 0, 1000, R), -1, "空文書 → -1");
 
-console.log("\n[13] currentPagePos — 隙間 (lay2: zoom=2 gap=10) と 400 ページ");
+console.log("\n[13] currentPagePos — 末尾規則 (短い最終ページ、β1 実機報告の再現)");
+// 842 / 842 / 200 (gap 0): total 1884。viewport 900 の最下部 clamp は
+// scrollY = 984 → probe = 1284 は p2 (842..1684) に入るが、末尾が見えて
+// いるので最終 p3 を採用する。
+const shortLastReg = new PageRegistry([
+  { pageNo: 1, cropW: 595, cropH: 842, rotation: 0, userRotation: 0 },
+  { pageNo: 2, cropW: 595, cropH: 842, rotation: 0, userRotation: 0 },
+  { pageNo: 3, cropW: 595, cropH: 200, rotation: 0, userRotation: 0 },
+]);
+const shortLay = shortLastReg.layout({ zoom: 1, gap: 0 });
+eq(shortLay.totalHeight, 1884, "short-last totalHeight");
+eq(visiblePageRange(shortLay, 984, 900).first - 1, 1, "旧規則 (visiblePageRange) は最上部の page 2 = β1 実機報告の症状");
+eq(currentPagePos(shortLay, 984, 900, R), 2, "最下部 clamp → 末尾規則で最終 page 3");
+eq(currentPagePos(shortLay, 1000, 900, R), 2, "末尾が見えていれば (padding 分の余裕含む) page 3");
+eq(currentPagePos(shortLay, 900, 900, R), 1, "末尾がまだ見えない (1800 < 1884) → probe どおり page 2");
+eq(currentPagePos(shortLay, 984 + 900 + 10, 900, R), -1, "viewport が文書より完全に下 → -1");
+
+console.log("\n[14] currentPagePos — 隙間 (lay2: zoom=2 gap=10) と 400 ページ");
 // lay2: p1 高さ 1684、隙間 1684..1694、p2 top 1694
 eq(currentPagePos(lay2, 1584, 300, R), 1, "probe=1684 (隙間先頭) → 次の page 2");
 eq(currentPagePos(lay2, 1583, 300, R), 0, "probe=1683 (p1 内) → page 1");
