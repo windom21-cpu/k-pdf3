@@ -135,6 +135,7 @@ import {
   splitThumbSelection,
   getOrderedThumbPageNos,
 } from "./sidebar-thumbs.js";
+import { initCropA4, actionCropToA4 } from "./crop-a4.js";
 import {
   initSplitView,
   splitState,
@@ -499,6 +500,13 @@ initSidebarThumbs({
   updateTabBarOffset: () => updateTabBarOffset(),
   rotatePageBy: (pageNo, delta) => rotatePageBy(pageNo, delta),
   actionPrint: (opts) => actionPrint(opts),
+  actionCropToA4: (pageNo) => actionCropToA4(pageNo),
+});
+// ADR-0029: A4 切り取りダイアログ
+initCropA4({
+  viewer,
+  isOpen: () => isOpen,
+  projectStore: () => projectStore,
 });
 initSplitView({
   viewer,

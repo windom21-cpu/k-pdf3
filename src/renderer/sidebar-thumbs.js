@@ -44,6 +44,10 @@ let _refreshMenuState = () => {};
 let _updateTabBarOffset = () => {};
 let _rotatePageBy = async () => {};
 let _actionPrint = async () => {};
+// ADR-0029: A4 切り取り。crop-a4.js が本モジュールの detectPaperSize を
+// import するため、循環 import を避けて renderer.js から注入する
+// (v2.0.23 の TDZ 事故の教訓 — モジュール評価順に依存する構造を作らない)。
+let _actionCropToA4 = async () => {};
 
 export function initSidebarThumbs({
   viewer: viewerRef,
@@ -59,6 +63,7 @@ export function initSidebarThumbs({
   updateTabBarOffset,
   rotatePageBy,
   actionPrint,
+  actionCropToA4,
 }) {
   viewer = viewerRef;
   _isOpen = isOpen;
@@ -73,6 +78,7 @@ export function initSidebarThumbs({
   _updateTabBarOffset = updateTabBarOffset;
   _rotatePageBy = rotatePageBy;
   _actionPrint = actionPrint ?? _actionPrint;
+  _actionCropToA4 = actionCropToA4 ?? _actionCropToA4;
 }
 
 // ---- Thumb context menu (sidebar + split-save thumbs) -----------------
@@ -160,6 +166,10 @@ function dispatchThumbCtx(target) {
     const sel = ctxSel.pageNos;
     const targets = sel.size > 1 && sel.has(pageNo) ? [...sel] : [pageNo];
     _actionPrint({ forcePages: targets });
+  } else if (action === "crop-a4") {
+    // ADR-0029: 対象は文書内の全非 A4 ページ (ダイアログ側で判定・巡回)。
+    // 右クリックしたページが対象ならそこから開始する。
+    _actionCropToA4(pageNo);
   } else if (action === "delete-page") {
     // Same multi-select semantics as save-page: if the right-clicked
     // page is part of the active multi-selection, delete the whole

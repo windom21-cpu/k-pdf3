@@ -2505,6 +2505,87 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   margin-top: 10px;
 }
 
+/* ADR-0029: A4 切り取りダイアログ */
+.crop-a4-window {
+  width: 720px;
+}
+.crop-a4-window .window-body {
+  padding: 12px 16px;
+}
+.crop-a4-message {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.crop-a4-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.crop-a4-pagelabel {
+  font-weight: bold;
+  white-space: nowrap;
+}
+.crop-a4-nav-spacer {
+  flex: 1;
+}
+.crop-a4-stage-wrap {
+  display: flex;
+  justify-content: center;
+  background: #6d6d6d;
+  border: 1px solid #808080;
+  padding: 4px;
+}
+#crop-a4-stage {
+  position: relative;
+  background: #6d6d6d;
+  overflow: hidden;
+  user-select: none;
+}
+#crop-a4-canvas {
+  position: absolute;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.5);
+}
+.crop-a4-frame {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #c00000;
+  background: rgba(192, 0, 0, 0.06);
+  cursor: move;
+  touch-action: none;
+}
+.crop-a4-frame.selected {
+  border-color: #1f4ea1;
+  background: rgba(31, 78, 161, 0.10);
+}
+.crop-a4-frame-badge {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  min-width: 16px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: bold;
+  color: #ffffff;
+  background: #c00000;
+  pointer-events: none;
+}
+.crop-a4-frame.selected .crop-a4-frame-badge {
+  background: #1f4ea1;
+}
+.crop-a4-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.crop-a4-buttons button {
+  min-width: 110px;
+}
+
 /* β.97 機能 1: 画像書き出しダイアログ */
 .image-export-window {
   width: 460px;

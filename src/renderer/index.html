@@ -150,6 +150,7 @@
     <div class="menu-separator"></div>
     <div class="menu-item" data-ctx="save-page">このページを PDF として保存…</div>
     <div class="menu-item" data-ctx="print-page">このページを印刷…</div>
+    <div class="menu-item" data-ctx="crop-a4">A4 サイズに切り取り…</div>
     <div class="menu-separator"></div>
     <div class="menu-item" data-ctx="delete-page">ページを削除</div>
   </div>
@@ -236,6 +237,39 @@
   </div>
 
   <!-- β.97 機能 1: PDF を画像として保存ダイアログ -->
+  <!-- ADR-0029: A4 切り取り — 非 A4 ページに A4 縦の枠を置いて別ファイルへ切り出す -->
+  <div class="busy-modal" id="crop-a4-dialog" hidden>
+    <div class="window crop-a4-window">
+      <div class="title-bar">
+        <div class="title-bar-text">A4 サイズに切り取り</div>
+      </div>
+      <div class="window-body">
+        <p class="crop-a4-message">
+          A4 縦の枠をドラッグして切り取る位置を決めてください。<b>枠 1 つが出力の 1 ページ</b>になります。<br>
+          枠は紙の外（グレー部分）にはみ出せます — はみ出した部分は白い余白になります。
+          枠を全部削除したページは切り取らずそのまま出力されます。元のファイルは変更されません。
+        </p>
+        <div class="crop-a4-nav">
+          <button id="crop-a4-prev">◀ 前の対象</button>
+          <span id="crop-a4-pagelabel" class="crop-a4-pagelabel"></span>
+          <button id="crop-a4-next">次の対象 ▶</button>
+          <span class="crop-a4-nav-spacer"></span>
+          <button id="crop-a4-add">枠を追加</button>
+          <button id="crop-a4-remove">枠を削除</button>
+        </div>
+        <div class="crop-a4-stage-wrap">
+          <div id="crop-a4-stage">
+            <canvas id="crop-a4-canvas"></canvas>
+          </div>
+        </div>
+        <div class="crop-a4-buttons">
+          <button id="crop-a4-confirm" class="default">切り取って保存…</button>
+          <button id="crop-a4-cancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="busy-modal" id="image-export-dialog" hidden>
     <div class="window image-export-window">
       <div class="title-bar">

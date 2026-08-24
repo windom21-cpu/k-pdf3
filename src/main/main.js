@@ -21,6 +21,7 @@ import { openPdfDocument } from "../backend/mupdf-render.js";
 import { addFlatOutlinesToPdf, outlineToFlatBookmarks } from "../backend/pdf-outlines.js";
 import { PDFDocument, degrees } from "pdf-lib";
 import { rotatedSourcePlacement, verbatimOverlayCopyEligible } from "./rotate-place.js";
+import { applyCropFramesToPdf, expandPageOrderForCrop, normalizeCropFrames } from "./crop-a4.js";
 import { computePdfFingerprint, extractPdfProperties, pdfIsEncrypted, extractOutline } from "../backend/mupdf-pdf-info.js";
 import { extractPageAnnotationsFromDoc } from "../backend/mupdf-annotations.js";
 import { extractPageTextLines } from "../backend/mupdf-text.js";
@@ -3523,6 +3524,13 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
   }
   const sourceBytes = activeWorkspace.getSourceBytes() ?? null;
   let pdfBytes = await assembleHybridPdf(pages, sourceBytes);
+  // ADR-0029: A4 切り取り — cropFrames 付きの呼び出しだけ通る追加後処理。
+  // 枠を持つページを「枠 1 = A4 縦 1 ページ」に差し替える (crop-a4.js)。
+  // cropFrames が無い従来の呼び出しは 1 バイトも挙動が変わらない。
+  const hasCropFrames = normalizeCropFrames(payload.cropFrames).size > 0;
+  if (hasCropFrames) {
+    pdfBytes = await applyCropFramesToPdf(pdfBytes, pages, payload.cropFrames);
+  }
   // §17.14 — write workspace bookmarks back as PDF /Outlines so other
   // viewers (Adobe / Preview / etc.) can navigate them too.
   // pageOrder lines up with the order pages were composed in (the
@@ -3552,7 +3560,11 @@ ipcMain.handle("kpdf3:export-pdf-rasterized", async (_, payload) => {
       }
     }
     if (Array.isArray(bookmarks) && bookmarks.length > 0) {
-      const pageOrder = pages.map((p) => p.pageNo);
+      // ADR-0029: クロップでページ数が変わるときは pageOrder を展開する
+      // (枠 2 つ以上のページはしおりが先頭の枠ページに乗る)。
+      const pageOrder = hasCropFrames
+        ? expandPageOrderForCrop(pages, payload.cropFrames)
+        : pages.map((p) => p.pageNo);
       pdfBytes = await addFlatOutlinesToPdf(pdfBytes, bookmarks, pageOrder);
       if (rescuedFromSource) {
         console.warn(
