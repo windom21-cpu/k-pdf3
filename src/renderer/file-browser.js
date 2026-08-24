@@ -55,6 +55,11 @@ const fileBrowserState = {
   defaultExt: ".pdf",
 };
 
+// save モードで名前欄の stem を事前選択した直後だけ true。最初のクリックの
+// mousedown 既定動作 (キャレット配置 = 選択解除) を 1 回だけ吸収し、
+// 2 クリック目から通常動作に戻すためのワンショットフラグ。
+let filenamePreselectArmed = false;
+
 function isPdfName(name) {
   return /\.pdf$/i.test(name);
 }
@@ -391,6 +396,7 @@ export async function showFileBrowser({
     openFilenameInput.focus();
     const stem = initialName.replace(/\.[^.]+$/, "");
     openFilenameInput.setSelectionRange(0, stem.length);
+    filenamePreselectArmed = true;
   } else {
     openFilenameInput.focus();
   }
@@ -413,6 +419,18 @@ openQuickSel.addEventListener("change", () => {
   if (openQuickSel.value) loadFileBrowserDir(openQuickSel.value);
 });
 openFilterSel.addEventListener("change", renderFileBrowserList);
+openFilenameInput.addEventListener("mousedown", (e) => {
+  if (!filenamePreselectArmed) return;
+  filenamePreselectArmed = false;
+  // 事前選択がまだ生きている (= 選択が collapse していない) ときだけ吸収。
+  // タイプ済みなどで選択が消えていたら通常のキャレット配置に任せる。
+  if (openFilenameInput.selectionStart !== openFilenameInput.selectionEnd) {
+    e.preventDefault();
+  }
+});
+openFilenameInput.addEventListener("blur", () => {
+  filenamePreselectArmed = false;
+});
 openFilenameInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
