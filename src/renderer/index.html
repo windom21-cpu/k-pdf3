@@ -246,8 +246,10 @@
       <div class="window-body">
         <p class="crop-a4-message">
           A4 縦の枠をドラッグして切り取る位置を決めてください。<b>枠 1 つが出力の 1 ページ</b>になります。<br>
+          切り取るのは<b>いま表示しているこのページだけ</b>です。他のページも切り取るときは、下のチェック
+          （同じ枠位置を一括適用）か「◀ 前の対象 / 次の対象 ▶」で移動して「枠を追加」してください。<br>
           枠は紙の外（グレー部分）にはみ出せます — はみ出した部分は白い余白になります。
-          枠を全部削除したページは切り取らずそのまま出力されます。元のファイルは変更されません。
+          出力は<b>切り取ったページだけの新しいファイル</b>で、元のファイルは変更されません。
         </p>
         <div class="crop-a4-nav">
           <button id="crop-a4-prev">◀ 前の対象</button>
@@ -256,6 +258,12 @@
           <span class="crop-a4-nav-spacer"></span>
           <button id="crop-a4-add">枠を追加</button>
           <button id="crop-a4-remove">枠を削除</button>
+        </div>
+        <div class="crop-a4-options">
+          <label class="crop-a4-applyall">
+            <input type="checkbox" id="crop-a4-applyall">
+            同じ枠位置を他の非 A4 ページにも適用する（他に <span id="crop-a4-applyall-count">0</span> ページ）
+          </label>
         </div>
         <div class="crop-a4-stage-wrap">
           <div id="crop-a4-stage">

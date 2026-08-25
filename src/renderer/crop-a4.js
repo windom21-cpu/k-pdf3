@@ -1,15 +1,21 @@
 // A4 切り取り (ADR-0029) — 非 A4 ページに A4 縦の固定枠を置いて、枠ごとに
 // A4 縦 1 ページへ切り出した「別ファイル」を作る UI。
 //
-//   - 対象 = 文書内の全非 A4 縦ページ (canonical 寸法が A4 縦 ±2pt でない)。
+//   - 原則は「右クリックした *その* ページだけ」を切り取る (2026-08-25 決定)。
+//     初期枠は開始ページにしか置かない。他の非 A4 ページも切りたいときだけ
+//     ①「同じ枠位置を他の非 A4 ページにも適用する」チェック (明示の一括) か
+//     ②「前/次の対象」で移動して「枠を追加」— のどちらかで明示的に指定する。
+//   - 巡回対象 = 文書内の全非 A4 縦ページ (canonical 寸法が A4 縦 ±2pt でない)。
 //     A3 横は初期枠 2 つ (左半分/右半分 = ちょうど A4 縦 2 枚)、他は中央 1 枠。
 //   - 枠はドラッグ移動のみ (サイズ固定)。ページ端・左右半分位置へスナップ。
-//     枠を全部消したページは切り取らず素通し。
+//     枠を全部消したページは切り取らない。
+//   - 出力は「切り取ったページだけ」の新ファイル (枠のあるページだけを
+//     composePagesForExport に渡す)。枠を置かなかったページは出力に入らない。
 //   - プレビューは exporter 側の composeSinglePageCanvas (出力と同じ描画) を
 //     使う — 「画面は正しいのに出力だけおかしい」二重実装問題を持ち込まない。
 //   - 保存動線は actionSavePagesAsPdf (sidebar-thumbs.js) と同型:
-//     保存ダイアログ (セキュア/白黒トグル) → composePagesForExport (全ページ)
-//     → exportPdfRasterized({..., cropFrames}) → newTabAndOpen。
+//     保存ダイアログ (セキュア/白黒トグル) → composePagesForExport (枠のある
+//     ページだけ) → exportPdfRasterized({..., cropFrames}) → newTabAndOpen。
 //     workspace / 元ファイルには一切触らない。
 //
 // State (viewer, isOpen, projectStore) は renderer.js が initCropA4 の getter
@@ -53,13 +59,18 @@ const prevBtn = $("crop-a4-prev");
 const nextBtn = $("crop-a4-next");
 const addBtn = $("crop-a4-add");
 const removeBtn = $("crop-a4-remove");
+const applyAllCb = $("crop-a4-applyall");
+const applyAllCount = $("crop-a4-applyall-count");
 const confirmBtn = $("crop-a4-confirm");
 const cancelBtn = $("crop-a4-cancel");
 
 const state = {
-  targets: [], // 非 A4 の page row (表示順)
+  targets: [], // 非 A4 の page row (表示順) — 巡回できる候補
   idx: 0,
   frames: new Map(), // pageNo -> [{x, y}] canonical top-left 原点 pt
+  primaryPageNo: null, // 右クリックで開いた「その」ページ (原則の唯一の対象)
+  applyAll: false, // チェック = 他の非 A4 ページにも同じ枠位置を配る
+  touched: new Set(), // primary 以外で手調整したページ (一括適用の上書き対象外)
   zoom: 1,
   pageW: 0,
   pageH: 0,
@@ -118,16 +129,67 @@ export async function actionCropToA4(startPageNo) {
   }
   state.targets = targets;
   state.frames = new Map();
-  // 全対象ページに初期枠を置いてから開く — 巡回せず保存しても
-  // 「全非 A4 ページが初期位置で切り取られる」決定的な動作にする。
-  for (const r of targets) {
-    const { w, h } = canonicalSize(r);
-    state.frames.set(r.pageNo, defaultFrames(w, h));
-  }
+  state.touched = new Set();
+  state.applyAll = false;
   const startIdx = targets.findIndex((r) => r.pageNo === startPageNo);
   state.idx = startIdx >= 0 ? startIdx : 0;
+  // 原則 = 右クリックした「その」ページだけ。初期枠はここにしか置かない
+  // (2026-08-25 ユーザー決定。以前は全非 A4 ページに配っていた)。
+  // 右クリックしたページが A4 縦だったときだけ先頭の対象ページで開く。
+  const primary = targets[state.idx];
+  state.primaryPageNo = primary.pageNo;
+  const ps = canonicalSize(primary);
+  state.frames.set(primary.pageNo, defaultFrames(ps.w, ps.h));
+  applyAllCb.checked = false;
+  applyAllCb.disabled = targets.length < 2;
+  applyAllCount.textContent = String(Math.max(0, targets.length - 1));
   dlg.hidden = false;
   await showCurrentPage();
+}
+
+/** 「同じ枠位置を他の非 A4 ページにも適用」— primary の枠を他の対象へ配る。
+ *  寸法が同じページは座標そのまま、違うページ (A3 と B4 混在など) は
+ *  そのサイズの初期枠。手で調整済みのページ (touched) は上書きしない。 */
+function propagateFromPrimary() {
+  if (!state.applyAll) return;
+  const primary = state.targets.find((r) => r.pageNo === state.primaryPageNo);
+  if (!primary) return;
+  const base = state.frames.get(primary.pageNo) ?? [];
+  const ps = canonicalSize(primary);
+  for (const r of state.targets) {
+    if (r.pageNo === primary.pageNo || state.touched.has(r.pageNo)) continue;
+    const s = canonicalSize(r);
+    const sameSize =
+      Math.abs(s.w - ps.w) < SIZE_TOL && Math.abs(s.h - ps.h) < SIZE_TOL;
+    state.frames.set(
+      r.pageNo,
+      sameSize ? base.map((f) => ({ x: f.x, y: f.y })) : defaultFrames(s.w, s.h),
+    );
+  }
+}
+
+/** 枠を触った後の後始末。primary で触ったら一括適用先へ配り直し、
+ *  primary 以外で触ったページは「手調整済み」として一括適用から外す。 */
+function noteFrameEdit() {
+  const row = state.targets[state.idx];
+  if (!row) return;
+  if (row.pageNo === state.primaryPageNo) propagateFromPrimary();
+  else state.touched.add(row.pageNo);
+  updatePageLabel();
+}
+
+/** 対象カウンタ + 表示中ページの枠数 (0 なら「切り取らない」)。 */
+function updatePageLabel() {
+  const row = state.targets[state.idx];
+  if (!row) return;
+  const { w, h } = canonicalSize(row);
+  const all = viewer._pages ?? [];
+  const visIdx = all.indexOf(row);
+  const n = (state.frames.get(row.pageNo) ?? []).length;
+  pageLabel.textContent =
+    `対象 ${state.idx + 1} / ${state.targets.length} — `
+    + `ページ ${visIdx >= 0 ? visIdx + 1 : "?"} (${sizeLabel(w, h)}) — `
+    + (n === 0 ? "枠なし: 切り取らない" : `枠 ${n}`);
 }
 
 async function showCurrentPage() {
@@ -149,11 +211,7 @@ async function showCurrentPage() {
   state.offY = Math.round(((stH - h) / 2) * zoom);
   canvas.style.left = `${state.offX}px`;
   canvas.style.top = `${state.offY}px`;
-  const all = viewer._pages ?? [];
-  const visIdx = all.indexOf(row);
-  pageLabel.textContent =
-    `対象 ${state.idx + 1} / ${state.targets.length} — `
-    + `ページ ${visIdx >= 0 ? visIdx + 1 : "?"} (${sizeLabel(w, h)})`;
+  updatePageLabel();
   prevBtn.disabled = state.idx === 0;
   nextBtn.disabled = state.idx === state.targets.length - 1;
   rebuildFrameEls();
@@ -257,6 +315,7 @@ function attachFrameDrag(el) {
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
       el.removeEventListener("pointercancel", onUp);
+      noteFrameEdit();
     };
     el.addEventListener("pointermove", onMove);
     el.addEventListener("pointerup", onUp);
@@ -296,6 +355,7 @@ addBtn.addEventListener("click", () => {
   state.frames.set(row.pageNo, frames);
   state.selected = frames.length - 1;
   rebuildFrameEls();
+  noteFrameEdit();
 });
 removeBtn.addEventListener("click", () => {
   const row = state.targets[state.idx];
@@ -306,23 +366,48 @@ removeBtn.addEventListener("click", () => {
   state.frames.set(row.pageNo, frames);
   state.selected = 0;
   rebuildFrameEls();
+  noteFrameEdit();
 });
+// 例外的な一括適用 — 明示的に ON にしたときだけ他の非 A4 ページへ枠が入る。
+// OFF に戻すと「その 1 ページだけ」の原則へ戻す (他ページの枠は落ちる)。
+applyAllCb.addEventListener("change", () => {
+  state.applyAll = applyAllCb.checked;
+  if (state.applyAll) {
+    propagateFromPrimary();
+  } else {
+    for (const r of state.targets) {
+      if (r.pageNo !== state.primaryPageNo) state.frames.delete(r.pageNo);
+    }
+    state.touched.clear();
+  }
+  state.selected = 0;
+  rebuildFrameEls();
+  updatePageLabel();
+});
+
 cancelBtn.addEventListener("click", closeDialog);
 
 confirmBtn.addEventListener("click", async () => {
   // 枠を出力順 (上→下・左→右。A3 の左右 2 枠は y がほぼ同じなので x 順) に
   // 整列して送る。y は半 A4 単位で丸めて比較 — 手ドラッグの数 pt 差で
   // 左右の順序が入れ替わらないように。
+  // 出力は「枠を置いたページだけ」— 表示順に拾って composePagesForExport へ
+  // 渡す (actionSavePagesAsPdf のページ部分保存と同型)。枠なしのページは
+  // 出力に入らない。
+  const all = viewer._pages ?? [];
   const cropFrames = {};
+  const rows = [];
   let frameTotal = 0;
-  for (const [pageNo, frames] of state.frames) {
-    if (!frames.length) continue;
+  for (const row of all) {
+    const frames = state.frames.get(row.pageNo);
+    if (!frames || !frames.length) continue;
     const sorted = [...frames].sort((a, b) => {
       const rowA = Math.round(a.y / (A4_H / 2));
       const rowB = Math.round(b.y / (A4_H / 2));
       return rowA - rowB || a.x - b.x;
     });
-    cropFrames[pageNo] = sorted.map((f) => ({ x: f.x, y: f.y, w: A4_W, h: A4_H }));
+    cropFrames[row.pageNo] = sorted.map((f) => ({ x: f.x, y: f.y, w: A4_W, h: A4_H }));
+    rows.push(row);
     frameTotal += frames.length;
   }
   if (frameTotal === 0) {
@@ -335,23 +420,29 @@ confirmBtn.addEventListener("click", async () => {
     return;
   }
   closeDialog();
-  const all = viewer._pages ?? [];
   const defaults = await kpdf3.getExportDefaults();
   const baseName = (defaults.defaultName || "document").replace(/\.[^.]+$/, "");
+  // 1 ページだけ切り取ったときはページ番号を名前に入れる (ページ部分保存と
+  // 同じ規則。挿入ページは pageNo が負なので inserted タグ)。
+  let tag = "A4";
+  if (rows.length === 1) {
+    const n = rows[0].pageNo;
+    tag = `${n > 0 ? `p${n}` : `inserted${-n}`}_A4`;
+  }
   const choice = await showFileBrowser({
     mode: "save",
     title: "A4 サイズに切り取り — 保存先",
-    initialName: `${baseName}_A4.pdf`,
+    initialName: `${baseName}_${tag}.pdf`,
     defaultDir: defaults.sourceDir,
     secureExportToggle: true,
     monoExportToggle: true,
   });
   if (!choice) return;
   const { path: savePath, secureExport, monoExport } = choice;
-  showBusy("A4 切り取り", `${all.length} ページを書き出し中...`, 0);
+  showBusy("A4 切り取り", `${rows.length} ページを書き出し中...`, 0);
   try {
     const composed = await composePagesForExport({
-      pages: all,
+      pages: rows,
       projectStore: _projectStore(),
       renderPage: kpdf3.renderPage,
       renderSyntheticPage: renderSyntheticPagePixels,
@@ -370,9 +461,8 @@ confirmBtn.addEventListener("click", async () => {
       cropFrames,
     });
     hideBusy();
-    const outPages = all.length - Object.keys(cropFrames).length + frameTotal;
     wsStatus.textContent =
-      `${savePath} に保存しました（A4 切り取り ${frameTotal} 枠 / 全 ${outPages} ページ, `
+      `${savePath} に保存しました（${rows.length} ページから A4 ${frameTotal} ページ, `
       + `rev ${(result?.revisionId ?? "").slice(0, 8)}）`;
     if (secureExport && result?.qpdfMissing) {
       await customConfirm({

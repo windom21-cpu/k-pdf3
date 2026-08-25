@@ -2531,6 +2531,21 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
 .crop-a4-nav-spacer {
   flex: 1;
 }
+.crop-a4-options {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.crop-a4-applyall {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+}
+.crop-a4-applyall input {
+  margin: 0;
+}
 .crop-a4-stage-wrap {
   display: flex;
   justify-content: center;
