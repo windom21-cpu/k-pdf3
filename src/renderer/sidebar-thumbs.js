@@ -1335,6 +1335,39 @@ splitFlow?.addEventListener("keydown", (e) => {
   }
 });
 
+/** Select every thumb in the split panel (visual order, synthetic pages
+ *  included — same set Shift+click can span). Marked `explicit` so the
+ *  print / FAX range pre-fill honours it like a Ctrl/Shift selection.
+ *  Returns the number of pages selected (0 = panel empty). */
+export function selectAllSplitThumbs() {
+  const ordered = getOrderedThumbPageNos(splitFlow, ".split-thumb[data-page-no]");
+  if (ordered.length === 0) return 0;
+  splitThumbSelection.pageNos.clear();
+  for (const n of ordered) splitThumbSelection.pageNos.add(n);
+  splitThumbSelection.anchor = ordered[0];
+  splitThumbSelection.explicit = true;
+  refreshThumbSelectionVisuals();
+  return ordered.length;
+}
+
+// Ctrl+A / Cmd+A while the split panel is open → select all split thumbs
+// (2026-08-29 要望). In split mode the viewer and sidebar are display:none,
+// so the overlay Ctrl+A in renderer.js (window-level listener) has nothing
+// visible to act on; this document-level listener runs first in the bubble
+// phase and stops propagation so the two never fight. Text inputs keep the
+// browser's native select-all. Sidebar (non-split) Ctrl+A is untouched.
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+  if (e.key.toLowerCase() !== "a") return;
+  if (!_isSplitMode()) return;
+  if (_isTextInputTarget(e.target)) return;
+  const n = selectAllSplitThumbs();
+  if (n === 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  wsStatus.textContent = `分割サムネ ${n} ページを全選択しました`;
+});
+
 export function clearThumbs() {
   if (thumbObserver) thumbObserver.disconnect();
   thumbObserver = null;
