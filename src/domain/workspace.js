@@ -348,9 +348,38 @@ export class Workspace {
   /** Add a blank / text page. Pass `orderInSlot` to insert between
    *  existing synthetics in the same slot (subsequent rows shift
    *  down). Returns the synthetic pageNo (negative). */
-  addInsertedPage({ afterPageNo, text = null, width = 595, height = 842, orderInSlot = null }) {
-    const id = addInsertedPage(this.db, { afterPageNo, text, width, height, orderInSlot });
+  addInsertedPage({
+    afterPageNo, text = null, width = 595, height = 842, orderInSlot = null,
+    displayOrder = null,
+  }) {
+    const id = addInsertedPage(this.db, {
+      afterPageNo, text, width, height, orderInSlot, displayOrder,
+    });
     return -id;
+  }
+
+  /** Visual-gap bounds for inserting right after the visible page
+   *  `afterKey` (positive = source pageNo, negative = synthetic key,
+   *  0 = before everything). Returns `{ lower, upper, idx, pages }`
+   *  where any display_order in (lower, upper) sorts the new row
+   *  exactly between the two visible neighbours regardless of slot /
+   *  reorder state. Throws when `afterKey` is not a visible page.
+   *  Shared by external-PDF insertion (β77) and blank insertion
+   *  (v2.0.27-beta.5). */
+  visualGapAfter(afterKey) {
+    const pages = this.getPages();
+    let idx;
+    if (afterKey === 0) {
+      idx = -1;
+    } else {
+      idx = pages.findIndex((p) => p.pageNo === afterKey);
+      if (idx < 0) {
+        throw new Error(`visualGapAfter: afterKey ${afterKey} not in visible pages`);
+      }
+    }
+    const lower = idx >= 0 ? pages[idx].orderKey : 0;
+    const upper = idx + 1 < pages.length ? pages[idx + 1].orderKey : lower + 1;
+    return { lower, upper, idx, pages };
   }
 
   /** Add an image-backed inserted page (e.g. external PDF page rasterised

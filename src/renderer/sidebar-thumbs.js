@@ -1052,11 +1052,11 @@ function makeInsertGap(afterPageNo, orderInSlot = null, afterKey = null) {
   gap.tabIndex = 0;
   gap.title = `クリック=白紙挿入 / PDF をドロップ=外部 PDF 挿入 (afterPageNo=${afterPageNo}${orderInSlot != null ? `, order=${orderInSlot}` : ""})`;
   gap.textContent = "＋";
-  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo, orderInSlot));
+  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo, orderInSlot, afterKey));
   gap.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      promptAndInsertBlank(afterPageNo, orderInSlot);
+      promptAndInsertBlank(afterPageNo, orderInSlot, afterKey);
     }
   });
   attachInsertGapDrop(gap, afterPageNo, afterKey);
@@ -1069,11 +1069,11 @@ export function makeSplitInsertGap(afterPageNo, orderInSlot = null, afterKey = n
   gap.tabIndex = 0;
   gap.title = `クリック=白紙挿入 / PDF をドロップ=外部 PDF 挿入 (afterPageNo=${afterPageNo})`;
   gap.textContent = "＋";
-  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo, orderInSlot));
+  gap.addEventListener("click", () => promptAndInsertBlank(afterPageNo, orderInSlot, afterKey));
   gap.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      promptAndInsertBlank(afterPageNo, orderInSlot);
+      promptAndInsertBlank(afterPageNo, orderInSlot, afterKey);
     }
   });
   attachInsertGapDrop(gap, afterPageNo, afterKey);
@@ -1199,7 +1199,12 @@ insertTextEl.addEventListener("keydown", (e) => {
   }
 });
 
-async function promptAndInsertBlank(afterPageNo, orderInSlot = null) {
+// v2.0.27-beta.5: `afterKey` = the visible page this ＋gap sits after
+// (positive source pageNo / negative synth key / 0 = top). main turns it
+// into an explicit display_order so the blank lands exactly in the gap
+// even next to unsaved external-PDF / image / Word pages (which carry
+// fractional display_orders the slot-only key sorted ahead of).
+async function promptAndInsertBlank(afterPageNo, orderInSlot = null, afterKey = null) {
   const r = await showInsertDialog({ afterPageNo });
   if (!r) return;
   try {
@@ -1207,6 +1212,7 @@ async function promptAndInsertBlank(afterPageNo, orderInSlot = null) {
       afterPageNo,
       text: r.text || null,
       orderInSlot,
+      ...(typeof afterKey === "number" ? { afterKey } : {}),
     });
     wsStatus.textContent =
       afterPageNo === 0

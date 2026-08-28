@@ -732,13 +732,22 @@ export function setInsertedPageUserRotation(db, id, userRotation) {
  *  any existing row in the same slot at that order or beyond is
  *  shifted down by one to make room (so callers can insert between
  *  two existing synthetic pages). When omitted, the new row is
- *  appended at the end of the slot. Returns the new row's id. */
+ *  appended at the end of the slot. Returns the new row's id.
+ *
+ *  v2.0.27-beta.5: optional `displayOrder` — same contract as
+ *  addInsertedImagePage (β77). When the caller has already resolved
+ *  the visual gap (main computes the midpoint of the two visible
+ *  neighbours' orderKeys), the blank lands exactly there instead of
+ *  falling back to the slot-derived `anchor + 0.5 + order*0.001`
+ *  key in Workspace.getPages — which sorted BEFORE external-PDF /
+ *  image / Word pages carrying explicit fractional display_orders. */
 export function addInsertedPage(db, {
   afterPageNo,
   text = null,
   width = 595,
   height = 842,
   orderInSlot = null,
+  displayOrder = null,
 }) {
   let order;
   if (typeof orderInSlot === "number" && Number.isFinite(orderInSlot)) {
@@ -756,13 +765,17 @@ export function addInsertedPage(db, {
       .get(afterPageNo);
     order = orderRow?.nextOrder ?? 0;
   }
+  const explicitDisplayOrder =
+    typeof displayOrder === "number" && Number.isFinite(displayOrder)
+      ? displayOrder
+      : null;
   const info = db
     .prepare(
       `INSERT INTO inserted_pages
-         (after_page_no, order_in_slot, text, width, height)
-       VALUES (?, ?, ?, ?, ?)`,
+         (after_page_no, order_in_slot, text, width, height, display_order)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(afterPageNo, order, text, width, height);
+    .run(afterPageNo, order, text, width, height, explicitDisplayOrder);
   return Number(info.lastInsertRowid);
 }
 

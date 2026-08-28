@@ -4271,7 +4271,21 @@ ipcMain.handle("kpdf3:reorder-all-pages", async (_, orderedKeys) => {
 
 ipcMain.handle("kpdf3:add-inserted-page", async (_, opts) => {
   if (!activeWorkspace) throw new Error("No active workspace");
-  const syntheticPageNo = activeWorkspace.addInsertedPage(opts ?? {});
+  const o = { ...(opts ?? {}) };
+  // v2.0.27-beta.5: when the renderer tells us which *visible* page the
+  // ＋gap sits after (afterKey), place the blank at the midpoint of the
+  // two visible neighbours' orderKeys — the same visual-position
+  // display_order math the external-PDF drop uses (β77). Without it the
+  // slot-derived fallback key sorted the blank BEFORE a freshly added
+  // (unsaved) external-PDF / image / Word page in the same slot, so
+  // "＋ after the added page" landed in front of it. Legacy callers
+  // that omit afterKey keep the slot-only behaviour byte-for-byte.
+  if (typeof o.afterKey === "number" && Number.isFinite(o.afterKey)) {
+    const { lower, upper } = activeWorkspace.visualGapAfter(o.afterKey);
+    o.displayOrder = lower + (upper - lower) / 2;
+  }
+  delete o.afterKey;
+  const syntheticPageNo = activeWorkspace.addInsertedPage(o);
   // Refresh activePages so subsequent render-page calls can resolve the new
   // synthetic row (server-side rendering is not used for synthetics, but
   // keeping the cache in sync avoids surprises).
@@ -4365,21 +4379,12 @@ async function _insertPdfBytesIntoWorkspace({
   let upper = null;
   let resolvedAfterPageNo = typeof afterPageNo === "number" ? afterPageNo : 0;
   if (typeof afterKey === "number") {
-    const pages = workspace.getPages();
-    let idx;
-    if (afterKey === 0) {
-      idx = -1;
-    } else {
-      idx = pages.findIndex((p) => p.pageNo === afterKey);
-      if (idx < 0) {
-        throw new Error(
-          `insert-pdf-bytes: afterKey ${afterKey} not in visible pages`,
-        );
-      }
-    }
-    lower = idx >= 0 ? pages[idx].orderKey : 0;
-    upper =
-      idx + 1 < pages.length ? pages[idx + 1].orderKey : lower + 1;
+    // (helper extracted to Workspace.visualGapAfter in v2.0.27-beta.5 so
+    // blank insertion shares the exact same bounds; logic unchanged)
+    const gap = workspace.visualGapAfter(afterKey);
+    const { pages, idx } = gap;
+    lower = gap.lower;
+    upper = gap.upper;
     // Derive the slot anchor (after_page_no column) from the visible
     // neighbour. Even with explicit display_order set, after_page_no
     // is kept consistent so listInsertedPages's secondary sort and any
