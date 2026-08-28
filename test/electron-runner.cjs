@@ -33,6 +33,14 @@ const ELECTRON_TESTS = [
   "./stamp-export-import.test.mjs",
 ];
 
+// v2.0.27-beta.6: renderer-load-smoke.mjs (first in the list since
+// v2.0.24) opens a BrowserWindow and destroys it when done. Electron's
+// default `window-all-closed` handler then quits the app — with exit code
+// 0 — so every test after the smoke test was silently skipped for a
+// month and `npm test` still reported green. Keep the process alive until
+// the loop below calls app.exit() itself.
+app.on("window-all-closed", () => { /* runner decides when to exit */ });
+
 app.whenReady()
   .then(async () => {
     console.log("[electron-runner] Electron", process.versions.electron, "ready\n");
