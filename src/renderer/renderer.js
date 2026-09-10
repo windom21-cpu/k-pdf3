@@ -23,6 +23,17 @@ import {
 } from "./fonts.js";
 import { appendSystemFontsToSelect } from "./system-fonts.js";
 import { showBusy, updateBusy, hideBusy } from "./busy-modal.js";
+import {
+  ROTATE_STAGE,
+  rotateProgressPercent,
+  formatRotateMessage,
+} from "./rotate-progress.js";
+import {
+  shouldRefitOnResize,
+  isZoomFlipping,
+  pushZoomHistory,
+  FLIP_COOLDOWN_MS,
+} from "./fit-guard.js";
 import { customConfirm, customPasswordPrompt } from "./dialogs.js";
 import { showFileBrowser } from "./file-browser.js";
 import {
@@ -498,7 +509,9 @@ initSidebarThumbs({
   refreshDirtyIndicator: () => refreshDirtyIndicator(),
   refreshMenuState: () => refreshMenuState(),
   updateTabBarOffset: () => updateTabBarOffset(),
-  rotatePageBy: (pageNo, delta) => rotatePageBy(pageNo, delta),
+  // サムネ右クリックの回転もツールバーと同じ「処理中インジケーター + 再入
+  // ガード + 中止して元に戻す」経路を通す (rotatePageBy 直呼びはしない)。
+  rotatePageBy: (pageNo, delta) => runRotationWithIndicator([pageNo], delta),
   actionPrint: (opts) => actionPrint(opts),
   actionCropToA4: (pageNo) => actionCropToA4(pageNo),
 });
@@ -2690,11 +2703,118 @@ function resolveRotationTargets() {
 }
 
 async function rotateCurrentPage(delta) {
-  const targets = resolveRotationTargets();
+  return runRotationWithIndicator(resolveRotationTargets(), delta);
+}
+
+// ---- 回転の処理中インジケーター (2026-09-10) -----------------------------
+// 大部 PDF の回転は main 側 set-page-rotation が PDF 全体を再読込するため
+// 数秒〜十数秒無反応に見え、「フリーズ」と判断したユーザーが回転ボタンを
+// 押し直す → 押した回数分 (180° / 270°) が積み上がり、画面の再構築が
+// 何度も走って「ちかちか」する (2026-09-09 報告、合成 300 ページで 3 連打 =
+// 再構築 9 回・サムネ全消去 3 回・最終 270° を確認)。
+//
+// rotatePageBy / resolveRotationTargets 本体 (完成領域) は 1 バイトも変えず、
+// 呼び出し側で次を提供する:
+//   (1) 再入ガード — 処理中の追加クリックは積まずにステータス表示で断る
+//   (2) busy モーダルに「段階 / 何ページ目 / 経過秒 / %」を出す
+//       段階は viewer が _buildPageDoms で発火する kpdf3:pages-rebuilt を
+//       観測して commit → rebuild に進める (rotatePageBy にフックは入れない)
+//   (3) 「中止して元に戻す」— 未処理ページは回転せず、処理中・処理済みの
+//       ページは同じ rotatePageBy を逆 delta で呼んで元に戻す
+// 処理中の描画自体は止められない (main の再読込は IPC 1 往復で割り込み
+// 不能) ので、中止は「終わり次第戻す」の意味。
+let _rotationInFlight = false;
+
+async function runRotationWithIndicator(targets, delta) {
+  if (!Array.isArray(targets) || targets.length === 0) return;
+  if (_rotationInFlight) {
+    wsStatus.textContent =
+      "回転処理中です — 完了までお待ちください (やめる場合はダイアログの「中止して元に戻す」)";
+    return;
+  }
+  _rotationInFlight = true;
+
+  const total = targets.length;
+  const t0 = performance.now();
+  const state = {
+    pageNo: targets[0],
+    done: 0,
+    total,
+    stage: ROTATE_STAGE.COMMIT,
+    elapsedSec: 0,
+    cancelled: false,
+    reverted: 0,
+    revertTotal: 0,
+  };
+  const paint = () => {
+    state.elapsedSec = Math.floor((performance.now() - t0) / 1000);
+    updateBusy(formatRotateMessage(state), rotateProgressPercent(state));
+  };
+  // viewer の再構築が始まった = main の記録・再読込は終わった、の印。
+  const onPagesRebuilt = () => {
+    if (state.stage === ROTATE_STAGE.COMMIT) {
+      state.stage = ROTATE_STAGE.REBUILD;
+      paint();
+    }
+  };
+  viewerContainer.addEventListener("kpdf3:pages-rebuilt", onPagesRebuilt);
+  const ticker = setInterval(paint, 500);
+
+  showBusy(
+    "ページを回転",
+    formatRotateMessage(state),
+    rotateProgressPercent(state),
+    {
+      onCancel: () => {
+        state.cancelled = true;
+        paint();
+      },
+      cancelLabel: "中止して元に戻す",
+      cancelBusyMessage: "中止しています — 処理中のページが終わり次第、元に戻します...",
+    },
+  );
+
   const skipped = [];
-  for (const pageNo of targets) {
-    const ok = await rotatePageBy(pageNo, delta);
-    if (ok === false) skipped.push(pageNo);
+  const rotated = [];
+  const revertFailed = [];
+  try {
+    for (const pageNo of targets) {
+      if (state.cancelled) break;
+      state.pageNo = pageNo;
+      state.stage = ROTATE_STAGE.COMMIT;
+      paint();
+      const ok = await rotatePageBy(pageNo, delta);
+      if (ok === false) skipped.push(pageNo);
+      else rotated.push(pageNo);
+      state.done++;
+    }
+    if (state.cancelled && rotated.length > 0) {
+      state.stage = ROTATE_STAGE.REVERT;
+      state.revertTotal = rotated.length;
+      paint();
+      for (const pageNo of rotated) {
+        const ok = await rotatePageBy(pageNo, -delta);
+        if (ok === false) revertFailed.push(pageNo);
+        state.reverted++;
+        paint();
+      }
+    }
+  } finally {
+    clearInterval(ticker);
+    viewerContainer.removeEventListener("kpdf3:pages-rebuilt", onPagesRebuilt);
+    hideBusy();
+    _rotationInFlight = false;
+  }
+
+  if (state.cancelled) {
+    const restored = rotated.length - revertFailed.length;
+    wsStatus.textContent =
+      `回転を中止しました (${restored} ページを元に戻しました`
+      + (revertFailed.length > 0
+        ? `、${revertFailed.map((n) => `p.${n}`).join(", ")} は戻せませんでした`
+        : "")
+      + `、未処理 ${total - state.done} ページ)`;
+    return;
   }
   // 一括回転で 1 ページでも無言 skip があれば集計して見せる (単発の
   // skip メッセージは成功ページの「p.X を N° 回転」で流れるため)。
@@ -2867,9 +2987,41 @@ function actionZoomFitPage() {
 // Re-apply the current fit mode whenever the viewport area changes
 // (window resize, sidebar splitter drag, panel toggle). ResizeObserver
 // gives us a single signal that covers all of these.
+//
+// 2026-09-10: 再フィットは viewport の寸法が実際に変わったときだけ。
+// 横スクロールバーの出没は clientHeight しか変えないのに RO を発火させ、
+// その間に setZoom の比率スクロールで current page が隣に移っていると
+// 「隣ページ幅で再フィット → ズーム変化 → 横バー出没 → RO → …」の無限往復
+// になる (回転した横長ページと隣の縦長ページで 0.943 ↔ 1.334 を 0.5 秒周期、
+// 1 周ごとに全ページ再構築 + 重い描画で main / renderer とも 100% =
+// 「ちかちか + フリーズ」。トレースで確定、詳細は fit-guard.js)。
+// fit-width は幅依存なので幅が変わったときだけ、fit-page は幅か高さが
+// 変わったときだけ再フィットし、さらにズームが A,B,A,B と往復し始めたら
+// FLIP_COOLDOWN_MS の間は再フィットを止める (安全網)。
+let _fitLastW = -1;
+let _fitLastH = -1;
+let _fitZoomHistory = [];
+let _fitCooldownUntil = 0;
 const _zoomFitResizeObserver = new ResizeObserver(() => {
+  const w = viewerContainer.clientWidth;
+  const h = viewerContainer.clientHeight;
+  const refit = shouldRefitOnResize({ mode: zoomMode, w, h, lastW: _fitLastW, lastH: _fitLastH });
+  _fitLastW = w;
+  _fitLastH = h;
+  if (!refit) return;
+  const now = performance.now();
+  if (now < _fitCooldownUntil) return;
+  const before = viewer.zoom;
   if (zoomMode === "fit-width") applyFitWidthNow();
   else if (zoomMode === "fit-page") applyFitPageNow();
+  if (Math.abs(viewer.zoom - before) > 1e-6) {
+    _fitZoomHistory = pushZoomHistory(_fitZoomHistory, viewer.zoom, now);
+    if (isZoomFlipping(_fitZoomHistory, now)) {
+      console.warn("[fit] zoom oscillation detected — pausing auto-refit", _fitZoomHistory);
+      _fitCooldownUntil = now + FLIP_COOLDOWN_MS;
+      _fitZoomHistory = [];
+    }
+  }
 });
 _zoomFitResizeObserver.observe(viewerContainer);
 
