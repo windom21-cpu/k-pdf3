@@ -1,8 +1,10 @@
 # K-PDF3 開発引き継ぎ書
 
-最終更新: 2026-09-10
+最終更新: 2026-10-08
 現在のバージョン: **v2.0.27 (2026-08-29 リリース、stable / 3 OS — v2.0.27 β 7 本の昇格: β1/2=現在ページ判定 (上端 1/3 基準 + 両端規則 + nav pin) / β3=A4 サイズに切り取り ADR-0029 + 保存ダイアログ名前欄クリック選択維持 / β4=A4 切り取りを「選択したその 1 ページだけ」原則に / β5=追加ページ直後の白紙が前に回り込むバグ修正 / β6=分割サムネ Ctrl+A 全選択 (+ Electron テストランナー早期終了の修正) / β7=「白黒印刷」→「印影黒印刷」改名 + 文字選択ボタンのアイコン化。β1〜6 は 1 週間の実運用で問題報告なし (ユーザー 2026-08-29「しばらく不具合なく運用ができています」)、β7 は配信同日に実機確認 OK → 昇格。release `f6d1cbd`)**。**β 配信中: v2.0.28-beta.1 (2026-09-10、Windows のみ — 途中ページ回転で fit-width 再フィットが無限往復して「ちかちか + フリーズ」する問題の根治 + 回転の処理中インジケーター (連打ガード / 中止して元に戻す)、fix `fc6042f`・release `4d70f30`、実機確認待ち。詳細は下記エントリと §8.2 先頭ブロック)**。直前の stable は v2.0.26 (2026-08-20、v2.0.25 β 3 本 + v2.0.26 β 4 本の昇格)。直前の stable は v2.0.24 (2026-08-01、v2.0.23 の renderer 起動不能 (全 UI 無反応) の緊急 patch、実機 OK)。⚠️ **v2.0.23 は起動しても全操作無反応の欠陥版 (下記エントリ参照) — 全端末 v2.0.24 以降にすること**。中身は v2.0.23 (β1〜6 昇格: しおり自動取込 / Electron 42.7.1 / 回転ターゲット / サムネ右クリック印刷 / 分割サムネ右クリック複数選択 / 回転吹き出し誤軸フィット) + 修正 1 行 + renderer ロード検知テスト。**`releaseType` は `prerelease`** (v2.0.28-beta.1 で戻した。**stable 昇格時に `release` へ復帰すること**。β タグ `v*-beta.*` は CI で Windows のみビルド、stable タグは 3 OS)。**2026-07-14 に v2.0.14 → v2.0.17**: 14=β トライアル (別名保存 3 修正) の昇格 + 給紙トレイ + Mac アプリ内更新 / 15=Mac 更新の無言失敗つぶし / 16=Mac 更新の実地検証用 (中身は 15 と同一) / 17=給紙トレイ表示名の日本語化。**2026-07-15 に v2.0.18 → v2.0.20 で Mac の FAX 送信ルートが成立** (プレビュー.app 手動送信、実機 OK — 経緯と却下歴は下記 18/19/20 と §15.6)。**基本は stable 運用** (重大バグは patch 2.0.x、新機能/大物は ADR 起草後 → β トライアル → 昇格)。**v2.0.23 β 系列は 2026-08-01 に全クローズ**: beta.1=実機 OK (7/24)、beta.2〜4=実機 OK (8/1 ユーザー明言)、beta.5/6=配信同日にユーザー判断で昇格 (**→ beta.5 に stable 直行の重大バグが潜んでいて当日中に v2.0.24 緊急 patch。教訓 = β は最低 1 回実機で触ってから昇格する**)。**v2.0.26 stable の内訳 (2026-08-20 昇格、全て実機 OK)**: 25-beta.1=ページ跨ぎスクロールのカクつき軽減 / 25-beta.2=分割サムネ移行時に現在ページを選択+中央表示 / 25-beta.3=最終ページが「現在ページ」になれない clamp 問題の修正 / 26-beta.1=文字選択モード + マーカー範囲タイプ I-beam / 26-beta.2=巨大 PDF のしおり自動取込 OOM に qpdf fallback + 失敗の可視化 / 26-beta.3=保存時に workspace しおり 0 件でも元 PDF の /Outlines を守る / 26-beta.4=タブが増えて見切れたときの選択 (ホイール横スクロール / ◀ ▶ ▼ 一覧 / アクティブタブ自動追従)。**次の予定: v2.0.28-beta.1 の実機確認 (縦回転モニター全画面で途中ページを回転 → ズームが 1 回だけ変わって止まる / 現在ページが回転ページのまま / ダイアログの秒数が進む / 中止で元に戻る) → OK なら v2.0.28 stable 昇格 (`releaseType` を `release` に)**。残課題 = main `set-page-rotation` の `reopenActiveDoc()` (PDF 全バイト再読込、大容量での待ち時間要因、§8.2 先頭ブロック)。保留中 (ユーザー判断 2026-08-29): デスクトップ (エクスプローラー) の PDF アイコンをサムネにしたい → Windows シェル側の話でアプリ対象外、Acrobat 環境設定「Windows エクスプローラーで PDF のサムネールプレビューを有効にする」で対応可、.pdf の既定アプリが K-PDF3 だと効かない可能性あり (未検証)。アプリ内「開く」ダイアログ (`file-browser.js`) の 1 ページ目サムネ化は案として提示のみ (IPC 1 本 + 遅延描画 + キャッシュ + 巨大/暗号化 fallback、150〜200 行)、未依頼。残件は §8.2 の一括回転 (再現待ち) と低優先の検討候補のみ。**Mac/Linux を Windows 同等にする残りは Office 挿入/署名など (§15.6。印刷=CUPS 直送・FAX=プレビュー手動で成立済)**。
 stable 後の patch / β (要約。full 詳細は git log / `CHANGELOG-history.md`):
+- **v2.0.28-beta.3** = **(a) タブごとの倍率 + 復帰位置をページ基準で復元 / (b) フォーム枠の連動グループ** (fix `bff4167`・feat `8870a9f`・release = 直後の version bump コミット、2026-10-08、Windows β 配信 — **実機確認待ち**)。**(a) ユーザー報告**「一つのタブで倍率を変えると別のタブに戻ったときにも適用される」「タブを変えてスクロールして戻ると違うページが表示されることがある」。**根因**: 倍率モード (fit-width / fit-page / 固定%) が renderer のタブ共通変数 `zoomMode` で、`saveActiveTabSnapshot` は `tab.zoom` を保存するが**復元していなかった**。戻ったタブは直前タブの倍率でページを組み、保存していた生 `scrollTop` は倍率違いで別ページを指す (fit-width が先頭ページ幅で再計算される混在サイズ / 回転ページでも同じ)。**対策**: TabState に `zoomMode` / `scrollAnchor` を追加。`applyStateFromTab` で `zoomMode` 復元 + `viewer.presetZoom` (再構築なしで値だけ差し替え → 直後の `load` がその倍率で組む)。復帰位置は `viewer.getScrollAnchor` (viewport 上端が属するページ + ページ内相対位置 + nav pin) を保存し `scrollTopForAnchor` で現在レイアウトに引き直す (`tab-manager.restoreTabScroll`、即時 + RAF + 2RAF は β.94 のまま、pin 中は `scrollToPage` で行き先ページごと、anchor ページ消失時だけ生値 fallback)。新規タブは直前タブの倍率を引き継ぐ (従来の暗黙挙動)。別ウインドウ detach / dock にも乗せた (従来は先頭で開いていた)。既存の setZoom / fit-guard / 回転経路は不変。**(b) ユーザー要望**「フォーム①で入力した内容がフォーム③に自動で入るように」→ 方法 1 (radio の `radioGroupId` と同じ「同じ名前 = 同じ仲間」) を採用 + 「③は別途書き換え可、ただし①を直せば③も揃う」(ユーザー指定)。`form_field` text の `properties.linkGroup`、連動元 = グループ内で Tab 順が最初の枠。連動元 commit → 連動先は全部その値 / 連動先 commit → 伝播なし (別内容にできる)、空で commit → 連動元の現在値に戻る。純関数 `src/renderer/form-link.js` (`planLinkPropagation`)、`overlay-edit.handleTextEditCommit` が `CompositeCommand` で Undo 1 回にまとめる。テキスト枠パネルに「連動:」入力 (配置既定値 / 後付け編集で複数選択にまとめて付与)。描画・出力は各枠の value をそのまま描くので exporter 変更なし。test: `tab-scroll-anchor.test.mjs` 6 / `form-link.test.mjs` 7。
+- **v2.0.28-beta.2** = **「編集可能として別名保存」(ADR-0030) — フォーム枠・書き込みを焼き込まず新ファイルで記入を続けられる別名保存 + 元ファイルに別名側の記入が残る事故の根治** (feat `99f4008`・release `cc5a852`、2026-10-08、Windows β 配信 — **実機確認待ち**)。**ユーザー報告**「フォーム入力して別名保存したあと、元のファイルを開くと別名側のフォーム入力が表示される」「別名でフォームを保存したいとき、上書きかつ編集可能としないとフォームが維持されない」。**根因**: `form_field` の記入値は元 PDF の workspace の overlay。別名保存は書き込みがあれば必ずラスタ再合成 (焼き込み) でフォーム枠が残らず、フォームを保つ手段が「上書き → 下書き保存」(元 workspace のみ更新) しか無い → 元 workspace に別名側の記入が永続化され、元ファイルを開くと記入済みに見えた。元バイト列をそのまま別名コピーしても fingerprint 一致 (ADR-0007) で同じ workspace を共有するので解にならない (ADR-0026 で fingerprint 再登録 / パス依存キーは却下済)。**対策**: ①`src/backend/editable-copy-bytes.js` `makeDistinctPdfBytes` — mupdf **増分保存**で Info に `/KPDF3EditableCopy <時刻 乱数>` を追記し「同じ見た目で fingerprint だけ違う PDF」を作る (元バイト列は前方一致で温存、200MB 超 / 失敗時は `%%EOF` 後ろにコメント 1 行追記の fallback)。②`src/domain/workspace-clone.js` `cloneWorkspaceAsEditableCopy` — `db.backup` で .kpdf3 複製 → `Workspace.replaceSourceBytes` (source 差し替え、**pages テーブル温存** = 回転・削除・並び順・挿入・しおり・画像アセットそのまま) → 画面の overlay スナップショット + 未確定削除を反映 → predecessor / exports / 暗号化フラグを消す。③main `kpdf3:save-as-editable` (preload `saveAsEditable`): 新バイト列を書く → 複製 → registry 登録。複製失敗時は書いた PDF を消す。④renderer `save-flow.actionSaveAsEditable`: **元タブを「最後に保存した状態」に reset** (Word の Save As 流儀、記入内容は新ファイル側へ) → 新タブで開く。⑤UI: 名前を付けて保存ダイアログに「確定して保存 (既定 = 従来) / 編集可能として保存」ラジオ (書き込みがあるときのみ表示、編集可能選択時は secure / mono を灰色化、永続化なし)、ファイルメニュー「編集可能なまま名前を付けて保存...」(`export-editable`、ラジオ初期選択)。既定を編集可能にしないのは焼き込まれていない新ファイルをそのまま送る事故を避けるため。新ファイルの実体は元 PDF と同じ見た目 (書き込みは乗らない = 下書き同等、確定は新ファイル側で「上書き保存 → 確定」)。既存の確定 / byte-copy / 上書き / 戻せる確定経路は不変。test: `editable-copy-bytes.test.mjs` 5 (node) / `editable-copy-clone.test.mjs` 31 (Electron ランナー 9 本目、元 workspace の overlay・バイト列・fingerprint 不変を固定)。
 - **v2.0.28-beta.1** = **途中ページ回転で画面が「ちかちか」してフリーズする問題の根治 + 回転の処理中インジケーター** (fix `fc6042f`・release `4d70f30`、2026-09-10、Windows β 配信 — **実機確認待ち**)。ユーザー報告 (2026-09-09)「ページ数の多い PDF の途中のページを回転させようとすると、画面がちかちかしてフリーズする」。**根因 (実アプリ + CDP トレースで確定)**: 回転で横長になった p.150 の幅に fit-width 再適用 (0.943) → `viewer.setZoom` の比率スクロールで現在ページ判定 (v2.0.27 の上端 1/3 probe) が縦長の隣 p.151 に落ちる → 横スクロールバーが消えて clientHeight が変わり `ResizeObserver` 発火 → p.151 幅で再フィット (1.334) → p.150 が画面幅を超えて横バー出現 → 再発火 → p.150 に再フィット → … を **0.5 秒周期で無限往復**。1 周ごとに全ページ再構築 + 重いページ描画 5〜6 枚が走り main / renderer とも CPU 100%・renderer RSS 1.5〜2.8GB 往復・DevTools も応答不能。成立条件は「表示領域の高さ ÷ 3 > 横長ページの高さ (その幅にフィットしたズームで)」= **幅が狭く縦に長い viewer**。ユーザーは PDF を縦回転モニターの全画面で見ているため常態的に成立 (2026-09-10 ユーザー確認)。ページ数は直接原因ではなく再構築コストの増幅要因。**対策 (rotatePageBy / resolveRotationTargets 本体は不変)**: (a) `src/renderer/fit-guard.js` (新規) — fit-width は clientWidth が変わったときだけ再フィット (横バー出没 = 高さだけの変化では再フィットしない)、fit-page は幅か高さ、さらにズームが A,B,A,B と往復したら 2 秒クールダウン (安全網)。(b) `viewer.setZoom` — `scrollToPage` の `_navPin` が有効 (移動後に scroll していない) なら比率スクロールではなく pin ページ先頭に揃える (回転直後に隣ページが current になる入口を塞ぐ。自由 scroll 中は従来どおり比率維持)。(c) 案 1 (ユーザー選択) = `src/renderer/rotate-progress.js` (新規) + renderer.js `runRotationWithIndicator` — 回転の再入ガード (処理中の追加クリックは「回転処理中です」で拒否。合成 300 ページで旧コードは 3 連打 = 再構築 9 回・サムネ全消去 3 回・最終 270° だった)、busy モーダルに段階 (PDF に記録中 → 画面とサムネイル更新中) / 何ページ目 / 経過秒 / % (5 秒超で「大きな PDF は再読込に時間がかかります (秒数が進んでいればフリーズではありません)」)、**「中止して元に戻す」** (未処理ページは回転せず、処理済み・処理中は終わり次第 `rotatePageBy(pageNo, -delta)` で戻す)。ツールバー・メニュー・サムネ右クリック (`initSidebarThumbs` の `rotatePageBy` 注入) の全経路が通る。段階検出は viewer の `kpdf3:pages-rebuilt` 観測のみ。テスト: `fit-guard.test.mjs` (7) / `rotate-progress.test.mjs` (7) を `npm test` に追加、全緑。実アプリ検証 (Linux、300MB・300 ページ合成、以前ループした窓寸法 826×1727): 縦→横回転が 1 回で収束 (ズーム 0.943・現在ページ 150 維持)、連打 2・3 回目は拒否、中止で 0° に復帰、ズーム選択変更で pin ページが先頭に揃い、自由 scroll 後は従来の比率動作。**調査の教訓**: 合成データ + 実アプリ (`--remote-debugging-port` + CDP) で再現 → 事前接続セッションの `Runtime.enable` で `console.warn` トレースを流すと、レンダラーが応答不能でも通知は届く (Debugger.pause は効かなかった)。CDP CPU スロットリング下の停止は「往復が起きやすくなっただけ」でアーティファクトではなかった。**残課題 (未着手)**: main `kpdf3:set-page-rotation` が DB 1 行更新の後に毎回 `reopenActiveDoc()` = ソース PDF 全バイト再読込 + mupdf 再パース + 全ページ再列挙 (300MB で main 停止 1.0 秒、Linux tmpfs)。大容量での「記録中」待ち時間はここが支配的。
 - **v2.0.27** = **stable 昇格 (2026-08-29、3 OS)** — β1〜7 の内容そのまま、コード差分なし (release `f6d1cbd`、`releaseType` を `release` に復帰)。昇格判断: β1〜6 は 1 週間の実運用で問題報告なし + β7 は同日実機 OK。v2.0.23 の教訓 (実機未検証の差分を混ぜて昇格 → 全 UI 無反応) に反しない形 = 「β として配信済みの中身だけを stable にする」。Mac/Linux にはこの stable で v2.0.27 系の全変更 (現在ページ判定 / A4 切り取り / 白紙位置 / Cmd+A / 改名) が初めて届く (Mac 実機未確認)。
 - **v2.0.27-beta.7** = **「白黒印刷」ボタン/メニューを「印影黒印刷」に改名 + 「文字選択」をアイコンのみボタンに** (feat `3e6164b`・release `92b487e`、2026-08-29、Windows β 配信 — **実機 OK 2026-08-29 → 同日 v2.0.27 stable に昇格**)。ユーザー「白黒印刷ボタンと印刷ボタンの違いが分かりにくい」→ 違いの整理: **白黒印刷 = プリンタの白黒設定ではなく、K-PDF3 の書き込み overlay (テキスト / 日付・文字スタンプ / 印影画像 / 図形 / 吹き出し / フォーム枠) の色を印刷用合成で黒に投影するワンショット** (`actionPrint({mono:true})` → `monoOverlays`、v2.0.14-beta.1 (7) で sticky トグルから変更)。元の PDF の中身はグレー化しない・マーカー (蛍光) は原色維持 (`exporter.js` `drawOverlay` で意図的に monoize しない)・プリンタ設定は触らない (Adobe 経由)。**書き込みが無い PDF では「印刷」と結果が同一**。直接違いが出るのは (a) カラープリンタで赤印影を黒で出したい (b) 白黒プリンタで赤印影が薄く出る事故の回避 (β.88 の原動機)。印刷ダイアログの「カラー/白黒」ラジオは CUPS (Mac/Linux) 専用のドライバ指示で別物 (Windows では非表示)。ユーザー「印影黒印刷ということね」→ 改名指示。変更は `src/renderer/index.html` のみ: メニュー項目 (`data-action="mono-print-toggle"`) と toolbar `#btn-mono-print` のラベル/title (「元の PDF の中身とプリンタ設定はそのまま」を明記)、`#btn-mode-select-text` を `tb-iconlabel` → `tb-icon` にして `<span>文字選択</span>` を削除、title 先頭を「文字選択 — …」に (β146 の » 退避メニューはアイコンのみボタンのラベルを title の「—」より前から自動生成するため)。動作コード・テストは不変 (npm test 16 スイート + Electron ランナー 8 本 fail 0)。
@@ -69,7 +71,7 @@ stable 後の patch / β (要約。full 詳細は git log / `CHANGELOG-history.m
 
 ## 現状サマリ (1 分で把握)
 
-**フェーズ**: **stable 運用 — 現在の stable は v2.0.27 (2026-08-29、3 OS — v2.0.27 β 7 本の昇格: 現在ページ判定の 1/3 基準 + 両端規則 + nav pin / A4 サイズに切り取り (ADR-0029、「選択した 1 ページだけ」原則) / 保存ダイアログ名前欄クリック選択維持 / 追加ページ直後の白紙回り込み修正 / 分割サムネ Ctrl+A / 「印影黒印刷」改名 + 文字選択アイコン化)。**β 配信中: v2.0.28-beta.1 (2026-09-10、途中ページ回転の fit-width 無限往復「ちかちか + フリーズ」根治 + 回転インジケーター、実機確認待ち)、`releaseType=prerelease`**。それ以前: v2.0.26 (2026-08-20、v2.0.25/26 β 7 本: スクロールカクつき軽減 / 分割サムネ追従 / 最終ページ clamp / 文字選択モード / 巨大 PDF しおり OOM fallback / 保存時しおり保護 / 見切れタブ選択)。それ以前: v2.0.22 (2026-07-24、ADR-0028 テキスト表示の canvas 採寸統一 + paste 正規化) → v2.0.23 (欠陥版) → v2.0.24 (緊急 patch)。2026-07-14 に v2.0.14 で stable 復帰 (β トライアル beta.1〜4 の昇格) し、同日中に 15/16/17 を patch 配信 (Mac 更新のつぶし込みと給紙トレイ表示名)。**2026-07-15 に 18/19/20 で Mac の FAX 送信が成立** (FAX ボタン → プレビュー.app 手動送信 + 送信完了明示確認。Chromium silent:false 案は「macOS ではダイアログ不発・即時投入」が実機確定で却下、宛先なしジョブで FF ドライバが壊れる教訓も獲得 — 詳細は冒頭 18/19/20 と §15.6)。β.1〜β.150 → 2026-06-05 に v2.0.0 stable → patch v2.0.11 まで → v2.0.12/13 の β トライアル 7 本 (2026-07-01〜07) → **2026-07-10 に v2.0.13 stable へ昇格**。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。v2.0.13 に含む主な新規: **戻せる確定保存 (ADR-0026)** / **ワークスペースの整理 (ADR-0027)** / パスワード平文化警告 / byte-copy ゲート `byteCopyEligible` 一本化 / **MS 明朝ベクターテキスト印刷** (一覧選択も対応) / 大部 PDF flate 修復 fallback / 回転ページ吹き出しはみ出し修正 / **確定版・下書きステータス常時表示** — **β トライアル項目は 2026-07-10 に全て実機確認済み** (flate 修復・MS明朝一覧・ADR-0026 往復・v2.0.11 並び替え反映を含む。v2.0.8〜10 patch も業務運用で問題報告なし)。**2026-07-14 に別名保存まわりの 3 バグを構造解決 (すべて実機確認済、§8.2)**: 暗号化 PDF を pdf-lib に生で渡していた / 打ち消し合う回転で verbatim copyPages に落ちていた / 挿入ページの intrinsic /Rotate がベイクで抜けていた。**Mac はアプリ内更新が実機で全経路 OK になり手動 ditto が不要に**、CUPS 直送に給紙トレイ選択も入った。**現在のオープン項目は 2 つ**: (1) 🔴 **A3 横向き PDF の通常印刷が天地さかさま (180°)** — 未確認のまま持ち越し (2026-07-14 ユーザー「すぐには分からない」)。**今回の回転 2 件と同根の可能性が高い** (`sourceRot=180 + userRot=180` が打ち消し合って /Rotate=180 のまま verbatim コピーされる形 = v2.0.14 で塞いだ穴そのもの) → 次に A3 を刷ったときに再確認する (2) 🔴 **一括回転の吹き出し非追従/回転不発** — 再現不能 (「先頭に Word 差し込み→下書き保存→同一セッション一括回転」の 1 回のみ)。最有力仮説=`rotatePageBy` 冒頭の無言 return で、**v2.0.13 に診断表示を同乗済み** — 次に遭遇した瞬間にステータスバーがどの pageNo が外れたかを表示する (§8.2 🔴 ブロック)。**2026-07-24 に Electron 42.7.1 + better-sqlite3 12.11.1 の単独載せ替えを v2.0.23-beta.2 として β 配信 (実機 OK → v2.0.23 に収録済み。数日運用 → 問題なければ v2.0.23 stable 昇格。EOL 脱却済、ADR-0004)**。**REVIEW-2026-07 は 2026-07-23 に 11 件全完了** — 最後の #8 renderer.js S6 リファクタは その1〜その6 + cleanup (`image-export.js` / `save-flow.js` / `sidebar-thumbs.js` / `split-view.js` / `page-numbers.js` / `form-tab-order.js`、renderer.js 8,050→4,997 行) を v2.0.21-beta.1 の実機一巡 (おおむね OK) を経て **v2.0.21 stable として同日配信** (冒頭エントリ参照)。**着手動機 = マルチディスプレイでのテキスト表示ずれの根治**: 2026-07-22 報告「横長で配置したテキストが縦長ディスプレイで数 px ずれて見え、縦長基準に微調整して確定したら誤位置」の原因を確定 (保存座標は正しく、viewer の DOM レイアウトが倍率/DPR 依存でずれる。確定出力 = exporter の canvas 採寸 900dpi 固定が真の位置)。**根治方針は案 C = 非編集時のテキスト表示を canvas 採寸「1 行=1 要素」絶対配置に統一** (編集中は contentEditable 維持 = IME 制約) をユーザー承認済み — **→ 2026-07-24 に ADR-0028 として実装し v2.0.22 stable で配信済み (クローズ。冒頭 patch 一覧と §8.2 ✅ 参照。β 実機一巡で paste 由来の改行焼き込みバグも同時発見 → beta.2 で修正)**。**遡及 ADR 0017〜0025 は 2026-07-10 に全 9 本起草済み** (§15.3、ADR-0016 は 0019 に吸収)。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
+**フェーズ**: **stable 運用 — 現在の stable は v2.0.27 (2026-08-29、3 OS — v2.0.27 β 7 本の昇格: 現在ページ判定の 1/3 基準 + 両端規則 + nav pin / A4 サイズに切り取り (ADR-0029、「選択した 1 ページだけ」原則) / 保存ダイアログ名前欄クリック選択維持 / 追加ページ直後の白紙回り込み修正 / 分割サムネ Ctrl+A / 「印影黒印刷」改名 + 文字選択アイコン化)。**β 配信中: v2.0.28-beta.1 (2026-09-10、途中ページ回転の fit-width 無限往復「ちかちか + フリーズ」根治 + 回転インジケーター) → beta.2 (2026-10-08、ADR-0030「編集可能として別名保存」) → beta.3 (2026-10-08、タブごとの倍率 + 復帰位置のページ基準復元 / フォーム枠の連動グループ)、いずれも実機確認待ち、`releaseType=prerelease`**。それ以前: v2.0.26 (2026-08-20、v2.0.25/26 β 7 本: スクロールカクつき軽減 / 分割サムネ追従 / 最終ページ clamp / 文字選択モード / 巨大 PDF しおり OOM fallback / 保存時しおり保護 / 見切れタブ選択)。それ以前: v2.0.22 (2026-07-24、ADR-0028 テキスト表示の canvas 採寸統一 + paste 正規化) → v2.0.23 (欠陥版) → v2.0.24 (緊急 patch)。2026-07-14 に v2.0.14 で stable 復帰 (β トライアル beta.1〜4 の昇格) し、同日中に 15/16/17 を patch 配信 (Mac 更新のつぶし込みと給紙トレイ表示名)。**2026-07-15 に 18/19/20 で Mac の FAX 送信が成立** (FAX ボタン → プレビュー.app 手動送信 + 送信完了明示確認。Chromium silent:false 案は「macOS ではダイアログ不発・即時投入」が実機確定で却下、宛先なしジョブで FF ドライバが壊れる教訓も獲得 — 詳細は冒頭 18/19/20 と §15.6)。β.1〜β.150 → 2026-06-05 に v2.0.0 stable → patch v2.0.11 まで → v2.0.12/13 の β トライアル 7 本 (2026-07-01〜07) → **2026-07-10 に v2.0.13 stable へ昇格**。**Windows で業務フル運用が実証済** (Mac/Linux は中核は動くが印刷/FAX が Windows 専用実装、§15.6)。v2.0.13 に含む主な新規: **戻せる確定保存 (ADR-0026)** / **ワークスペースの整理 (ADR-0027)** / パスワード平文化警告 / byte-copy ゲート `byteCopyEligible` 一本化 / **MS 明朝ベクターテキスト印刷** (一覧選択も対応) / 大部 PDF flate 修復 fallback / 回転ページ吹き出しはみ出し修正 / **確定版・下書きステータス常時表示** — **β トライアル項目は 2026-07-10 に全て実機確認済み** (flate 修復・MS明朝一覧・ADR-0026 往復・v2.0.11 並び替え反映を含む。v2.0.8〜10 patch も業務運用で問題報告なし)。**2026-07-14 に別名保存まわりの 3 バグを構造解決 (すべて実機確認済、§8.2)**: 暗号化 PDF を pdf-lib に生で渡していた / 打ち消し合う回転で verbatim copyPages に落ちていた / 挿入ページの intrinsic /Rotate がベイクで抜けていた。**Mac はアプリ内更新が実機で全経路 OK になり手動 ditto が不要に**、CUPS 直送に給紙トレイ選択も入った。**現在のオープン項目は 2 つ**: (1) 🔴 **A3 横向き PDF の通常印刷が天地さかさま (180°)** — 未確認のまま持ち越し (2026-07-14 ユーザー「すぐには分からない」)。**今回の回転 2 件と同根の可能性が高い** (`sourceRot=180 + userRot=180` が打ち消し合って /Rotate=180 のまま verbatim コピーされる形 = v2.0.14 で塞いだ穴そのもの) → 次に A3 を刷ったときに再確認する (2) 🔴 **一括回転の吹き出し非追従/回転不発** — 再現不能 (「先頭に Word 差し込み→下書き保存→同一セッション一括回転」の 1 回のみ)。最有力仮説=`rotatePageBy` 冒頭の無言 return で、**v2.0.13 に診断表示を同乗済み** — 次に遭遇した瞬間にステータスバーがどの pageNo が外れたかを表示する (§8.2 🔴 ブロック)。**2026-07-24 に Electron 42.7.1 + better-sqlite3 12.11.1 の単独載せ替えを v2.0.23-beta.2 として β 配信 (実機 OK → v2.0.23 に収録済み。数日運用 → 問題なければ v2.0.23 stable 昇格。EOL 脱却済、ADR-0004)**。**REVIEW-2026-07 は 2026-07-23 に 11 件全完了** — 最後の #8 renderer.js S6 リファクタは その1〜その6 + cleanup (`image-export.js` / `save-flow.js` / `sidebar-thumbs.js` / `split-view.js` / `page-numbers.js` / `form-tab-order.js`、renderer.js 8,050→4,997 行) を v2.0.21-beta.1 の実機一巡 (おおむね OK) を経て **v2.0.21 stable として同日配信** (冒頭エントリ参照)。**着手動機 = マルチディスプレイでのテキスト表示ずれの根治**: 2026-07-22 報告「横長で配置したテキストが縦長ディスプレイで数 px ずれて見え、縦長基準に微調整して確定したら誤位置」の原因を確定 (保存座標は正しく、viewer の DOM レイアウトが倍率/DPR 依存でずれる。確定出力 = exporter の canvas 採寸 900dpi 固定が真の位置)。**根治方針は案 C = 非編集時のテキスト表示を canvas 採寸「1 行=1 要素」絶対配置に統一** (編集中は contentEditable 維持 = IME 制約) をユーザー承認済み — **→ 2026-07-24 に ADR-0028 として実装し v2.0.22 stable で配信済み (クローズ。冒頭 patch 一覧と §8.2 ✅ 参照。β 実機一巡で paste 由来の改行焼き込みバグも同時発見 → beta.2 で修正)**。**遡及 ADR 0017〜0025 は 2026-07-10 に全 9 本起草済み** (§15.3、ADR-0016 は 0019 に吸収)。β.1〜β.150 の経緯詳細は `CHANGELOG-history.md` (2026-06-22 に本書から退避) と §6.4 のポインタを参照。
 
 > **β71〜β147 の詳細変更ログ + β 卒業ロードマップ (2026-05-25 確定) は `CHANGELOG-history.md` へ退避 (2026-06-22 整理)。** 製品は stable v2.0.13 で β は履歴。設計の現役根拠は §2 (設計思想・禁止事項) / §15 (既知懸念) / `docs/adr/` / memory を参照。印刷・Adobe・FAX・render・D&D の試行錯誤経緯を追うときは `CHANGELOG-history.md` を grep (memory [[feedback_handover_first_before_judgment]])。
 
@@ -448,7 +450,7 @@ M1 Foundation → M2 Core → M3 Editing UI → M4 Export → M5 Feature Migrati
 
 - `docs/architecture.md` — レイヤ図と依存ルール
 - `docs/glossary.md` — 用語定義
-- `docs/adr/0001..0029.md` — 重要な設計判断 (詳細は §15.3 ADR 状況。0017〜0025 は 2026-07-10 遡及起草)
+- `docs/adr/0001..0030.md` — 重要な設計判断 (詳細は §15.3 ADR 状況。0017〜0025 は 2026-07-10 遡及起草)
 
 ### 7.2 ユーザーから見える機能 (現状サマリ)
 
@@ -460,7 +462,7 @@ M1 Foundation → M2 Core → M3 Editing UI → M4 Export → M5 Feature Migrati
 | パスワード保護 PDF を開く (v2.0.1/2.0.2) | 暗号化 PDF を開くと自動判定。権限制限のみ/空ユーザーパスワードはそのまま開く。ユーザーパスワード必須なら入力モーダル → qpdf `--decrypt` で復号 → 復号版をワークスペースに保存 (再オープンは再入力不要)。詳細 §15.4 / ADR-0025 候補 |
 | カスタム ファイル選択 | OS ダイアログを使わず Win95 風自前ブラウザ。Open / Save / Folder の 3 モード共有 |
 | 上書き保存 | Ctrl+S / toolbar「上書き」(workspace flush + 元 PDF を rasterized で上書き、Word 流) |
-| 名前を付けて保存 | Ctrl+Shift+S / toolbar「保存」/ ファイル > 名前を付けて保存 (Save As 後 workspace 自動切替) |
+| 名前を付けて保存 | Ctrl+Shift+S / toolbar「保存」/ ファイル > 名前を付けて保存 (Save As 後 workspace 自動切替)。**v2.0.28-beta.2 (ADR-0030)**: 書き込みがあるときはダイアログに「確定して保存 (既定、焼き込み) / 編集可能として保存」ラジオ。編集可能 = fingerprint だけ違う同じ見た目の PDF を書き、workspace を複製して新タブで開く (フォーム枠・書き込み・回転・しおりそのまま、元タブは最後に保存した状態に戻る、新ファイルの実体は下書き同等)。メニュー「編集可能なまま名前を付けて保存...」はラジオ初期選択版 |
 | 範囲書き出し | ファイル > 範囲指定で書き出し |
 | 画像として保存 (β97) | ファイル > 画像として保存… → PNG/JPEG、96/150/300/600/900 dpi、全/現/`1-3,5,7-10` 範囲、白黒モード。単一ページは 1 ファイル、複数はフォルダ + 連番 (`<base>_p001.png`) |
 | 範囲画像保存 (β97) | toolbar「範囲画像」 / ファイル > 選んだ範囲を画像で保存… → 領域選択モード突入 → ドラッグで矩形指定 → 1 ファイル保存 |
@@ -515,7 +517,8 @@ M1 Foundation → M2 Core → M3 Editing UI → M4 Export → M5 Feature Migrati
 
 | 機能 | 操作 |
 |---|---|
-| タブ | Ctrl+T (新規) / Ctrl+W (閉) / +/× ボタン / dirty マーク / 複数 dirty タブの一括確認 / ドラッグ並び替え |
+| タブ | Ctrl+T (新規) / Ctrl+W (閉) / +/× ボタン / dirty マーク / 複数 dirty タブの一括確認 / ドラッグ並び替え。**v2.0.28-beta.3**: 倍率モード・倍率はタブごと (`TabState.zoomMode` / `zoom`、新規タブは直前タブを引き継ぐ)、復帰位置はページ基準アンカー (`viewer.getScrollAnchor` / `scrollTopForAnchor`、pin 中は行き先ページごと) で「見ていたページの同じ位置」に戻る |
+| フォーム枠の連動グループ (v2.0.28-beta.3) | テキスト枠パネル「連動:」に同じ名前 (例: 氏名) を付けた枠が 1 グループ。連動元 = Tab 順で最初の枠。連動元に記入・確定 → 連動先は全部同じ値 (手入力で別内容にしていても揃う)。連動先は手入力で別内容にでき (連動元には伝播しない)、空にして確定すると連動元の値に戻る。Undo 1 回で連動分も戻る。`properties.linkGroup`、判定は純関数 `form-link.js` |
 | **タブ別ウインドウ** (β71、B3) | 5 経路: タブ右クリック「別ウインドウへ移動」/ ツールバー「別窓化」/ ファイル > 別ウインドウで開く… / drag tearout (タブを bar 外へ) / drag dock-back (別窓のタブを本窓のバーへ)。子ウインドウは Chrome 風 last-tab-out で自動 close |
 | 自前タイトルバー | 98.css 青いバー、frame:false で OS chrome なし。最小化/最大化/閉じる + double-click 最大化 + ドラッグ |
 | タイトル動的反映 | 開いてる PDF のファイル名 + dirty マーク |
@@ -574,12 +577,16 @@ M1 Foundation → M2 Core → M3 Editing UI → M4 Export → M5 Feature Migrati
 | `crop-a4.test.mjs` (v2.0.27-beta.3 ADR-0029) | 5 pass | `node --test` |
 | `fit-guard.test.mjs` (v2.0.28-beta.1 fit 再適用判定 / ズーム往復検知) | 7 pass | `node --test` |
 | `rotate-progress.test.mjs` (v2.0.28-beta.1 回転インジケーターの % / 文言) | 7 pass | `node --test` |
-| **合計** | **Electron ランナー 8 本 199 項目 + node 系すべて fail 0（2026-09-10 実測、npm test 全 pass）** | |
+| `editable-copy-clone.test.mjs` (v2.0.28-beta.2 ADR-0030 workspace 複製、元 workspace 不変) | 31 pass | Electron runner (inserted-page-order の次、stamp-export-import の前) |
+| `editable-copy-bytes.test.mjs` (v2.0.28-beta.2 fingerprint 別個体化 / 増分保存 / fallback) | 5 pass | `node --test` |
+| `tab-scroll-anchor.test.mjs` (v2.0.28-beta.3 タブ復帰のページ基準アンカー) | 6 pass | `node --test` (viewer.js は import 時に DOM を触らないので疑似 viewer で検証) |
+| `form-link.test.mjs` (v2.0.28-beta.3 フォーム連動グループの伝播規則) | 7 pass | `node --test` |
+| **合計** | **Electron ランナー 9 本 230 項目 + node 系すべて fail 0（2026-10-08 実測、npm test 全 pass）** | |
 
 ```bash
 npm test                 # 全テスト
 npm run test:coord       # 個別実行
-npm run test:m1          # Electron ランナー 8 本 (renderer-load-smoke → m1 → m3 → workspace-cleanup → source-encrypted-flag → workspace-portability → inserted-page-order → stamp-export-import)
+npm run test:m1          # Electron ランナー 9 本 (renderer-load-smoke → m1 → m3 → workspace-cleanup → source-encrypted-flag → workspace-portability → inserted-page-order → editable-copy-clone → stamp-export-import)
 ELECTRON_RUN_AS_NODE=1 npx electron test/inserted-page-order.test.mjs   # SQLite 系テストを 1 本だけ回す (better-sqlite3 は Electron ABI なので plain node は不可)
 ```
 
@@ -604,6 +611,31 @@ npm run dev                        # electronmon (推奨、自動 reload。Wayla
 ```
 
 ### 8.2 短期の優先順
+
+#### 🟡 v2.0.28-beta.2 / beta.3 の実機確認 (2026-10-08 配信、Windows β)
+
+**beta.2「編集可能として別名保存」(ADR-0030、冒頭エントリ参照)**:
+1. テンプレ A を開いて記入 → 名前を付けて保存 → ラジオ「編集可能として保存」で B → B が新タブで開き記入済み、Tab 巡回・追記できる
+2. A のタブは最後に保存した状態 (記入前) に戻っている。A を閉じて開き直しても同じ
+3. B を閉じて開き直すと記入が残る (ステータスバー「下書き」)
+4. B で下敷き印刷が従来どおり動く
+5. B で上書き保存 → 確定保存 → Adobe で記入が見える。「編集に戻す」も効く
+6. 非干渉: ラジオ「確定して保存」(既定) の別名保存 / 書き込みのない PDF の別名保存 (ラジオが出ない) / 上書き保存の確定・下書き / 回転ページの別名保存が従来どおり
+7. メニュー「編集可能なまま名前を付けて保存...」でラジオが「編集可能」初期選択で開く
+
+**beta.3 (a) タブごとの倍率 + 復帰位置**:
+1. A をページ 7 の途中まで読む → B に切替えてスクロール・倍率変更 → A に戻ると元の倍率でページ 7 の同じ位置
+2. A で「次へ」でページ 3 先頭に揃えた直後に B へ → A に戻るとページ 3 先頭、ページ表示も 3
+3. 最終ページ表示中に切替えて戻る → 最終ページのまま。サイズ混在 / 回転ページでも同じページ
+4. A を 150% にした状態で新しいファイルを開く → 150% で開く (従来どおり)。ウインドウ幅を変えてから幅合わせタブに戻る → 新しい幅で再フィット
+5. タブを別ウインドウへ出す → 倍率そのまま・見ていたページで開く
+
+**beta.3 (b) フォーム連動グループ**:
+1. 枠①と③に連動「氏名」(③は Tab 順で後)。記入モードで①「山田」→ ③も「山田」。①を「田中」に直す → ③も「田中」
+2. ③を「佐藤」に直す → ①は「田中」のまま。①を「鈴木」に直す → ③も「鈴木」(ユーザー指定)
+3. ③を空にして Enter → ①の値に戻る。Ctrl+Z で連動分も一緒に戻る
+4. 下敷き印刷・別名保存 (確定) で③の値がそのまま出る。連動欄が空の枠は従来どおり単独
+5. 通常運用で問題なし → beta.1 (回転) と合わせて v2.0.28 stable 昇格 (`releaseType` を `release` に)
 
 #### 🟡 途中ページ回転の「ちかちか + フリーズ」 — 2026-09-09 報告 → 09-10 根因確定・v2.0.28-beta.1 配信 (実機確認待ち)
 
@@ -915,7 +947,8 @@ k-pdf3/
 ├── src/
 │   ├── domain/
 │   │   ├── coord.js
-│   │   ├── workspace.js                  # ADR-0026 predecessor / 可搬性 fallback
+│   │   ├── workspace.js                  # ADR-0026 predecessor / 可搬性 fallback / ADR-0030 replaceSourceBytes
+│   │   ├── workspace-clone.js            # v2.0.28-beta.2 ADR-0030 workspace 複製 (db.backup + source 差し替え)
 │   │   ├── project-store.js
 │   │   ├── page-registry.js
 │   │   ├── history.js
@@ -929,7 +962,8 @@ k-pdf3/
 │   │   ├── mupdf-font-fallback.js        # β.113 フォント fallback (Win/Linux)
 │   │   ├── pdf-outlines.js
 │   │   ├── pdf-repair.js                 # flate 修復 fallback + 暗号化 PDF の復号 (v2.0.14)
-│   │   └── vector-text-layer.js          # v2.0.13-beta.1 MS 明朝ベクター埋め込み
+│   │   ├── vector-text-layer.js          # v2.0.13-beta.1 MS 明朝ベクター埋め込み
+│   │   └── editable-copy-bytes.js        # v2.0.28-beta.2 ADR-0030 fingerprint だけ違う PDF (mupdf 増分保存 / 末尾コメント fallback)
 │   ├── main/
 │   │   ├── main.js                       # 大物 (4,521 行)、IPC surface
 │   │   ├── render-service.js
@@ -954,6 +988,7 @@ k-pdf3/
 │       ├── fonts.js                      # isMsMinchoFontName ほか
 │       ├── system-fonts.js               # β.80 システムフォント一覧
 │       ├── form-fill.js                  # β.80 申請書テンプレ記入モード (ADR-0020)
+│       ├── form-link.js                  # v2.0.28-beta.3 フォーム枠の連動グループ (純関数)
 │       ├── line-suppress.js
 │       ├── page-popup.html / page-popup.js
 │       ├── style.css
@@ -980,7 +1015,7 @@ k-pdf3/
 │       ├── workspace-cleanup-dialog.js   # ADR-0027 の 98 風ダイアログ
 │       └── vendor/98.css + ms_sans_serif*.woff
 │
-├── test/                                 # 18 スイート (§7.4)、electron-runner.cjs が Electron 内実行の枠組み
+├── test/                                 # 22 スイート (§7.4)、electron-runner.cjs が Electron 内実行の枠組み
 │
 ├── spike/
 │   └── print-density-sheet.mjs           # v2.0.13-beta.1 印刷濃度の実機検証シート
@@ -1222,6 +1257,7 @@ ADR ファイル名：`docs/adr/00NN-{slug}.md`、連番。
 | 0027 | workspace 保持ポリシー + 手動お掃除「ワークスペースの整理」(手動のみ / predecessor・開タブ無条件保持 / 開いただけ即候補 / 編集あり N ヶ月・既定 3 / ごみ箱 + index.db 同時削除) | ✅ 実装済 (v2.0.12-beta.2、ADR `3f83f6f`・実装 `bd73372`)・実機確認済 (2026-07-05)・**v2.0.13 stable 収録** |
 | 0028 | テキスト表示レイアウトの正を canvas 採寸に統一 (案 C — 非編集時 text/form_field を「1 行=1 span」絶対配置、マルチディスプレイ表示ずれ根治) | ✅ 実装済 (`7fcdd88`)・**v2.0.22 stable 収録 (2026-07-24)**・実機確認済 |
 | 0029 | A4 サイズに切り取り (非 A4 ページに A4 縦固定枠をドラッグ配置 → 枠 1 = 1 ページの別ファイル化。cropFrames 後処理方式で既存組み立て経路は不変。**切り取りは選択した 1 ページだけが原則・一括はチェックで明示・出力は切り取ったページだけ**) | ✅ 実装済 (feat `cbbecba` → 原則変更 `48a60ac`)・**v2.0.27-beta.3/4 で β 配信 (2026-08-24/25)・実機確認待ち** |
+| 0030 | 編集可能として別名保存 (workspace 複製 + mupdf 増分保存で fingerprint 別個体化、元タブは最後に保存した状態へ、既定は「確定」のまま) | 実装済 (v2.0.28-beta.2、実機確認待ち) |
 
 ### 15.4 architecture decision 待ち（未確定）
 
