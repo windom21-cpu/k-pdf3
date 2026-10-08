@@ -559,6 +559,8 @@ initTabManager({
     tab.placementMode = placementMode;
     tab.activeSourceName = activeSourceName;
     tab.workspaceMutated = workspaceMutated;
+    // 2026-10-08: 倍率モードはタブごと (tab.zoom は tab-manager 側で保存)。
+    tab.zoomMode = zoomMode;
     const bm = getBookmarkSnapshot();
     tab.selectedBookmarkId = bm.selectedBookmarkId;
     tab.bookmarkSource = bm.bookmarkSource;
@@ -576,6 +578,13 @@ initTabManager({
     placementMode = tab.placementMode;
     activeSourceName = tab.activeSourceName;
     workspaceMutated = tab.workspaceMutated;
+    // 2026-10-08: このタブの倍率モード / 倍率を復元。presetZoom は再構築
+    // なしで値だけ差し替え、続く refreshViewer の viewer.load がその倍率で
+    // ページを組む (fixed ならそのまま、fit 系なら applyFit*Now が同じ値を
+    // 算出して setZoom の early-return = 再構築なし)。倍率が一致するので
+    // tab-manager が復元する scrollPosition もそのまま同じ場所を指す。
+    zoomMode = tab.zoomMode ?? "fit-width";
+    if (tab.zoom) viewer.presetZoom(tab.zoom);
     // β.94: タブ切替の瞬間に bookmark DOM を即時クリア。refreshBookmarks
     // は async chain (refreshViewer 経由 fire-and-forget) で後追いで
     // 走るので、その間 DOM に前タブのしおりが残るレース条件があった。
@@ -625,7 +634,9 @@ async function detachTabToNewWindow(tabId, opts = {}) {
     selectedBookmarkId: tab.selectedBookmarkId ?? null,
     bookmarkSource: tab.bookmarkSource ?? "outline",
     scrollPosition: tab.scrollPosition || 0,
+    scrollAnchor: tab.scrollAnchor ?? null,
     zoom: tab.zoom ?? null,
+    zoomMode: tab.zoomMode ?? "fit-width",
     // B3-β: when the user drag-tearout dropped outside the bar, ship
     // the screen-relative release point so main can spawn the new
     // window near the cursor instead of next to the source window.
@@ -673,7 +684,9 @@ setOnTabDragStart((tabId) => {
     selectedBookmarkId: tab.selectedBookmarkId ?? null,
     bookmarkSource: tab.bookmarkSource ?? "outline",
     scrollPosition: tab.scrollPosition || 0,
+    scrollAnchor: tab.scrollAnchor ?? null,
     zoom: tab.zoom ?? null,
+    zoomMode: tab.zoomMode ?? "fit-width",
   };
   void kpdf3.tabDragStart(payload);
 });
@@ -719,6 +732,9 @@ const _adoptCallbacks = {
     placementMode = tab.placementMode;
     activeSourceName = tab.activeSourceName;
     workspaceMutated = tab.workspaceMutated;
+    // 2026-10-08: 別ウインドウから来たタブも倍率モード / 倍率を引き継ぐ。
+    zoomMode = tab.zoomMode ?? "fit-width";
+    if (tab.zoom) viewer.presetZoom(tab.zoom);
     // Repopulate projectStore from the shipped overlays. markDirty so
     // Ctrl+S still flushes them — the source window's user hadn't saved.
     if (Array.isArray(p.overlays) && p.overlays.length > 0) {
@@ -4919,7 +4935,10 @@ function _buildFormFieldPatch(ov, fk) {
     const color = document.getElementById("form-text-color")?.value || "#000000";
     const alignH = document.getElementById("form-text-align-h")?.value || "left";
     const alignV = document.getElementById("form-text-align-v")?.value || "middle";
-    return { properties: { ...ov.properties, fontFace, fontSize, color, alignH, alignV } };
+    const linkGroup = (document.getElementById("form-text-link-group")?.value ?? "").trim();
+    return {
+      properties: { ...ov.properties, fontFace, fontSize, color, alignH, alignV, linkGroup },
+    };
   }
   if (fk === "check") {
     const checkStyle = document.getElementById("form-check-style")?.value || "✓";
@@ -5090,6 +5109,7 @@ function populateFormFieldOptionsBar() {
     setVal("form-text-color",  p.color    ?? "#000000");
     setVal("form-text-align-h", p.alignH  ?? "left");
     setVal("form-text-align-v", p.alignV  ?? "middle");
+    setVal("form-text-link-group", p.linkGroup ?? "");
   } else if (fk === "check") {
     setVal("form-check-style", p.checkStyle ?? "✓");
     // size は bbox から (w/h は同じはず、ズレてたら w 優先)
@@ -5225,6 +5245,7 @@ for (const id of [
   "form-text-color",
   "form-text-align-h",
   "form-text-align-v",
+  "form-text-link-group",
   "form-check-style",
   "form-check-size",
   "form-circle-stroke",

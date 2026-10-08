@@ -56,7 +56,15 @@ export function createTabState({ id } = {}) {
     workspaceMutated: false,
     placementMode: "none",
     scrollPosition: 0,
+    // 2026-10-08: ページ基準の位置 ({ pageNo, offsetRatio, pinPageNo })。
+    // scrollPosition (生 scrollTop) は anchor が使えないときの fallback。
+    scrollAnchor: null,
     zoom: null,
+    // 2026-10-08: 倍率モード (fit-width / fit-page / fixed) もタブごと。
+    // renderer の zoomMode がタブ共通だったため「別タブで倍率を変えると
+    // 戻ったタブにもその倍率が適用され、保存していた scroll 位置も倍率
+    // 違いでずれる」症状の原因だった。zoom と組で保存・復元する。
+    zoomMode: "fit-width",
     selectedBookmarkId: null,
     bookmarkSource: "outline",
     workspaceBookmarksCache: [],
@@ -138,6 +146,7 @@ export function saveActiveTabSnapshot() {
   if (!tab) return;
   _saveActiveStateInto(tab);
   tab.scrollPosition = _viewerContainer.scrollTop;
+  tab.scrollAnchor = _viewer.getScrollAnchor?.() ?? null;
   tab.zoom = _viewer.zoom;
   // projectStore / history / pendingDeletedPages / thumbCache are
   // reference-shared with the tab record, no copy needed.
@@ -192,18 +201,7 @@ export async function applyTab(tabId) {
     // 即時 + RAF + 2RAF の三段で再設定して堅牢化する。
     // scrollLeft は 0 リセット (fit-width / fit-page で margin auto を効か
     // せるため、前タブの非ゼロ値が残っていると左右にずれて見える)。
-    const target = tab.scrollPosition || 0;
-    _viewerContainer.scrollTop = target;
-    _viewerContainer.scrollLeft = 0;
-    requestAnimationFrame(() => {
-      _viewerContainer.scrollTop = target;
-      _viewerContainer.scrollLeft = 0;
-      requestAnimationFrame(() => {
-        if (_viewerContainer.scrollTop !== target) {
-          _viewerContainer.scrollTop = target;
-        }
-      });
-    });
+    restoreTabScroll(tab);
   } else {
     try { await kpdf3.switchTab(null); } catch { /* noop */ }
     _setOpenFalse();
@@ -211,10 +209,45 @@ export async function applyTab(tabId) {
   renderTabBar();
 }
 
+/** タブ復帰時のスクロール復元 (即時 + RAF + 2RAF の三段は β.94 のまま)。
+ *  2026-10-08: 復元先は scrollTop の生値ではなくページ基準 (scrollAnchor)
+ *  から現在レイアウトで引き直す。倍率が変わっていても / fit が別ページ幅で
+ *  再計算されていても「見ていたページの同じ位置」に戻る。nav pin 採用中
+ *  だったタブは scrollToPage で行き先ページ + pin ごと復元 (末尾の背の
+ *  低いページで clamp されるケースも元どおり)。anchor のページが無い
+ *  (削除等) ときだけ従来の scrollTop 生値に fallback。 */
+function restoreTabScroll(tab) {
+  const anchor = tab.scrollAnchor;
+  const apply = () => {
+    if (anchor?.pinPageNo && _viewer.registry?.posOfPageNo(anchor.pinPageNo) >= 0) {
+      _viewer.scrollToPage(anchor.pinPageNo);
+      _viewerContainer.scrollLeft = 0;
+      return;
+    }
+    const fromAnchor = _viewer.scrollTopForAnchor?.(anchor);
+    const target = fromAnchor ?? (tab.scrollPosition || 0);
+    if (_viewerContainer.scrollTop !== target) _viewerContainer.scrollTop = target;
+    _viewerContainer.scrollLeft = 0;
+  };
+  apply();
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
+  });
+}
+
 /** Open a new tab and (optionally) prompt the user to pick a PDF for it. */
 export async function newTabAndOpen(pdfPath = null) {
   saveActiveTabSnapshot();
+  const prev = getActiveTab();
   const tab = createTabState();
+  // 新しいタブは直前のタブの倍率モード / 倍率を引き継ぐ (= 従来の挙動。
+  // zoomMode がタブ共通だった頃は暗黙にそうなっていた)。固定 150% で
+  // 作業中に別ファイルを開けば 150% で開く。
+  if (prev) {
+    tab.zoomMode = prev.zoomMode ?? "fit-width";
+    tab.zoom = prev.zoom ?? null;
+  }
   tabs.set(tab.id, tab);
   // Switch the bare aliases to the new tab. Doing it inline (rather
   // than via applyTab) because the new tab has no main-side handle
@@ -327,7 +360,9 @@ export async function adoptDetachedTab(payload, deps) {
   tab.isOpen = !!payload.sourcePdfPath;
   tab.workspaceMutated = !!payload.workspaceMutated;
   tab.scrollPosition = Number(payload.scrollPosition) || 0;
+  tab.scrollAnchor = payload.scrollAnchor ?? null;
   tab.zoom = payload.zoom ?? null;
+  tab.zoomMode = payload.zoomMode ?? "fit-width";
   tab.selectedBookmarkId = payload.selectedBookmarkId ?? null;
   tab.bookmarkSource = payload.bookmarkSource ?? "outline";
   if (Array.isArray(payload.pendingDeletedPages)) {
@@ -348,6 +383,8 @@ export async function adoptDetachedTab(payload, deps) {
     // visibility), then refreshViewer (loads pages into the viewer).
     setOpenTrue();
     await refreshViewerAfterAdopt();
+    // 2026-10-08: 別ウインドウから来たタブも見ていたページに戻す。
+    restoreTabScroll(tab);
   }
   renderTabBar();
 }
@@ -376,7 +413,9 @@ export async function adoptDockedTab(payload, deps) {
   tab.isOpen = !!payload.sourcePdfPath;
   tab.workspaceMutated = !!payload.workspaceMutated;
   tab.scrollPosition = Number(payload.scrollPosition) || 0;
+  tab.scrollAnchor = payload.scrollAnchor ?? null;
   tab.zoom = payload.zoom ?? null;
+  tab.zoomMode = payload.zoomMode ?? "fit-width";
   tab.selectedBookmarkId = payload.selectedBookmarkId ?? null;
   tab.bookmarkSource = payload.bookmarkSource ?? "outline";
   if (Array.isArray(payload.pendingDeletedPages)) {
@@ -396,6 +435,8 @@ export async function adoptDockedTab(payload, deps) {
     }
     setOpenTrue();
     await refreshViewerAfterAdopt();
+    // 2026-10-08: 別ウインドウから来たタブも見ていたページに戻す。
+    restoreTabScroll(tab);
   }
   renderTabBar();
 }
