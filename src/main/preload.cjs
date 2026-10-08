@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld("kpdf3", {
   saveImageFile:      (payload) => ipcRenderer.invoke("kpdf3:save-image-file", payload),
   saveImageFiles:     (payload) => ipcRenderer.invoke("kpdf3:save-image-files", payload),
   copySourcePdf:      (savePath, opts) => ipcRenderer.invoke("kpdf3:copy-source-pdf", { savePath, ...(opts ?? {}) }),
+  // ADR-0030 編集可能として別名保存 (workspace 複製 + fingerprint 別個体)
+  saveAsEditable:     (payload) => ipcRenderer.invoke("kpdf3:save-as-editable", payload),
   listPrinters:       ()         => ipcRenderer.invoke("kpdf3:list-printers"),
   listPrintEngines:   ()         => ipcRenderer.invoke("kpdf3:list-print-engines"),
   listPrintPresets:   (deviceName) => ipcRenderer.invoke("kpdf3:list-print-presets", deviceName),

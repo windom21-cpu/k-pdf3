@@ -1173,3 +1173,15 @@ export function setMetadata(db, key, value) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, value);
 }
+
+/** Remove a metadata key (no-op when absent). ADR-0030 の workspace 複製で
+ *  複製元の lineage (predecessor 等) を引き継がないために使う。 */
+export function deleteMetadata(db, key) {
+  db.prepare("DELETE FROM metadata WHERE key = ?").run(key);
+}
+
+/** Drop the export audit log. ADR-0030 の複製 workspace は別文書なので
+ *  複製元の書き出し履歴を持ち越さない。 */
+export function clearExports(db) {
+  db.prepare("DELETE FROM exports").run();
+}

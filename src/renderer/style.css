@@ -2917,6 +2917,26 @@ body.form-tab-order-edit-mode .overlay-form_field .resize-handle {
   min-width: 0;
   font-weight: bold;
 }
+/* ADR-0030: 別名保存の「確定 / 編集可能」ラジオ行。縦積み 2 択 + 補足文。 */
+.open-row-save-mode {
+  align-items: flex-start;
+}
+.save-mode-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.save-mode-option label {
+  min-width: 0;
+  font-weight: bold;
+}
+.save-mode-note {
+  margin: 2px 0 0 20px;
+  font-weight: normal;
+  color: #404040;
+  line-height: 1.35;
+}
 .open-row-toolbar select {
   flex: 1;
   min-width: 0;

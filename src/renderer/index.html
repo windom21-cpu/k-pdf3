@@ -43,6 +43,7 @@
     <div class="menu-separator"></div>
     <div class="menu-item disabled" data-action="save">上書き保存 (Ctrl+S)</div>
     <div class="menu-item disabled" data-action="export">名前を付けて保存 (Ctrl+Shift+S)</div>
+    <div class="menu-item disabled" data-action="export-editable">編集可能なまま名前を付けて保存...</div>
     <div class="menu-item disabled" data-action="restore-editable-master">編集可能な状態に戻す</div>
     <div class="menu-item disabled" data-action="export-range">範囲指定で書き出し...</div>
     <div class="menu-item disabled" data-action="export-image">画像として保存... (PNG/JPEG)</div>
@@ -937,6 +938,29 @@
           <label for="open-mono-export">
             白黒で書き出す（カラースタンプ等を黒化、後で別アプリで印刷しても黒）
           </label>
+        </div>
+        <!-- ADR-0030: 書き込み (フォーム枠・テキスト・印影) がある PDF の
+             別名保存で「確定 (焼き込み)」か「編集可能のまま (workspace 複製)」
+             かを選ぶ。showFileBrowser({ editableSaveToggle }) のときだけ表示。 -->
+        <div class="open-row open-row-secure open-row-save-mode" id="open-row-save-mode" hidden>
+          <div class="save-mode-group">
+            <div class="save-mode-option">
+              <input type="radio" name="open-save-mode" id="open-save-mode-flatten" value="flatten" checked />
+              <label for="open-save-mode-flatten">
+                確定して保存 — 文字・フォーム記入・印影をファイルに焼き込みます（Adobe 等でもそのまま見えます）
+              </label>
+            </div>
+            <div class="save-mode-option">
+              <input type="radio" name="open-save-mode" id="open-save-mode-editable" value="editable" />
+              <label for="open-save-mode-editable">
+                編集可能として保存 — フォームの枠や書き込みをそのまま持った新しいファイルを作ります
+              </label>
+              <div class="save-mode-note">
+                新しいファイルでもフォーム記入・下敷き印刷ができ、元のファイルは変更されません。<br>
+                焼き込まないので他のアプリでは見えません（あとで「上書き保存 → 確定保存」でファイルに反映できます）。
+              </div>
+            </div>
+          </div>
         </div>
         <div class="open-buttons">
           <button id="open-confirm" class="default">開く</button>

@@ -4,6 +4,7 @@
 //
 //   actionSave              — Ctrl+S / 保存ボタン (確定 or 下書きの選択)
 //   actionExportToPath      — 書き出し共通経路 (byte-copy ゲート込み)
+//   actionSaveAsEditable    — ADR-0030 編集可能として別名保存 (workspace 複製)
 //   actionRestoreEditableMaster / refreshRestoreMasterUI — ADR-0026
 //   isPdfOutOfSync          — 上書きボタン活性判定 (refreshMenuState が使用)
 //
@@ -334,6 +335,66 @@ export async function actionExportToPath(
     console.error(`[renderer] ${verb} failed:`, err);
     wsStatus.textContent = `${verb}失敗: ${err.message ?? err}`;
   }
+}
+
+/**
+ * ADR-0030「編集可能として別名保存」— フォーム枠・テキスト・印影などの
+ * 書き込みを焼き込まず、そのまま編集できる新しいファイルを作って新タブで
+ * 開く。元のファイル (いま開いているタブ) には一切書き込まない。
+ *
+ *   - main が「fingerprint だけ違う同じ見た目の PDF」を savePath に書き、
+ *     workspace を複製して画面の overlay スナップショット + 未確定の削除を
+ *     反映・登録する (kpdf3.saveAsEditable)。
+ *   - 元タブは「最後に保存した状態」に戻す (Word の Save As 流儀: 今回の
+ *     記入内容は新しいファイル側に移る)。元 workspace に永続済みの
+ *     書き込み・ページ構造はそのまま。これで「元ファイルを開くと別名側の
+ *     フォーム記入が表示される」事故を防ぐ。
+ *   - 既存の actionExportToPath (確定 / byte-copy) 経路は不変。
+ *
+ * @param {string} savePath
+ */
+export async function actionSaveAsEditable(savePath) {
+  if (!_isOpen()) return;
+  const projectStore = _projectStore();
+  const pendingDeletedPages = _pendingDeletedPages();
+  const preTab = getActiveTab();
+  const srcName = _activeSourceName() || "(無名)";
+  const newName = savePath.split(/[\\/]/).pop() ?? savePath;
+  showBusy("編集可能として保存", "フォーム枠・書き込みを新しいファイルに引き継いでいます...", 30);
+  let result;
+  try {
+    result = await kpdf3.saveAsEditable({
+      savePath,
+      overlays: projectStore.snapshot(),
+      pendingDeletedPageNos: [...pendingDeletedPages],
+    });
+  } catch (err) {
+    hideBusy();
+    console.error("[renderer] save-as-editable failed:", err);
+    wsStatus.textContent = `編集可能として保存できませんでした: ${err?.message ?? err}`;
+    return;
+  }
+  try {
+    updateBusy("新しいファイルを開いています...", 80);
+    // 元タブを最後に保存した状態へ戻す (まだアクティブなうちに reset して、
+    // 購読者 (ダーティ表示 / サムネ無効化 / 選択解除) を元タブの文脈で
+    // 走らせる)。
+    if (preTab && preTab.activeSourcePdfPath !== savePath) {
+      projectStore.reset(Array.isArray(result?.sourceOverlays) ? result.sourceOverlays : []);
+      pendingDeletedPages.clear();
+      _history().clear();
+      _refreshDirtyIndicator();
+      _refreshMenuState();
+    }
+    await newTabAndOpen(savePath);
+  } catch (switchErr) {
+    console.error("[renderer] post-editable-save switch failed:", switchErr);
+  }
+  hideBusy();
+  wsStatus.textContent =
+    `編集可能として「${newName}」に保存しました — このタブでフォーム記入・編集を続けられます`
+    + `（元の「${srcName}」は変更されていません）`;
+  void refreshRestoreMasterUI();
 }
 
 /**

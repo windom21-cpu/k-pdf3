@@ -22,6 +22,8 @@ import {
   getSourcePdfBlob,
   setMetadata,
   getMetadata,
+  deleteMetadata,
+  clearExports,
   setOverlays,
   getAllOverlays,
   setExport,
@@ -184,6 +186,50 @@ export class Workspace {
     });
     tx();
 
+    return { pageCount: info.pageCount, fingerprint };
+  }
+
+  /**
+   * ADR-0030「編集可能として別名保存」— 元 PDF バイト列だけを差し替える。
+   * importPdfBytes と同じ格納規約 (閾値超はサイドカー / 以下は BLOB) だが、
+   * pages テーブル (回転・削除・並び順) と overlays / しおり等には触らない。
+   * 複製 workspace の source を「fingerprint だけ違う同じ見た目の PDF」に
+   * 置き換える用途専用。ページ数が変わる PDF を渡してはいけない (呼び出し
+   * 側で同一ページ数を保証する)。既存の importPdfBytes 経路は不変。
+   *
+   * @param {Buffer} bytes
+   * @param {string} fileName
+   */
+  async replaceSourceBytes(bytes, fileName) {
+    const info = extractPdfInfo(bytes);
+    const prevMeta = getSourcePdfMeta(this.db);
+    if (prevMeta && prevMeta.pageCount !== info.pageCount) {
+      throw new Error(
+        `replaceSourceBytes: page count mismatch (${prevMeta.pageCount} → ${info.pageCount})`,
+      );
+    }
+    const fingerprint = await computePdfFingerprint(bytes);
+    const useExternal = bytes.length > LARGE_PDF_THRESHOLD_BYTES;
+    const externalPath = useExternal ? `${this.filePath}.source.pdf` : null;
+    if (useExternal) {
+      writeFileSync(externalPath, bytes);
+    } else {
+      const oldExternal = `${this.filePath}.source.pdf`;
+      try { if (existsSync(oldExternal)) unlinkSync(oldExternal); } catch { /* ignore */ }
+    }
+    const tx = this.db.transaction(() => {
+      setSourcePdf(this.db, {
+        fileName,
+        blob: useExternal ? Buffer.alloc(0) : bytes,
+        externalPath,
+        byteSize: bytes.length,
+        pageCount: info.pageCount,
+        fingerprint,
+      });
+      setMetadata(this.db, "source_fingerprint", fingerprint);
+      setMetadata(this.db, "source_imported_at", new Date().toISOString());
+    });
+    tx();
     return { pageCount: info.pageCount, fingerprint };
   }
 
@@ -460,6 +506,21 @@ export class Workspace {
    *  null when this workspace has no lineage (a normally-opened PDF). */
   getPredecessor() {
     return getMetadata(this.db, "predecessor_workspace_id");
+  }
+
+  /** ADR-0030: 複製 workspace が複製元の lineage を引き継がないよう消す。 */
+  clearPredecessor() {
+    deleteMetadata(this.db, "predecessor_workspace_id");
+  }
+
+  /** ADR-0030: 複製 workspace の書き出し履歴 (複製元のもの) を空にする。 */
+  clearExportHistory() {
+    clearExports(this.db);
+  }
+
+  /** ADR-0030: 複製の source は平文なので暗号化フラグを落とす。 */
+  clearSourceWasEncrypted() {
+    deleteMetadata(this.db, "source_was_encrypted");
   }
 
   // ---- Encrypted-source flag (ADR-0025 候補 / REVIEW-2026-07 #3) ------

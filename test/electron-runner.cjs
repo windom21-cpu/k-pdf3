@@ -29,6 +29,8 @@ const ELECTRON_TESTS = [
   "./source-encrypted-flag.test.mjs",
   "./workspace-portability.test.mjs",
   "./inserted-page-order.test.mjs",
+  // ADR-0030 編集可能として別名保存 (workspace 複製)
+  "./editable-copy-clone.test.mjs",
   // ⚠️ userData を一時ディレクトリへ差し替えるため最後に置く
   "./stamp-export-import.test.mjs",
 ];

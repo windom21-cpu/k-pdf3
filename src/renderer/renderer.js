@@ -127,6 +127,7 @@ import {
   isPdfOutOfSync,
   actionSave,
   actionExportToPath,
+  actionSaveAsEditable,
   actionRestoreEditableMaster,
   refreshRestoreMasterUI,
 } from "./save-flow.js";
@@ -1886,6 +1887,7 @@ function refreshMenuState() {
     "page-goto": isOpen,
     "toggle-bookmarks": isOpen,
     export: isOpen,
+    "export-editable": isOpen && projectStore.count() > 0,
     "export-range": isOpen,
     "export-image": isOpen,
     "export-region-image": isOpen,
@@ -2473,9 +2475,15 @@ async function actionExportRange() {
 }
 
 
-async function actionExport() {
+// ADR-0030: 書き込み (フォーム枠・テキスト・印影等) がある PDF の別名保存は
+// 「確定して保存 (焼き込み = 従来)」と「編集可能として保存 (workspace 複製)」
+// の 2 択をダイアログに出す。書き込みが無ければ従来どおり (byte-copy)。
+// preferEditable = メニュー「編集可能なまま名前を付けて保存」からの呼び出しで
+// ラジオの初期選択を「編集可能」にする。
+async function actionExport({ preferEditable = false } = {}) {
   if (!isOpen) return;
   const defaults = await kpdf3.getExportDefaults();
+  const hasOverlays = projectStore.count() > 0;
   const choice = await showFileBrowser({
     mode: "save",
     title: "PDF として書き出し",
@@ -2483,8 +2491,14 @@ async function actionExport() {
     defaultDir: defaults.sourceDir,
     secureExportToggle: true,
     monoExportToggle: true,
+    editableSaveToggle: hasOverlays,
+    editableSaveDefault: hasOverlays && preferEditable,
   });
   if (!choice) return;
+  if (choice.editableSave) {
+    await actionSaveAsEditable(choice.path);
+    return;
+  }
   await actionExportToPath(choice.path, {
     secureExport: choice.secureExport,
     monoExport: choice.monoExport,
@@ -3579,7 +3593,8 @@ const menuBar = new MenuBar({
     "open-in-new-window": actionOpenInNewWindow,
     close: actionClose,
     save: actionSave,
-    export: actionExport,
+    export: () => actionExport(),
+    "export-editable": () => actionExport({ preferEditable: true }),
     "restore-editable-master": actionRestoreEditableMaster,
     "export-range": actionExportRange,
     "export-image": actionExportAsImage,
@@ -4027,6 +4042,7 @@ const MENU_HINTS = {
   close: "現在の PDF を閉じます (アプリは開いたまま)",
   save: "現在の状態を上書き保存します (Ctrl+S)",
   export: "PDF を選んだ場所に保存します (Ctrl+Shift+S)",
+  "export-editable": "フォーム枠・テキスト・印影を焼き込まず、そのまま記入・編集できる新しいファイルとして保存します (元のファイルは変更されません)",
   "export-range": "ページ範囲を指定して PDF を書き出します",
   "export-image": "PDF を PNG / JPEG 画像として保存します (連番ファイル)",
   "export-region-image": "ドラッグで囲んだ範囲を 1 枚の画像として保存します",
@@ -4294,7 +4310,7 @@ renderTabBar();
 // ---- Toolbar buttons --------------------------------------------------
 btnOpen.addEventListener("click", actionOpen);
 btnSave.addEventListener("click", actionSave);
-btnExport.addEventListener("click", actionExport);
+btnExport.addEventListener("click", () => actionExport());
 if (btnRestoreMaster) btnRestoreMaster.addEventListener("click", actionRestoreEditableMaster);
 btnPrint.addEventListener("click", actionPrint);
 // 白黒印刷 sticky toggle (Phase 1)。state と sync 関数は initPrintFlow より

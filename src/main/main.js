@@ -34,6 +34,8 @@ import { cupsAvailable, cupsPrintPdf, cupsCancelInFlight } from "./print-cups.js
 import { listMacPrintPresets, resolveMacPresetOptions, monoPpdOptionsFor, mergeMonoIntoPpdOptions } from "./print-presets-mac.js";
 import { listCupsTrays, resolveTrayOption, mergeTrayIntoPpdOptions } from "./print-trays-cups.js";
 import { redactSourceBytes } from "./redact-source.js";
+import { makeDistinctPdfBytes } from "../backend/editable-copy-bytes.js";
+import { cloneWorkspaceAsEditableCopy } from "../domain/workspace-clone.js";
 import { renderPageCanonical } from "./render-service.js";
 import {
   closeRegistry,
@@ -2166,6 +2168,88 @@ ipcMain.handle("kpdf3:copy-source-pdf", async (_, arg) => {
     byteCopy: true,
     secureExportApplied,
     qpdfMissing,
+  };
+});
+
+/**
+ * ADR-0030「編集可能として別名保存」— フォーム枠・テキスト・印影などの
+ * 書き込みを焼き込まず、そのまま編集できる「新しいファイル」を作る。
+ *
+ *   1. 元 PDF バイト列から fingerprint だけ違う別個体を作る
+ *      (makeDistinctPdfBytes: mupdf 増分保存で Info にマーカー追記)
+ *   2. それを savePath に書く (= 新しいファイル。見た目は元 PDF と同じ、
+ *      書き込みは下書きと同様ファイルには乗らない)
+ *   3. いま編集中の workspace を複製し、新バイト列 + 画面の overlay
+ *      スナップショット + 未確定の削除を反映、registry に新 fingerprint で登録
+ *
+ * 元 workspace には書き込まない (元ファイルを開いても今回の記入は出ない)。
+ * 既存の copy-source-pdf / export-pdf-rasterized 経路は不変。
+ */
+ipcMain.handle("kpdf3:save-as-editable", async (event, payload) => {
+  const { savePath, overlays = null, pendingDeletedPageNos = [] } = payload ?? {};
+  if (!savePath) throw new Error("save-as-editable: savePath missing");
+  const cur = activeForEvent(event);
+  const ws = cur.workspace ?? activeWorkspace;
+  if (!ws) throw new Error("No active workspace");
+  const srcBytes = ws.getSourceBytes();
+  if (!srcBytes) throw new Error("save-as-editable: workspace has no source PDF");
+  const sourceName = basename(savePath);
+
+  // fingerprint 衝突 (理論上ほぼ無いが、同じ stamp で 2 回作った等) は
+  // stamp を変えて作り直す。
+  let distinct = null;
+  let fingerprint = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const stamp = `${new Date().toISOString()} ${randomUUID().slice(0, 8)}`;
+    const cand = makeDistinctPdfBytes(srcBytes, { stamp });
+    const fp = await computePdfFingerprint(cand.bytes);
+    if (!findWorkspaceByFingerprint(fp)) {
+      distinct = cand;
+      fingerprint = fp;
+      break;
+    }
+  }
+  if (!distinct) throw new Error("save-as-editable: could not derive a distinct PDF");
+
+  // ファイルを先に書き、複製に失敗したら消す (中途半端な PDF を残すと
+  // 次に開いたとき空 workspace が作られ「フォームが消えた」に見える)。
+  writeFileSync(savePath, distinct.bytes);
+  const id = generateWorkspaceId();
+  const wsPath = workspacePathFor(id);
+  let clone = null;
+  try {
+    clone = await cloneWorkspaceAsEditableCopy({
+      source: ws,
+      destPath: wsPath,
+      bytes: distinct.bytes,
+      fileName: sourceName,
+      overlays: Array.isArray(overlays) ? overlays : null,
+      pendingDeletedPageNos: Array.isArray(pendingDeletedPageNos) ? pendingDeletedPageNos : [],
+    });
+    registerWorkspace({
+      fingerprint,
+      workspaceId: id,
+      workspacePath: wsPath,
+      sourcePdfPath: savePath,
+      sourcePdfName: sourceName,
+    });
+  } catch (err) {
+    try { rmSync(savePath, { force: true }); } catch { /* ignore */ }
+    throw err;
+  } finally {
+    try { clone?.close(); } catch { /* ignore */ }
+  }
+  // 監査ログは複製元に 1 行 (ADR-0008 の exports メタ)。
+  const rev = ws.recordExport(distinct.bytes, {
+    note: `editable copy → ${sourceName} (workspace ${id}, ${distinct.method})`,
+  });
+  return {
+    savePath,
+    workspaceId: id,
+    method: distinct.method,
+    revisionId: rev.revisionId,
+    // 元タブを「最後に保存した状態」へ戻すための永続 overlay。
+    sourceOverlays: ws.loadOverlays(),
   };
 });
 

@@ -33,6 +33,12 @@ const openSecureExportCheckbox = document.getElementById("open-secure-export");
 // monoOverlays を伝搬する)。ツールバー印刷時の「白黒」トグルとは別状態。
 const openMonoExportRow = document.getElementById("open-row-mono-export");
 const openMonoExportCheckbox = document.getElementById("open-mono-export");
+// ADR-0030: 別名保存の「確定して保存 / 編集可能として保存」ラジオ。
+// showFileBrowser({ editableSaveToggle: true }) のときだけ表示し、
+// resolve 値に editableSave (boolean) を足す。
+const openSaveModeRow = document.getElementById("open-row-save-mode");
+const openSaveModeFlatten = document.getElementById("open-save-mode-flatten");
+const openSaveModeEditable = document.getElementById("open-save-mode-editable");
 
 const fileBrowserState = {
   mode: "open", // "open" | "save" | "folder"
@@ -49,6 +55,10 @@ const fileBrowserState = {
   // β.110: 同様に「白黒で書き出す」チェック。両方 true なら resolve
   // 値は { path, secureExport, monoExport } の合算。
   monoExportToggle: false,
+  // ADR-0030: 「編集可能として保存」ラジオ行。true のとき resolve 値に
+  // editableSave を含める。secure / mono は焼き込み時だけ意味があるので
+  // 編集可能を選ぶと灰色化する。
+  editableSaveToggle: false,
   // β.97 画像書き出し: ".pdf" 既定だと "契約書" → "契約書.pdf" に
   // 強制されてしまい、image save で .png が消える。caller が拡張子を
   // 指定できるようにする (デフォは ".pdf" で後方互換)。
@@ -219,6 +229,16 @@ function fileBrowserCancel() {
   }
 }
 
+/** ADR-0030: 「編集可能として保存」を選んだら secure / mono チェックは
+ *  無効化 (焼き込まないので意味を持たない)。確定に戻せば復活。 */
+function syncSaveModeDependents() {
+  const editable = fileBrowserState.editableSaveToggle && !!openSaveModeEditable?.checked;
+  if (openSecureExportCheckbox) openSecureExportCheckbox.disabled = editable;
+  if (openMonoExportCheckbox) openMonoExportCheckbox.disabled = editable;
+}
+openSaveModeFlatten?.addEventListener("change", syncSaveModeDependents);
+openSaveModeEditable?.addEventListener("change", syncSaveModeDependents);
+
 function fileBrowserConfirm(value) {
   if (fileBrowserState.currentPath) {
     localStorage.setItem("kpdf3.lastBrowseDir", fileBrowserState.currentPath);
@@ -284,7 +304,11 @@ async function handleFileBrowserConfirm() {
       });
       if (!ok) return;
     }
-    if (fileBrowserState.secureExportToggle || fileBrowserState.monoExportToggle) {
+    if (
+      fileBrowserState.secureExportToggle
+      || fileBrowserState.monoExportToggle
+      || fileBrowserState.editableSaveToggle
+    ) {
       // β.110: secure / mono の各 toggle が立っているかで含めるキーを切替
       // (どちらか 1 つでも true ならオブジェクトを返す)。両方 false の
       // 場合は従来通り string を返す (後方互換)。
@@ -294,6 +318,9 @@ async function handleFileBrowserConfirm() {
       }
       if (fileBrowserState.monoExportToggle) {
         payload.monoExport = !!openMonoExportCheckbox?.checked;
+      }
+      if (fileBrowserState.editableSaveToggle) {
+        payload.editableSave = !!openSaveModeEditable?.checked;
       }
       fileBrowserConfirm(payload);
     } else {
@@ -330,10 +357,24 @@ export async function showFileBrowser({
   confirmLabel,
   secureExportToggle = false,
   monoExportToggle = false,
+  editableSaveToggle = false,
+  editableSaveDefault = false,
   defaultExt = ".pdf",
 } = {}) {
   fileBrowserState.mode = mode;
   fileBrowserState.secureExportToggle = !!secureExportToggle && mode === "save";
+  // ADR-0030: 編集可能ラジオは save モード限定。既定は「確定」(= 従来動作)、
+  // caller が editableSaveDefault を立てたとき (メニュー「編集可能なまま
+  // 名前を付けて保存」) だけ「編集可能」を初期選択。永続化はしない
+  // (ファイルの中身次第で毎回選ぶ性質のもの)。
+  fileBrowserState.editableSaveToggle = !!editableSaveToggle && mode === "save";
+  if (openSaveModeRow) {
+    openSaveModeRow.hidden = !fileBrowserState.editableSaveToggle;
+  }
+  if (fileBrowserState.editableSaveToggle && openSaveModeFlatten && openSaveModeEditable) {
+    openSaveModeEditable.checked = !!editableSaveDefault;
+    openSaveModeFlatten.checked = !editableSaveDefault;
+  }
   // β.110: 白黒書き出しチェックは save / folder 両方で出せる (分割保存は
   // folder picker 経由のため)。secure 側は qpdf 必須等で複雑なので一旦
   // save 限定を維持 (§17 #11 で別途検討予定)。
@@ -357,6 +398,7 @@ export async function showFileBrowser({
     const stored = localStorage.getItem("kpdf3.monoExport");
     openMonoExportCheckbox.checked = stored === "1";
   }
+  syncSaveModeDependents();
   await populateQuickSelector();
 
   // Resolve initial directory
