@@ -513,6 +513,7 @@ function _readFormTextDefaults() {
   const frameChk = document.getElementById("form-text-frame");
   const alignHSel = document.getElementById("form-text-align-h");
   const alignVSel = document.getElementById("form-text-align-v");
+  const linkInput = document.getElementById("form-text-link-group");
   const fontSize = Math.max(6, parseInt(sizeSel?.value ?? "12", 10) || 12);
   return {
     fontFace: fontSel?.value || "mincho",
@@ -521,6 +522,8 @@ function _readFormTextDefaults() {
     showFrame: frameChk ? !!frameChk.checked : true,
     alignH: alignHSel?.value || "left",
     alignV: alignVSel?.value || "middle",
+    // 2026-10-08 連動グループ (form-link.js)。空 = 連動なし。
+    linkGroup: (linkInput?.value ?? "").trim(),
   };
 }
 function _readFormCheckDefaults() {
@@ -933,7 +936,7 @@ function _formDragRect(pageNo, startX, startY, downEvt, div, klass, onCommit) {
 
 /** β.80: drag → form_field (text sub-type) rectangle. */
 export function startFormTextDrag(pageNo, startX, startY, downEvt, div) {
-  const { fontFace, fontSize, color, alignH, alignV } = _readFormTextDefaults();
+  const { fontFace, fontSize, color, alignH, alignV, linkGroup } = _readFormTextDefaults();
   _formDragRect(
     pageNo, startX, startY, downEvt, div,
     "form-text-preview",
@@ -951,6 +954,7 @@ export function startFormTextDrag(pageNo, startX, startY, downEvt, div) {
           color,
           alignH,
           alignV,
+          linkGroup,
         },
       });
       _history().execute(cmd);

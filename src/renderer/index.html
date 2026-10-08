@@ -1331,6 +1331,14 @@
         <option value="middle" selected>中央</option>
         <option value="bottom">下</option>
       </select>
+      <!-- 2026-10-08 連動グループ (form-link.js): 同じ名前の枠は Tab 順で
+           最初の枠 (連動元) の記入が自動で入る。連動先は手入力で別の内容に
+           できるが、連動元を直すと連動先は全部それに揃う。 -->
+      <span class="mode-options-label" style="margin-left:12px">連動:</span>
+      <input type="text" id="form-text-link-group" class="toolbar-inline-input"
+             placeholder="例: 氏名"
+             title="連動グループ — 同じ名前を付けた枠には、Tab 順で最初の枠 (連動元) に記入した内容が自動で入ります。連動先は別の内容を手入力できますが、連動元を直すと連動先もそれに揃います。空欄 = 連動しない"
+             style="width:100px;font-family:'MS UI Gothic',sans-serif;font-size:12px">
     </div>
     <div class="mode-options" data-mode="form-check" hidden>
       <span class="mode-options-label">記号:</span>

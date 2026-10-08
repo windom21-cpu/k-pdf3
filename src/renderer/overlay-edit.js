@@ -12,8 +12,10 @@
 // active-tab alias rebind (applyTab) is picked up live without any
 // re-init dance.
 
-import { UpdateOverlayCommand } from "../domain/commands.js";
+import { UpdateOverlayCommand, CompositeCommand } from "../domain/commands.js";
 import { getTextFontStack } from "./fonts.js";
+import { planLinkPropagation } from "./form-link.js";
+import { getCurrentTabOrder } from "./form-fill.js";
 
 let _isOpen = () => false;
 let _projectStore = () => null;
@@ -66,11 +68,39 @@ export function handleTextEditCommit(id, newText, opts = {}) {
   const isFormText =
     ov.type === "form_field" && ov.properties?.fieldKind === "text";
   if (isFormText) {
-    history.execute(
-      new UpdateOverlayCommand(projectStore, id, {
-        properties: { ...ov.properties, value: newText },
-      }),
-    );
+    const own = new UpdateOverlayCommand(projectStore, id, {
+      properties: { ...ov.properties, value: newText },
+    });
+    // 2026-10-08 連動グループ (form-link.js): ①の commit を追従中の連動先
+    // に伝播 / 連動先を空にしたら①の値に戻す。patch が無ければ従来どおり
+    // 単発 Update (履歴 1 件)。あれば Composite で Undo 1 回にまとめる。
+    let extra = [];
+    try {
+      extra = planLinkPropagation({
+        fields: projectStore.snapshot(),
+        editedId: id,
+        oldValue: ov.properties?.value ?? "",
+        newValue: newText,
+        orderIds: getCurrentTabOrder().map((r) => r.id),
+      });
+    } catch (err) {
+      console.warn("[form-link] propagation skipped:", err);
+    }
+    if (extra.length === 0) {
+      history.execute(own);
+      return;
+    }
+    const cmds = [own];
+    for (const { id: fid, value } of extra) {
+      const f = projectStore.get(fid);
+      if (!f) continue;
+      cmds.push(
+        new UpdateOverlayCommand(projectStore, fid, {
+          properties: { ...f.properties, value },
+        }),
+      );
+    }
+    history.execute(new CompositeCommand(cmds, "フォーム連動記入"));
     return;
   }
   // Auto-fit the box to the entered text so longer / multi-line content
