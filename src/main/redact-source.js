@@ -77,7 +77,22 @@ export function redactSourceBytes(sourceBytes, pageRedactions) {
     }
     // "garbage" で旧オブジェクトを物理的に破棄した full save (冒頭コメント
     // 参照 — incremental は情報漏洩になるため厳禁)。
-    return doc.saveToBuffer("garbage").asUint8Array();
+    //
+    // v2.0.28-beta.4: 必ず .slice() で WASM ヒープ外へ複製する。
+    // asUint8Array() は HEAPU8 の subarray (= WASM メモリへのビュー) を返す
+    // だけなので、この戻り値を main の _pendingRedactedSource に保持して
+    // いる間に mupdf が大きく確保して WASM メモリが grow すると、元の
+    // ArrayBuffer が detach されて長さ 0 に化ける。直後の assembleHybridPdf
+    // で pdf-lib が「Failed to parse PDF document (line:0 col:0 offset=0):
+    // No PDF header found」で落ちていた (墨消し入り文書の上書き保存失敗、
+    // 実機報告 2026-11-13)。mupdf Buffer も解放して finalizer 任せの再利用
+    // (= 中身が別データに化ける) を防ぐ。
+    const buf = doc.saveToBuffer("garbage");
+    try {
+      return buf.asUint8Array().slice();
+    } finally {
+      try { buf.destroy(); } catch { /* ignore */ }
+    }
   } finally {
     try { doc.destroy(); } catch { /* wasm 側は GC 任せでも致命ではない */ }
   }

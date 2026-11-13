@@ -207,3 +207,23 @@ function makeHalfPng() {
 
 import zlibMod from "node:zlib";
 function require_zlib() { return zlibMod; }
+
+// v2.0.28-beta.4 回帰ガード: 戻り値が WASM ヒープのビューだと、保持中に
+// mupdf の大きな確保で WASM メモリが grow したとき長さ 0 に化け、書き出しが
+// 「No PDF header found (offset=0)」で失敗した (墨消し入り文書の上書き保存)。
+test("戻り値は WASM メモリ grow 後も有効 (detach で 0 バイト化しない)", async () => {
+  const src = await makeTextPdf(0);
+  const rect = fitzBboxOf(src, "SECRET");
+  const out = redactSourceBytes(src, [{ sourceIdx: 0, rects: [rect] }]);
+  const lenBefore = out.length;
+  assert.ok(lenBefore > 0);
+  // WASM ヒープを確実に grow させる (64MB 確保)
+  const big = new mupdf.Buffer();
+  big.write("x".repeat(64 * 1024 * 1024));
+  big.destroy();
+  assert.equal(out.length, lenBefore, "WASM メモリ grow で戻り値が detach された");
+  assert.equal(Buffer.from(out.subarray(0, 5)).toString("latin1"), "%PDF-");
+  const doc = await PDFDocument.load(out, { ignoreEncryption: true });
+  assert.equal(doc.getPageCount(), 1);
+  assert.ok(!extractText(out).includes("SECRET"));
+});
