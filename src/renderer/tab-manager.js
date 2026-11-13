@@ -146,6 +146,10 @@ export function saveActiveTabSnapshot() {
   if (!tab) return;
   _saveActiveStateInto(tab);
   tab.scrollPosition = _viewerContainer.scrollTop;
+  tab.scrollLeft = _viewerContainer.scrollLeft;
+  // fit 再計算の要否判定用 (renderer refreshViewer の keepZoom)。
+  tab.viewportW = _viewerContainer.clientWidth;
+  tab.viewportH = _viewerContainer.clientHeight;
   tab.scrollAnchor = _viewer.getScrollAnchor?.() ?? null;
   tab.zoom = _viewer.zoom;
   // projectStore / history / pendingDeletedPages / thumbCache are
@@ -199,8 +203,8 @@ export async function applyTab(tabId) {
     // reflow で scrollTop が clamp/復元される」現象を捉えきれず、ユーザの
     // 目には「他タブの scroll 位置に飛ぶ」ように見える事故が報告された。
     // 即時 + RAF + 2RAF の三段で再設定して堅牢化する。
-    // scrollLeft は 0 リセット (fit-width / fit-page で margin auto を効か
-    // せるため、前タブの非ゼロ値が残っていると左右にずれて見える)。
+    // scrollLeft は restoreTabScroll が決める (fit 系 = 見ていたページを
+    // 中央 / fixed = 離れたときの値。前タブの値は持ち込まない)。
     restoreTabScroll(tab);
   } else {
     try { await kpdf3.switchTab(null); } catch { /* noop */ }
@@ -218,16 +222,40 @@ export async function applyTab(tabId) {
  *  (削除等) ときだけ従来の scrollTop 生値に fallback。 */
 function restoreTabScroll(tab) {
   const anchor = tab.scrollAnchor;
+  // 2026-11-13: 横位置は一律 0 ではなく —
+  //   viewport が離れたときと同じ寸法 (= renderer が倍率を再計算せず
+  //   離れたときの倍率のまま) / 固定倍率 → 離れたときの scrollLeft をそのまま。
+  //   fit 系で寸法が変わった (= 再フィットした) / 保存値なし → 見ていた
+  //   ページを viewport 中央に (β76 recenterCurrentPageHorizontally と同じ規則)。
+  // 混在サイズ (A4 縦 + 横長) の文書は inner 幅 = 最大ページ幅で viewport より
+  // 広く margin auto が効かないため、0 固定だと A4 ページが右へずれて
+  // 「背景が半分・紙が半分」になっていた。単一サイズの文書は inner ≦ viewport
+  // で scrollLeft が 0 に clamp されるため従来と同じ結果になる。
+  const applyLeft = () => {
+    const cw = _viewerContainer.clientWidth;
+    const isFit = tab.zoomMode === "fit-width" || tab.zoomMode === "fit-page";
+    const sameViewport = tab.viewportW === cw
+      && (tab.zoomMode !== "fit-page" || tab.viewportH === _viewerContainer.clientHeight);
+    const saved = Number(tab.scrollLeft);
+    let left = 0;
+    if (Number.isFinite(saved) && (!isFit || sameViewport)) {
+      left = saved;
+    } else if (isFit) {
+      const pageNo = anchor?.pinPageNo || anchor?.pageNo || 0;
+      left = (pageNo && _viewer.scrollLeftToCenterPage?.(pageNo, cw)) || 0;
+    }
+    if (_viewerContainer.scrollLeft !== left) _viewerContainer.scrollLeft = left;
+  };
   const apply = () => {
     if (anchor?.pinPageNo && _viewer.registry?.posOfPageNo(anchor.pinPageNo) >= 0) {
       _viewer.scrollToPage(anchor.pinPageNo);
-      _viewerContainer.scrollLeft = 0;
+      applyLeft();
       return;
     }
     const fromAnchor = _viewer.scrollTopForAnchor?.(anchor);
     const target = fromAnchor ?? (tab.scrollPosition || 0);
     if (_viewerContainer.scrollTop !== target) _viewerContainer.scrollTop = target;
-    _viewerContainer.scrollLeft = 0;
+    applyLeft();
   };
   apply();
   requestAnimationFrame(() => {

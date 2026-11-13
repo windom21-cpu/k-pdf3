@@ -585,6 +585,16 @@ initTabManager({
     // tab-manager が復元する scrollPosition もそのまま同じ場所を指す。
     zoomMode = tab.zoomMode ?? "fit-width";
     if (tab.zoom) viewer.presetZoom(tab.zoom);
+    // 2026-11-13: 続く refreshViewer に「タブ復帰」であることを渡す
+    // (fit 再計算の可否と基準ページは refreshViewer 側で判断)。
+    // PDF 未オープンのタブ (空タブ / 新規タブ) は対象外 — 次に開くファイルの
+    // 初回 fit を飛ばさないように。
+    _tabReturnFit = !tab.isOpen ? null : {
+      pageNo: tab.scrollAnchor?.pinPageNo || tab.scrollAnchor?.pageNo || 0,
+      hasZoom: !!tab.zoom,
+      w: tab.viewportW,
+      h: tab.viewportH,
+    };
     // β.94: タブ切替の瞬間に bookmark DOM を即時クリア。refreshBookmarks
     // は async chain (refreshViewer 経由 fire-and-forget) で後追いで
     // 走るので、その間 DOM に前タブのしおりが残るレース条件があった。
@@ -735,6 +745,16 @@ const _adoptCallbacks = {
     // 2026-10-08: 別ウインドウから来たタブも倍率モード / 倍率を引き継ぐ。
     zoomMode = tab.zoomMode ?? "fit-width";
     if (tab.zoom) viewer.presetZoom(tab.zoom);
+    // 2026-11-13: 続く refreshViewer に「タブ復帰」であることを渡す
+    // (fit 再計算の可否と基準ページは refreshViewer 側で判断)。
+    // PDF 未オープンのタブ (空タブ / 新規タブ) は対象外 — 次に開くファイルの
+    // 初回 fit を飛ばさないように。
+    _tabReturnFit = !tab.isOpen ? null : {
+      pageNo: tab.scrollAnchor?.pinPageNo || tab.scrollAnchor?.pageNo || 0,
+      hasZoom: !!tab.zoom,
+      w: tab.viewportW,
+      h: tab.viewportH,
+    };
     // Repopulate projectStore from the shipped overlays. markDirty so
     // Ctrl+S still flushes them — the source window's user hadn't saved.
     if (Array.isArray(p.overlays) && p.overlays.length > 0) {
@@ -2061,8 +2081,32 @@ async function refreshViewer() {
   textSelect.setEnabled(placementMode === "select-text");
   // Apply the active fit mode so a fresh PDF lands at the user's
   // chosen sizing instead of the viewer's intrinsic default zoom.
-  if (zoomMode === "fit-width") applyFitWidthNow();
-  else if (zoomMode === "fit-page") applyFitPageNow();
+  // 2026-11-13: タブ復帰時の fit —
+  //   viewport が離れたときと同じ寸法なら再計算しない (presetZoom 済みの
+  //   「離れたときの倍率」のまま)。混在サイズ文書は fit を先頭ページで
+  //   再計算すると、見ていたページの倍率と食い違う (A4 で幅合わせ → 横長
+  //   ページへスクロール → 戻ると縮む / 横長で幅合わせ → 戻るとはみ出す)。
+  //   ResizeObserver の基準寸法も今の値に合わせ、タブ切替の一時的な寸法変化
+  //   (unload でスクロールバーが消える等) を「リサイズ」と誤認させない。
+  //   寸法が変わっていたら (ウインドウ幅変更等) 見ていたページ基準で再フィット。
+  // タブ復帰以外の refreshViewer (_tabReturnFit = null) は従来どおり。
+  const tabReturn = _tabReturnFit;
+  _tabReturnFit = null;
+  const cw = viewerContainer.clientWidth;
+  const ch = viewerContainer.clientHeight;
+  const keepZoom = !!tabReturn?.hasZoom && (
+    zoomMode === "fit-width" ? tabReturn.w === cw
+      : zoomMode === "fit-page" ? tabReturn.w === cw && tabReturn.h === ch
+        : false);
+  if (keepZoom) {
+    _fitLastW = cw;
+    _fitLastH = ch;
+  } else {
+    _fitAnchorPageNo = tabReturn?.pageNo || 0;
+    if (zoomMode === "fit-width") applyFitWidthNow();
+    else if (zoomMode === "fit-page") applyFitPageNow();
+    _fitAnchorPageNo = 0;
+  }
   refreshBookmarks();
   rebuildThumbs(pages);
   refreshStampPresetCacheAndSelect();
@@ -2957,9 +3001,20 @@ function actionZoom100() {
 // user explicitly asked for.
 let zoomMode = "fit-width";
 
+// タブ復帰時だけ立つ「fit の基準ページ」(refreshViewer がタブ復帰で
+// 再フィットするときだけ設定し、直後に破棄)。0 なら従来どおり currentPage 基準。
+let _fitAnchorPageNo = 0;
+// applyStateFromTab / onAdopt → 直後の refreshViewer への受け渡し (1 回限り)。
+let _tabReturnFit = null;
+function fitBasePageNo() {
+  const hint = _fitAnchorPageNo;
+  if (hint && viewer.registry.posOfPageNo(hint) >= 0) return hint;
+  return viewer.currentPage || viewer.registry.pageNoAtPos(0);
+}
+
 function applyFitWidthNow() {
   if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return false;
-  const pageNo = viewer.currentPage || viewer.registry.pageNoAtPos(0);
+  const pageNo = fitBasePageNo();
   let sz;
   try {
     sz = viewer.registry.getCanonicalSize(pageNo);
@@ -2969,13 +3024,13 @@ function applyFitWidthNow() {
   const targetWidth = viewerContainer.clientWidth - 32;
   if (targetWidth <= 0 || sz.w <= 0) return false;
   applyZoom(targetWidth / sz.w);
-  recenterCurrentPageHorizontally();
+  recenterCurrentPageHorizontally(pageNo);
   return true;
 }
 
 function applyFitPageNow() {
   if (!isOpen || !viewer.registry || viewer.registry.count() === 0) return false;
-  const pageNo = viewer.currentPage || viewer.registry.pageNoAtPos(0);
+  const pageNo = fitBasePageNo();
   let sz;
   try {
     sz = viewer.registry.getCanonicalSize(pageNo);
@@ -2986,7 +3041,7 @@ function applyFitPageNow() {
   const targetH = viewerContainer.clientHeight - 32;
   if (targetW <= 0 || targetH <= 0 || sz.w <= 0 || sz.h <= 0) return false;
   applyZoom(Math.min(targetW / sz.w, targetH / sz.h));
-  recenterCurrentPageHorizontally();
+  recenterCurrentPageHorizontally(pageNo);
   return true;
 }
 
@@ -2996,8 +3051,10 @@ function applyFitPageNow() {
  *  viewport 左端に張り付き、A4 ページが右にずれて見える症状の対策。
  *  fit 系操作 (Ctrl+3 / 幅をウィンドウに合わせる / 1 ページ全体) の直後に
  *  呼んで、現在ページの中央が viewport 中央に来るよう scrollLeft を調整。 */
-function recenterCurrentPageHorizontally() {
-  const pageNo = viewer.currentPage;
+function recenterCurrentPageHorizontally(basePageNo = 0) {
+  // 2026-11-13: fit の基準ページ (タブ復帰時は見ていたページ) を中央に。
+  // 引数なし / 0 は従来どおり currentPage。
+  const pageNo = basePageNo || viewer.currentPage;
   if (!pageNo) return;
   const pageEl = viewer.pageEls?.get(pageNo);
   if (!pageEl) return;

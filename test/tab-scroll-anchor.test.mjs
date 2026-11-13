@@ -26,6 +26,7 @@ function fakeViewer(pages, zoom, scrollTop, navPin = null) {
     _navPin: navPin,
     getScrollAnchor: Viewer.prototype.getScrollAnchor,
     scrollTopForAnchor: Viewer.prototype.scrollTopForAnchor,
+    scrollLeftToCenterPage: Viewer.prototype.scrollLeftToCenterPage,
   };
 }
 
@@ -111,4 +112,39 @@ test("混在サイズ (A3 横 + A4) でも各ページ基準で復元", () => {
   const after = fakeViewer(mixed, 0.8, 0);
   after.container.scrollTop = after.scrollTopForAnchor(anchor);
   assert.equal(after.getScrollAnchor().pageNo, 3);
+});
+
+// 2026-11-13: タブ復帰の横位置。混在サイズ文書は inner 幅 = 最大ページ幅で
+// viewport より広くなり margin auto が効かない。復帰時に scrollLeft を 0 に
+// していたため A4 ページが右へずれて「背景が半分・紙が半分」になった
+// (実アプリで再現: scrollLeft 166 → 0 でページ左端 16px → 182px)。
+test("横位置: 混在サイズ文書では見ていたページを viewport 中央に", () => {
+  const mixed = [
+    { pageNo: 1, ...A4 },
+    { pageNo: 2, cropW: 842, cropH: 595, rotation: 0 },
+    { pageNo: 3, cropW: 868, cropH: 595, rotation: 0 },
+  ];
+  const zoom = 794 / 595; // A4 を幅合わせ (viewport 826 - 32)
+  const v = fakeViewer(mixed, zoom, 0);
+  const vw = 826;
+  const left = v.scrollLeftToCenterPage(1, vw);
+  const pos = v.registry.posOfPageNo(1);
+  const pageLeftInInner = (v.layout.maxWidth - v.layout.pageWidths[pos]) / 2;
+  // ページ左端が viewport 内で (vw - pageW) / 2 = 16px の位置に来る
+  assert.ok(Math.abs(pageLeftInInner - left - (vw - v.layout.pageWidths[pos]) / 2) <= 1);
+  assert.ok(left > 0, "0 だと A4 ページが右へずれる");
+  // viewport より広い最大幅ページ (横長) もページ中央を viewport 中央に
+  // (β76 recenterCurrentPageHorizontally と同じ規則)
+  const w3 = v.layout.pageWidths[v.registry.posOfPageNo(3)];
+  assert.equal(v.scrollLeftToCenterPage(3, vw), Math.round((w3 - vw) / 2));
+});
+
+test("横位置: 単一サイズ文書 / 対象ページ無し", () => {
+  const v = fakeViewer(pages, 1.0, 0);
+  assert.equal(v.scrollLeftToCenterPage(1, 826), 0); // inner < viewport → 0 (従来と同じ)
+  assert.equal(v.scrollLeftToCenterPage(99, 826), null);
+  // ページが viewport より広い → 中央、ただし [0, inner - viewport] に clamp
+  const big = fakeViewer(pages, 3.0, 0);
+  const left = big.scrollLeftToCenterPage(1, 826);
+  assert.ok(left > 0 && left <= big.layout.maxWidth - 826);
 });
